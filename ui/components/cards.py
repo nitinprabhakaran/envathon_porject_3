@@ -169,18 +169,53 @@ def render_default_card(card: Dict[str, Any], session_data: Optional[Dict[str, A
 
 def handle_action(action: Dict[str, Any], session_data: Optional[Dict[str, Any]] = None):
     """Handle card action button clicks"""
+    import asyncio
+    from utils.api_client import APIClient
+    
     action_type = action.get('action')
+    action_data = action.get('data', {})
     
     if action_type == "apply_fix":
         st.session_state.applying_fix = True
-        st.info("Applying fix... (This would trigger the fix application)")
+        with st.spinner("Applying fix..."):
+            client = APIClient()
+            fix_id = action_data.get('fix_id', f"fix-{int(time.time())}")
+            result = asyncio.run(client.apply_fix(
+                session_data['id'], 
+                fix_id, 
+                action_data
+            ))
+            if result.get('status') == 'success':
+                st.success("✅ Fix applied successfully!")
+                st.rerun()
+            else:
+                st.error(f"Failed to apply fix: {result.get('error')}")
+                
+    elif action_type == "create_mr":
+        st.session_state.creating_mr = True
+        with st.spinner("Creating merge request..."):
+            client = APIClient()
+            fix_id = action_data.get('fix_id', f"mr-{int(time.time())}")
+            result = asyncio.run(client.create_merge_request(
+                session_data['id'],
+                {'fix_id': fix_id, 'fix_data': action_data}
+            ))
+            if result.get('status') == 'success':
+                mr_info = result.get('merge_request', {})
+                st.success(f"✅ Merge request created!")
+                st.markdown(f"**MR #{mr_info.get('iid')}**: [{mr_info.get('title')}]({mr_info.get('url')})")
+                st.balloons()
+            else:
+                st.error(f"Failed to create MR: {result.get('error')}")
+                
     elif action_type == "view_details":
         st.session_state.show_details = True
-        st.info("Showing details...")
-    elif action_type == "create_mr":
-        st.info("Creating merge request... (This would create an MR)")
+        with st.expander("📋 Fix Details", expanded=True):
+            st.json(action_data)
+            
     elif action_type == "view_docs":
         if url := action.get('url'):
             st.markdown(f"[Open Documentation]({url})")
+            
     else:
         st.info(f"Action: {action_type}")

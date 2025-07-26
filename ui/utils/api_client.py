@@ -42,12 +42,12 @@ class APIClient:
             print(f"Error sending message: {e}")
             return {"error": str(e)}
     
-    async def apply_fix(self, session_id: str, fix_id: str) -> Dict[str, Any]:
+    async def apply_fix(self, session_id: str, fix_id: str, fix_data: Dict[str, Any] = None) -> Dict[str, Any]:
         """Apply a suggested fix"""
         try:
             response = await self.client.post(
                 f"/api/sessions/{session_id}/apply-fix",
-                json={"fix_id": fix_id}
+                json={"fix_id": fix_id, "fix_data": fix_data or {}}
             )
             response.raise_for_status()
             return response.json()
@@ -58,13 +58,13 @@ class APIClient:
     async def create_merge_request(
         self, 
         session_id: str, 
-        fix_data: Dict[str, Any]
+        request_data: Dict[str, Any]
     ) -> Dict[str, Any]:
         """Create a merge request for a fix"""
         try:
             response = await self.client.post(
                 f"/api/sessions/{session_id}/create-mr",
-                json=fix_data
+                json=request_data
             )
             response.raise_for_status()
             return response.json()

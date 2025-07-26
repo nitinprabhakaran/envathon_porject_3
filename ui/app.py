@@ -6,10 +6,6 @@ from components.cards import render_card
 from components.pipeline_tabs import PipelineTabs
 from utils.api_client import APIClient
 
-# In session state initialization:
-if "analyzing_sessions" not in st.session_state:
-    st.session_state.analyzing_sessions = []
-
 # Page config
 st.set_page_config(
     page_title="CI/CD Failure Assistant",
@@ -53,10 +49,15 @@ st.markdown("""
         font-size: 12px;
         margin-left: 5px;
     }
+    
+    /* Loading spinner improvements */
+    .stSpinner > div {
+        border-color: #0066cc !important;
+    }
 </style>
 """, unsafe_allow_html=True)
 
-# Initialize session state
+# Initialize session state with better defaults
 if "pipeline_tabs" not in st.session_state:
     st.session_state.pipeline_tabs = PipelineTabs()
 if "api_client" not in st.session_state:
@@ -67,28 +68,41 @@ if "selected_session_id" not in st.session_state:
     st.session_state.selected_session_id = None
 if "messages" not in st.session_state:
     st.session_state.messages = {}
+if "loading_session" not in st.session_state:
+    st.session_state.loading_session = None
+if "last_refresh" not in st.session_state:
+    st.session_state.last_refresh = None
 
-async def fetch_sessions():
-    """Fetch active sessions from API"""
-    sessions = await st.session_state.api_client.get_active_sessions()
-    return sessions
+@st.cache_data(ttl=10)
+async def fetch_sessions_cached():
+    """Fetch active sessions with caching"""
+    return await st.session_state.api_client.get_active_sessions()
 
 async def load_session(session_id: str):
     """Load complete session data from API"""
-    session_data = await st.session_state.api_client.get_session(session_id)
+    # Prevent double loading
+    if st.session_state.loading_session == session_id:
+        return
     
-    # Update the tabs with complete session data
-    st.session_state.pipeline_tabs.update_session(session_id, session_data)
-    st.session_state.selected_session_id = session_id
-    st.session_state.pipeline_tabs.set_active(session_id)
+    st.session_state.loading_session = session_id
     
-    # Store messages for native chat
-    if session_id not in st.session_state.messages:
-        st.session_state.messages[session_id] = []
-    
-    # Convert conversation history to chat messages
-    conv_history = session_data.get("conversation_history", [])
-    st.session_state.messages[session_id] = conv_history
+    try:
+        session_data = await st.session_state.api_client.get_session(session_id)
+        
+        # Update the tabs with complete session data
+        st.session_state.pipeline_tabs.update_session(session_id, session_data)
+        st.session_state.selected_session_id = session_id
+        st.session_state.pipeline_tabs.set_active(session_id)
+        
+        # Store messages for native chat
+        if session_id not in st.session_state.messages:
+            st.session_state.messages[session_id] = []
+        
+        # Convert conversation history to chat messages
+        conv_history = session_data.get("conversation_history", [])
+        st.session_state.messages[session_id] = conv_history
+    finally:
+        st.session_state.loading_session = None
 
 async def send_message(session_id: str, message: str):
     """Send a message to the agent"""
@@ -139,6 +153,7 @@ with col2:
     st.empty()
 with col3:
     if st.button("🔄 Refresh", key="refresh_btn"):
+        st.cache_data.clear()
         st.rerun()
 
 # Check for session_id parameter in URL
@@ -148,10 +163,12 @@ if "session" in query_params:
     if session_id != st.session_state.selected_session_id:
         asyncio.run(load_session(session_id))
 
-# Auto-load sessions on startup
-if not st.session_state.sessions_data:
+# Auto-load sessions on startup or refresh
+now = time.time()
+if not st.session_state.sessions_data or (st.session_state.last_refresh and now - st.session_state.last_refresh > 30):
     with st.spinner("Loading sessions..."):
-        st.session_state.sessions_data = asyncio.run(fetch_sessions())
+        st.session_state.sessions_data = asyncio.run(fetch_sessions_cached())
+        st.session_state.last_refresh = now
 
 # Main layout
 sidebar_col, main_col, details_col = st.columns([2, 5, 2])
@@ -163,7 +180,9 @@ with sidebar_col:
     # Refresh button
     if st.button("🔄 Refresh Sessions", key="refresh_sessions_btn", use_container_width=True):
         with st.spinner("Refreshing..."):
-            st.session_state.sessions_data = asyncio.run(fetch_sessions())
+            st.cache_data.clear()
+            st.session_state.sessions_data = asyncio.run(fetch_sessions_cached())
+            st.session_state.last_refresh = time.time()
             st.rerun()
     
     st.divider()
@@ -234,31 +253,13 @@ with main_col:
         # Chat container
         chat_container = st.container(height=600)
         
-        # Check if there's an active analysis
-        if session_id and session_id in st.session_state.get("analyzing_sessions", []):
-            progress_placeholder = st.empty()
-            
-            # Poll for progress
-            progress_data = asyncio.run(st.session_state.api_client.get_analysis_progress(session_id))
-            if progress_data.get("status") == "analyzing":
-                with progress_placeholder.container():
-                    st.info(f"🔄 {progress_data.get('message', 'Analyzing...')}")
-                    st.progress(progress_data.get("progress", 0) / 100)
-                # Auto-refresh
-                time.sleep(2)
-                st.rerun()
-            elif progress_data.get("status") == "complete":
-                st.session_state.analyzing_sessions.remove(session_id)
-                asyncio.run(load_session(session_id))
-                st.rerun()
-        
         # Display messages
         with chat_container:
             messages = st.session_state.messages.get(session_id, [])
             
             for msg in messages:
                 if msg.get("role") == "system":
-                    continue  # Skip system messages
+                    continue
                     
                 # Use native chat message
                 with st.chat_message(msg["role"]):
@@ -269,8 +270,9 @@ with main_col:
                         unique_cards = []
                         for card in msg["cards"]:
                             card_type = card.get("type", "default")
-                            if card_type not in seen_types or card_type == "error":
-                                seen_types.add(card_type)
+                            card_key = f"{card_type}_{card.get('title', '')}"
+                            if card_key not in seen_types:
+                                seen_types.add(card_key)
                                 unique_cards.append(card)
                         
                         for card in unique_cards:
@@ -280,7 +282,7 @@ with main_col:
                         st.write(msg["content"])
         
         # Chat input
-        if prompt := st.chat_input("Ask about the failure or request a fix..."):
+        if prompt := st.chat_input("Ask about the failure or request a fix...", key=f"chat_input_{session_id}"):
             # Add user message to chat
             with chat_container:
                 with st.chat_message("user"):
@@ -351,7 +353,10 @@ with details_col:
                 if isinstance(fix, dict):
                     fix_type = fix.get('type', fix.get('fix_type', 'Fix'))
                     fix_desc = fix.get('description', 'Applied')
-                    st.success(f"✓ {fix_type}: {fix_desc}")
+                    if mr_url := fix.get('mr_url'):
+                        st.success(f"✓ MR: [{fix_desc}]({mr_url})")
+                    else:
+                        st.success(f"✓ {fix_type}: {fix_desc}")
                 else:
                     st.success(f"✓ Fix applied")
         else:
