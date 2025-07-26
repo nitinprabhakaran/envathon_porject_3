@@ -1,10 +1,14 @@
 import streamlit as st
 import asyncio
 from datetime import datetime, timezone
-import json
+import json, time
 from components.cards import render_card
 from components.pipeline_tabs import PipelineTabs
 from utils.api_client import APIClient
+
+# In session state initialization:
+if "analyzing_sessions" not in st.session_state:
+    st.session_state.analyzing_sessions = []
 
 # Page config
 st.set_page_config(
@@ -229,6 +233,24 @@ with main_col:
         
         # Chat container
         chat_container = st.container(height=600)
+        
+        # Check if there's an active analysis
+        if session_id and session_id in st.session_state.get("analyzing_sessions", []):
+            progress_placeholder = st.empty()
+            
+            # Poll for progress
+            progress_data = asyncio.run(st.session_state.api_client.get_analysis_progress(session_id))
+            if progress_data.get("status") == "analyzing":
+                with progress_placeholder.container():
+                    st.info(f"🔄 {progress_data.get('message', 'Analyzing...')}")
+                    st.progress(progress_data.get("progress", 0) / 100)
+                # Auto-refresh
+                time.sleep(2)
+                st.rerun()
+            elif progress_data.get("status") == "complete":
+                st.session_state.analyzing_sessions.remove(session_id)
+                asyncio.run(load_session(session_id))
+                st.rerun()
         
         # Display messages
         with chat_container:

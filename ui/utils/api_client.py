@@ -72,6 +72,16 @@ class APIClient:
             print(f"Error creating MR: {e}")
             return {"error": str(e)}
     
+    async def get_analysis_progress(self, session_id: str) -> Dict[str, Any]:
+        """Get analysis progress for a session"""
+        try:
+            response = await self.client.get(f"/progress/{session_id}")
+            response.raise_for_status()
+            return response.json()
+        except Exception as e:
+            print(f"Error getting progress: {e}")
+            return {"status": "unknown", "progress": 0}
+    
     async def __aenter__(self):
         return self
     

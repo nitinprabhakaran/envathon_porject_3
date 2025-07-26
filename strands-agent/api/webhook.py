@@ -6,6 +6,7 @@ import json
 import os
 from datetime import datetime
 from loguru import logger
+import asyncio
 
 from agent.core import CICDFailureAgent
 from db.session_manager import SessionManager
@@ -15,6 +16,9 @@ webhook_router = APIRouter()
 # Initialize agent
 agent = CICDFailureAgent()
 session_manager = SessionManager()
+
+# Progress tracking
+analysis_progress = {}
 
 def verify_gitlab_token(token: str, body: bytes, gitlab_token: str) -> bool:
     """Verify GitLab webhook token"""
@@ -28,6 +32,25 @@ def verify_gitlab_token(token: str, body: bytes, gitlab_token: str) -> bool:
     ).hexdigest()
     
     return hmac.compare_digest(token, expected)
+
+async def update_progress(session_id: str, status: str, progress: int, message: str):
+    """Update analysis progress"""
+    analysis_progress[session_id] = {
+        "status": status,
+        "progress": progress,
+        "message": message,
+        "timestamp": datetime.utcnow().isoformat()
+    }
+    logger.info(f"Progress: {session_id} - {progress}% - {message}")
+
+@webhook_router.get("/progress/{session_id}")
+async def get_progress(session_id: str):
+    """Get analysis progress for a session"""
+    return analysis_progress.get(session_id, {
+        "status": "unknown",
+        "progress": 0,
+        "message": "No progress data available"
+    })
 
 @webhook_router.post("/gitlab")
 async def handle_gitlab_webhook(
@@ -66,6 +89,8 @@ async def handle_gitlab_webhook(
     import uuid
     session_id = str(uuid.uuid4())
     
+    await update_progress(session_id, "initializing", 5, "Creating session...")
+    
     # Create or get session
     session = await session_manager.create_or_get_session(
         session_id=session_id,
@@ -76,6 +101,8 @@ async def handle_gitlab_webhook(
     
     # Use the actual session ID (might be different if session already existed)
     actual_session_id = session['id']
+    
+    await update_progress(actual_session_id, "processing", 10, "Storing metadata...")
     
     try:
         job_name = agent._extract_failed_job_name(data)
@@ -105,34 +132,60 @@ async def handle_gitlab_webhook(
         }
     )
     
-    # Trigger analysis
+    await update_progress(actual_session_id, "analyzing", 20, "Starting AI analysis...")
+    
+    # Run analysis in background
+    asyncio.create_task(run_analysis_with_progress(actual_session_id, data))
+    
+    return {
+        "status": "analyzing",
+        "session_id": actual_session_id,
+        "message": "Analysis started in background"
+    }
+
+async def run_analysis_with_progress(session_id: str, webhook_data: Dict[str, Any]):
+    """Run analysis with progress updates"""
     try:
+        # Update progress during analysis
+        await update_progress(session_id, "analyzing", 30, "Retrieving pipeline details...")
+        
+        # Set a progress callback on the agent
+        original_call = agent.agent.__call__
+        tool_count = 0
+        
+        async def progress_wrapper(*args, **kwargs):
+            nonlocal tool_count
+            result = await original_call(*args, **kwargs)
+            tool_count += 1
+            progress = min(30 + (tool_count * 5), 90)
+            await update_progress(session_id, "analyzing", progress, f"Running analysis step {tool_count}...")
+            return result
+            
+        agent.agent.__call__ = progress_wrapper
+        
+        # Run analysis
         analysis_result = await agent.analyze_failure(
-            session_id=actual_session_id,
-            webhook_data=data
+            session_id=session_id,
+            webhook_data=webhook_data
         )
         
-        # The agent.analyze_failure already updates conversation history
-        # but we should ensure cards are included in the response
+        # Restore original method
+        agent.agent.__call__ = original_call
+        
+        await update_progress(session_id, "complete", 100, "Analysis complete!")
         
         # Post comment to GitLab
         if analysis_result.get("cards"):
             comment = format_gitlab_comment(analysis_result)
-            # This would use GitLab API to post comment
-            logger.info(f"Would post comment to pipeline {pipeline_id}")
-        
-        return {
-            "status": "success",
-            "session_id": actual_session_id,
-            "analysis": analysis_result
-        }
+            logger.info(f"Would post comment to pipeline {webhook_data['object_attributes']['id']}")
         
     except Exception as e:
         logger.error(f"Analysis failed: {e}", exc_info=True)
+        await update_progress(session_id, "failed", 0, f"Analysis failed: {str(e)}")
         
         # Add error to conversation history
         await session_manager.update_conversation(
-            actual_session_id,
+            session_id,
             {
                 "role": "assistant",
                 "content": f"Failed to analyze pipeline: {str(e)}",
@@ -145,12 +198,6 @@ async def handle_gitlab_webhook(
                 "timestamp": datetime.utcnow().isoformat()
             }
         )
-        
-        return {
-            "status": "error",
-            "session_id": actual_session_id,
-            "error": str(e)
-        }
 
 def format_gitlab_comment(analysis_result: Dict[str, Any]) -> str:
     """Format analysis result as GitLab comment"""

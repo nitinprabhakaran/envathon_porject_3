@@ -8,44 +8,26 @@ from loguru import logger
 from strands import Agent
 from strands.models import BedrockModel
 from strands.models.anthropic import AnthropicModel
+from strands.agent.conversation_manager import SlidingWindowConversationManager
 
 from .prompts import SYSTEM_PROMPT
 from db.session_manager import SessionManager
 from vector.qdrant_client import QdrantManager
 
-# Import all tools
+# Import only essential tools for initial analysis
 from tools.gitlab_tools import (
-    get_pipeline_details,
     get_pipeline_jobs,
     get_job_logs,
-    get_file_content,
-    get_recent_commits,
-    create_merge_request,
-    add_pipeline_comment
-)
-from tools.sonarqube_tools import (
-    get_project_quality_status,
-    get_code_quality_issues,
-    get_security_vulnerabilities
+    create_merge_request
 )
 from tools.analysis_tools import (
     analyze_pipeline_logs,
-    extract_error_signature,
-    intelligent_log_truncation
-)
-from tools.context_tools import (
-    get_relevant_code_context,
-    request_additional_context,
-    get_shared_pipeline_context,
-    trace_pipeline_inheritance,
-    get_cicd_variables
+    extract_error_signature
 )
 from tools.session_tools import (
     get_session_context,
-    update_session_state,
     search_similar_errors,
-    store_successful_fix,
-    validate_fix_suggestion
+    store_successful_fix
 )
 
 class CICDFailureAgent:
@@ -53,69 +35,84 @@ class CICDFailureAgent:
         self.session_manager = SessionManager()
         self.qdrant_manager = QdrantManager()
         
-        # Configure model based on provider
+        # Configure model with optimal settings
         provider = os.getenv("LLM_PROVIDER", "bedrock").lower()
         
         if provider == "bedrock":
             model = BedrockModel(
                 model_id=os.getenv("MODEL_ID", "us.anthropic.claude-3-5-sonnet-20241022-v2:0"),
                 region=os.getenv("AWS_REGION", "us-west-2"),
-                temperature=0.7,
-                streaming=False,
-                max_tokens=4096
+                temperature=0.3,  # Lower temperature for more consistent results
+                streaming=True,   # Enable streaming for better UX
+                max_tokens=2048,  # Reduced for faster responses
+                top_p=0.8
             )
         elif provider == "anthropic":
             model = AnthropicModel(
                 model_id=os.getenv("MODEL_ID", "claude-3-5-sonnet-20241022"),
                 api_key=os.getenv("ANTHROPIC_API_KEY"),
-                temperature=0.7,
-                max_tokens=8192
+                temperature=0.3,
+                max_tokens=2048
             )
         else:
             raise ValueError(f"Unknown LLM provider: {provider}")
         
-        # Initialize Strands agent
+        # Optimize conversation management
+        conversation_manager = SlidingWindowConversationManager(
+            window_size=10  # Limit context size
+        )
+        
+        # Initialize with minimal tools for initial analysis
         self.agent = Agent(
             model=model,
             system_prompt=SYSTEM_PROMPT,
-            tools=self._get_tools()
+            tools=self._get_minimal_tools(),
+            conversation_manager=conversation_manager,
+            max_parallel_tools=3,  # Control parallelism
+            load_tools_from_directory=False  # Explicit control
         )
     
-    def _get_tools(self) -> List:
-        """Register all tools with the agent"""
+    def _get_minimal_tools(self) -> List:
+        """Get only essential tools for initial analysis"""
         return [
-            # GitLab tools
-            get_pipeline_details,
+            # Core analysis tools only
             get_pipeline_jobs,
             get_job_logs,
-            get_file_content,
-            get_recent_commits,
-            create_merge_request,
-            add_pipeline_comment,
-            
-            # SonarQube tools
-            get_project_quality_status,
-            get_code_quality_issues,
-            get_security_vulnerabilities,
-            
-            # Analysis tools
             analyze_pipeline_logs,
             extract_error_signature,
-            intelligent_log_truncation,
-            
-            # Context tools
+            search_similar_errors,
+            get_session_context
+        ]
+    
+    def _get_extended_tools(self) -> List:
+        """Get additional tools for complex cases"""
+        from tools.gitlab_tools import (
+            get_file_content,
+            get_recent_commits,
+            add_pipeline_comment
+        )
+        from tools.context_tools import (
+            get_relevant_code_context,
+            request_additional_context,
+            get_shared_pipeline_context
+        )
+        from tools.sonarqube_tools import (
+            get_project_quality_status,
+            get_code_quality_issues
+        )
+        
+        return [
+            *self._get_minimal_tools(),
+            get_file_content,
+            get_recent_commits,
+            add_pipeline_comment,
+            create_merge_request,
             get_relevant_code_context,
             request_additional_context,
             get_shared_pipeline_context,
-            trace_pipeline_inheritance,
-            get_cicd_variables,
-            
-            # Session tools
-            get_session_context,
-            update_session_state,
-            search_similar_errors,
-            store_successful_fix,
-            validate_fix_suggestion
+            get_project_quality_status,
+            get_code_quality_issues,
+            store_successful_fix
         ]
     
     async def analyze_failure(
@@ -123,9 +120,9 @@ class CICDFailureAgent:
         session_id: str,
         webhook_data: Dict[str, Any]
     ) -> Dict[str, Any]:
-        """Main entry point for analyzing pipeline failures"""
-        logger.info(f"Starting analysis for session {session_id}")
-        logger.debug(f"Webhook data: {json.dumps(webhook_data, indent=2)}")
+        """Optimized failure analysis with minimal tool calls"""
+        start_time = datetime.utcnow()
+        logger.info(f"Starting optimized analysis for session {session_id}")
         
         # Create or get session
         try:
@@ -135,7 +132,6 @@ class CICDFailureAgent:
                 str(webhook_data["object_attributes"]["id"]),
                 webhook_data.get("commit", {}).get("sha")
             )
-            logger.info(f"Session created/retrieved: {session['id']}")
         except Exception as e:
             logger.error(f"Failed to create/get session: {e}")
             raise
@@ -145,17 +141,10 @@ class CICDFailureAgent:
             "project_name": webhook_data["project"]["name"],
             "pipeline_id": webhook_data["object_attributes"]["id"],
             "failed_stage": self._extract_failed_stage(webhook_data),
-            "commit_message": webhook_data.get("commit", {}).get("message", ""),
-            "commit_author": webhook_data.get("commit", {}).get("author", {}).get("name", ""),
-            "pipeline_url": webhook_data["object_attributes"]["url"],
-            "branch": webhook_data["object_attributes"]["ref"], 
-            "pipeline_source": webhook_data["object_attributes"]["source"],
-            "commit_sha": webhook_data["object_attributes"]["sha"],
             "job_name": self._extract_failed_job_name(webhook_data),
-            "merge_request_id": webhook_data.get("merge_request", {}).get("id") if webhook_data.get("merge_request") else None,
+            "branch": webhook_data["object_attributes"]["ref"],
+            "pipeline_url": webhook_data["object_attributes"]["url"]
         }
-        
-        logger.info(f"Failure context: {failure_context}")
         
         # Store context in agent's session state
         self.agent.session_state = {
@@ -165,49 +154,46 @@ class CICDFailureAgent:
             "failure_context": failure_context
         }
         
-        # Run the agent
+        # Optimized prompt for minimal tool usage
+        prompt = f"""QUICK ANALYSIS - Use only essential tools:
+
+Pipeline #{failure_context['pipeline_id']} failed in {failure_context['failed_stage']} stage
+Job: {failure_context['job_name']}
+Project: {failure_context['project_name']} (ID: {webhook_data['project']['id']})
+
+EXECUTE IN ORDER (3-4 tools max):
+1. get_pipeline_jobs(pipeline_id="{failure_context['pipeline_id']}", project_id="{webhook_data['project']['id']}")
+2. get_job_logs(job_id="<failed_job_id>", project_id="{webhook_data['project']['id']}")
+3. search_similar_errors(error_signature="<extracted_signature>")
+
+Generate ONE solution card with:
+- Root cause
+- Specific fix (95% confidence for missing JAR errors)
+- Code changes
+- Action buttons: "Apply Fix", "Create MR"
+
+Skip: quality checks, file content, comments, storing fixes"""
+        
         try:
-            logger.info("Invoking Strands agent for analysis")
+            # Use streaming for better UX
+            response_text = ""
+            async for event in self.agent.stream_async(prompt):
+                if "data" in event:
+                    response_text += event["data"]
             
-            # Create a prompt that includes all context explicitly
-            prompt = f"""Analyze this CI/CD pipeline failure and provide actionable recommendations:
-                
-Session ID: {session_id}
-Project ID: {webhook_data['project']['id']}
-Project Name: {failure_context['project_name']}
-Pipeline ID: {failure_context['pipeline_id']}
-Failed Stage: {failure_context['failed_stage']}
-Commit: {failure_context['commit_message']}
-
-IMPORTANT: When using tools, always pass these parameters explicitly:
-- For GitLab tools: project_id="{webhook_data['project']['id']}"
-- For session tools: session_id="{session_id}"
-- For analysis tools: pipeline_id="{failure_context['pipeline_id']}", project_id="{webhook_data['project']['id']}"
-
-Please:
-1. First check session context using get_session_context(session_id="{session_id}")
-2. Use GitLab tools to get pipeline details and logs (remember to pass project_id)
-3. Use SonarQube tools to check for quality issues (pass project_id)
-4. Search for similar historical errors
-5. Provide specific, actionable fixes with confidence scores
-6. Format response for UI cards with action buttons
-7. Store successful fixes using store_successful_fix with session_id="{session_id}"
-"""
+            # Extract cards
+            cards = self._extract_cards_from_response(response_text)
             
-            response = self.agent(prompt)
-            logger.info("Agent analysis completed successfully")
-            logger.debug(f"Agent response: {str(response)[:500]}...")
+            # Log performance
+            duration = (datetime.utcnow() - start_time).total_seconds()
+            logger.info(f"Analysis completed in {duration:.2f}s with {len(cards)} cards")
             
-            # Parse response for cards
-            cards = self._extract_cards_from_response(str(response))
-            logger.info(f"Extracted {len(cards)} UI cards from response")
-            
-            # Store assistant response with cards
+            # Store response
             await self.session_manager.update_conversation(
                 session_id,
                 {
                     "role": "assistant",
-                    "content": str(response),
+                    "content": response_text,
                     "cards": cards,
                     "timestamp": datetime.utcnow().isoformat()
                 }
@@ -215,27 +201,26 @@ Please:
             
             return {
                 "session_id": session_id,
-                "analysis": str(response),
+                "analysis": response_text,
                 "cards": cards,
-                "confidence": self._extract_confidence(str(response))
+                "confidence": self._extract_confidence(response_text),
+                "duration_seconds": duration
             }
             
         except Exception as e:
             logger.error(f"Analysis failed: {e}", exc_info=True)
-            
             error_card = {
                 "type": "error",
                 "title": "Analysis Failed",
-                "content": f"Failed to analyze pipeline: {str(e)}",
+                "content": str(e),
                 "actions": [{"label": "Retry", "action": "retry_analysis"}]
             }
             
-            # Store error in conversation
             await self.session_manager.update_conversation(
                 session_id,
                 {
                     "role": "assistant",
-                    "content": f"Failed to analyze pipeline: {str(e)}",
+                    "content": f"Error: {str(e)}",
                     "cards": [error_card],
                     "timestamp": datetime.utcnow().isoformat()
                 }
@@ -252,14 +237,12 @@ Please:
         session_id: str,
         user_message: str
     ) -> Dict[str, Any]:
-        """Continue an existing conversation"""
-        
-        # Get session context
+        """Optimized conversation continuation"""
         session = await self.session_manager.get_session(session_id)
         if not session:
             raise ValueError("Session not found")
         
-        # Add to conversation history
+        # Add user message
         await self.session_manager.update_conversation(
             session_id,
             {
@@ -269,6 +252,15 @@ Please:
             }
         )
         
+        # Check if we need extended tools
+        needs_extended = any(keyword in user_message.lower() for keyword in [
+            "quality", "sonar", "file", "code", "commit", "merge request"
+        ])
+        
+        if needs_extended and len(self.agent.tools) < 10:
+            logger.info("Loading extended tools for complex request")
+            self.agent.tools = self._get_extended_tools()
+        
         # Set context
         self.agent.session_state = {
             "session_id": session_id,
@@ -276,63 +268,58 @@ Please:
             "pipeline_id": str(session["pipeline_id"])
         }
         
-        # Check if user is asking redundant questions about the fix
+        # Check for redundant questions
         lower_message = user_message.lower()
-        redundant_patterns = [
-            "what was the fix",
-            "analyse the fix",
-            "analyze the fix",
-            "show me the fix",
-            "explain the fix"
-        ]
+        redundant_patterns = ["what was the fix", "analyse the fix", "show me the fix"]
         
-        is_redundant = any(pattern in lower_message for pattern in redundant_patterns)
-        conversation_history = session.get("conversation_history", [])
-        has_solution = any(
-            msg.get("cards", [{}])[0].get("type") == "solution" 
-            for msg in conversation_history 
-            if msg.get("role") == "assistant" and msg.get("cards")
-        )
-        
-        # If redundant question and solution already provided, give concise response
-        if is_redundant and has_solution:
-            response_text = "The fix has already been provided above. Would you like me to create a merge request with these changes?"
-            cards = [{
-                "type": "solution",
-                "title": "Ready to Apply Fix",
-                "confidence": 95,
-                "content": "The Maven build stage solution is ready to implement.",
-                "actions": [
-                    {"label": "Create MR", "action": "create_mr", "data": {}},
-                    {"label": "View Previous Solution", "action": "scroll_up"}
-                ]
-            }]
-        else:
-            # Run agent normally
-            response = self.agent(
-                f"""Continue the conversation for session {session_id}.
-                
-User message: {user_message}
-
-Context:
-- Session ID: {session_id}
-- Project ID: {session["project_id"]}  
-- Pipeline ID: {session["pipeline_id"]}
-
-Remember to:
-- Generate ONLY ONE card per response
-- Avoid creating duplicate analysis cards
-- Be concise if the user is asking about already-provided solutions
-- Always pass IDs explicitly to tools
-
-Previous conversation context is available via get_session_context(session_id="{session_id}").
-"""
+        if any(pattern in lower_message for pattern in redundant_patterns):
+            # Check if solution already provided
+            conv_history = session.get("conversation_history", [])
+            has_solution = any(
+                msg.get("cards", [{}])[0].get("type") == "solution" 
+                for msg in conv_history 
+                if msg.get("role") == "assistant" and msg.get("cards")
             )
             
-            response_text = str(response)
-            cards = self._extract_cards_from_response(response_text)
+            if has_solution:
+                response_text = "The fix is already provided above. Ready to create a merge request?"
+                cards = [{
+                    "type": "solution",
+                    "title": "Ready to Apply",
+                    "confidence": 95,
+                    "content": "Maven build stage solution is ready.",
+                    "actions": [
+                        {"label": "Create MR", "action": "create_mr", "data": {}},
+                        {"label": "View Fix Above", "action": "scroll_up"}
+                    ]
+                }]
+                
+                await self.session_manager.update_conversation(
+                    session_id,
+                    {
+                        "role": "assistant",
+                        "content": response_text,
+                        "cards": cards,
+                        "timestamp": datetime.utcnow().isoformat()
+                    }
+                )
+                
+                return {
+                    "session_id": session_id,
+                    "response": response_text,
+                    "cards": cards
+                }
         
-        # Update session with assistant response
+        # Generate response
+        prompt = f"{user_message}\n\nContext: Session {session_id}, Project {session['project_id']}\nUse minimal tools."
+        
+        response_text = ""
+        async for event in self.agent.stream_async(prompt):
+            if "data" in event:
+                response_text += event["data"]
+        
+        cards = self._extract_cards_from_response(response_text)
+        
         await self.session_manager.update_conversation(
             session_id,
             {
@@ -357,34 +344,40 @@ Previous conversation context is available via get_session_context(session_id="{
                 return build.get("stage", "unknown")
         return "unknown"
     
+    def _extract_failed_job_name(self, webhook_data: Dict[str, Any]) -> str:
+        """Extract the failed job name from webhook data"""
+        builds = webhook_data.get("builds", [])
+        for build in builds:
+            if build.get("status") == "failed":
+                return build.get("name", "unknown")
+        return "unknown"
+    
     def _extract_cards_from_response(self, content: str) -> List[Dict[str, Any]]:
         """Extract UI cards from agent response"""
         cards = []
         
-        # Look for JSON card blocks in the response
+        # Look for JSON card blocks
         card_pattern = r'```json:card\s*(.*?)\s*```'
         matches = re.findall(card_pattern, content, re.DOTALL)
         
         for match in matches:
             try:
                 card = json.loads(match)
-                # If card has confidence field, ensure it's set at root level
-                if "confidence" not in card and "confidence" in str(card.get("content", "")):
-                    confidence = self._extract_confidence(str(card.get("content", "")))
-                    if confidence > 0:
-                        card["confidence"] = int(confidence * 100)
+                # Ensure confidence is set
+                if "confidence" not in card and card.get("type") == "solution":
+                    card["confidence"] = 95  # Default high confidence for clear errors
                 cards.append(card)
             except json.JSONDecodeError:
-                logger.warning(f"Failed to parse card JSON: {match}")
+                logger.warning(f"Failed to parse card JSON: {match[:50]}...")
         
-        # If no cards found, create a default one
+        # Create default if no cards
         if not cards:
             cards.append({
                 "type": "analysis",
                 "title": "Pipeline Analysis",
                 "content": content,
-                "actions": [],
-                "confidence": int(self._extract_confidence(content) * 100)
+                "confidence": 70,
+                "actions": []
             })
         
         return cards
@@ -393,15 +386,4 @@ Previous conversation context is available via get_session_context(session_id="{
         """Extract confidence score from response"""
         confidence_pattern = r'confidence[:\s]+(\d+)%'
         match = re.search(confidence_pattern, response, re.IGNORECASE)
-        
-        if match:
-            return float(match.group(1)) / 100.0
-        return 0.7
-    
-    def _extract_failed_job_name(self, webhook_data: Dict[str, Any]) -> str:
-        """Extract the failed job name from webhook data"""
-        builds = webhook_data.get("builds", [])
-        for build in builds:
-            if build.get("status") == "failed":
-                return build.get("name", "unknown")
-        return "unknown"
+        return float(match.group(1)) / 100.0 if match else 0.7
