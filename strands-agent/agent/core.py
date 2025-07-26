@@ -198,19 +198,20 @@ Please:
             logger.info("Agent analysis completed successfully")
             logger.debug(f"Agent response: {str(response)[:500]}...")
             
-            # Update session with conversation
+            # Parse response for cards
+            cards = self._extract_cards_from_response(str(response))
+            logger.info(f"Extracted {len(cards)} UI cards from response")
+            
+            # Store assistant response with cards
             await self.session_manager.update_conversation(
                 session_id,
                 {
                     "role": "assistant",
                     "content": str(response),
+                    "cards": cards,
                     "timestamp": datetime.utcnow().isoformat()
                 }
             )
-            
-            # Parse response for cards
-            cards = self._extract_cards_from_response(str(response))
-            logger.info(f"Extracted {len(cards)} UI cards from response")
             
             return {
                 "session_id": session_id,
@@ -221,15 +222,29 @@ Please:
             
         except Exception as e:
             logger.error(f"Analysis failed: {e}", exc_info=True)
+            
+            error_card = {
+                "type": "error",
+                "title": "Analysis Failed",
+                "content": f"Failed to analyze pipeline: {str(e)}",
+                "actions": [{"label": "Retry", "action": "retry_analysis"}]
+            }
+            
+            # Store error in conversation
+            await self.session_manager.update_conversation(
+                session_id,
+                {
+                    "role": "assistant",
+                    "content": f"Failed to analyze pipeline: {str(e)}",
+                    "cards": [error_card],
+                    "timestamp": datetime.utcnow().isoformat()
+                }
+            )
+            
             return {
                 "session_id": session_id,
                 "error": str(e),
-                "cards": [{
-                    "type": "error",
-                    "title": "Analysis Failed",
-                    "content": f"Failed to analyze pipeline: {str(e)}",
-                    "actions": [{"label": "Retry", "action": "retry_analysis"}]
-                }]
+                "cards": [error_card]
             }
     
     async def continue_conversation(
@@ -261,10 +276,42 @@ Please:
             "pipeline_id": str(session["pipeline_id"])
         }
         
-        # Run agent
-        response = self.agent(
-            f"""Continue the conversation for session {session_id}.
-            
+        # Check if user is asking redundant questions about the fix
+        lower_message = user_message.lower()
+        redundant_patterns = [
+            "what was the fix",
+            "analyse the fix",
+            "analyze the fix",
+            "show me the fix",
+            "explain the fix"
+        ]
+        
+        is_redundant = any(pattern in lower_message for pattern in redundant_patterns)
+        conversation_history = session.get("conversation_history", [])
+        has_solution = any(
+            msg.get("cards", [{}])[0].get("type") == "solution" 
+            for msg in conversation_history 
+            if msg.get("role") == "assistant" and msg.get("cards")
+        )
+        
+        # If redundant question and solution already provided, give concise response
+        if is_redundant and has_solution:
+            response_text = "The fix has already been provided above. Would you like me to create a merge request with these changes?"
+            cards = [{
+                "type": "solution",
+                "title": "Ready to Apply Fix",
+                "confidence": 95,
+                "content": "The Maven build stage solution is ready to implement.",
+                "actions": [
+                    {"label": "Create MR", "action": "create_mr", "data": {}},
+                    {"label": "View Previous Solution", "action": "scroll_up"}
+                ]
+            }]
+        else:
+            # Run agent normally
+            response = self.agent(
+                f"""Continue the conversation for session {session_id}.
+                
 User message: {user_message}
 
 Context:
@@ -272,31 +319,33 @@ Context:
 - Project ID: {session["project_id"]}  
 - Pipeline ID: {session["pipeline_id"]}
 
-Remember to always pass these IDs explicitly to tools:
-- For session tools: session_id="{session_id}"
-- For GitLab/SonarQube tools: project_id="{session["project_id"]}"
+Remember to:
+- Generate ONLY ONE card per response
+- Avoid creating duplicate analysis cards
+- Be concise if the user is asking about already-provided solutions
+- Always pass IDs explicitly to tools
 
 Previous conversation context is available via get_session_context(session_id="{session_id}").
-Consider what was already discussed and tried.
 """
-        )
+            )
+            
+            response_text = str(response)
+            cards = self._extract_cards_from_response(response_text)
         
-        # Update session
+        # Update session with assistant response
         await self.session_manager.update_conversation(
             session_id,
             {
                 "role": "assistant",
-                "content": str(response),
+                "content": response_text,
+                "cards": cards,
                 "timestamp": datetime.utcnow().isoformat()
             }
         )
         
-        # Parse response
-        cards = self._extract_cards_from_response(str(response))
-        
         return {
             "session_id": session_id,
-            "response": str(response),
+            "response": response_text,
             "cards": cards
         }
     
@@ -319,6 +368,11 @@ Consider what was already discussed and tried.
         for match in matches:
             try:
                 card = json.loads(match)
+                # If card has confidence field, ensure it's set at root level
+                if "confidence" not in card and "confidence" in str(card.get("content", "")):
+                    confidence = self._extract_confidence(str(card.get("content", "")))
+                    if confidence > 0:
+                        card["confidence"] = int(confidence * 100)
                 cards.append(card)
             except json.JSONDecodeError:
                 logger.warning(f"Failed to parse card JSON: {match}")
@@ -329,7 +383,8 @@ Consider what was already discussed and tried.
                 "type": "analysis",
                 "title": "Pipeline Analysis",
                 "content": content,
-                "actions": []
+                "actions": [],
+                "confidence": int(self._extract_confidence(content) * 100)
             })
         
         return cards

@@ -33,6 +33,9 @@ def render_analysis_card(card: Dict[str, Any], session_data: Optional[Dict[str, 
         pipeline_id = card.get('pipeline_id', 'N/A')
         failed_stage = card.get('failed_stage', 'N/A')
     
+    # Get confidence from card root level first, then try other locations
+    confidence = card.get('confidence', 0)
+    
     with st.container():
         st.markdown(f"""
         <div class="card-container">
@@ -42,7 +45,7 @@ def render_analysis_card(card: Dict[str, Any], session_data: Optional[Dict[str, 
             <p><strong>Failed Stage:</strong> {failed_stage}</p>
             <hr>
             <p><strong>🎯 Root Cause:</strong> {card.get('root_cause', card.get('content', 'Analyzing...'))}</p>
-            <p><strong>📊 Confidence:</strong> {card.get('confidence', 0)}%</p>
+            <p><strong>📊 Confidence:</strong> {confidence}%</p>
             <p><strong>⏱️ Estimated Fix Time:</strong> {card.get('estimated_time', 'Unknown')}</p>
             <p><strong>🔍 Error Type:</strong> {card.get('error_type', 'Unknown')}</p>
         </div>

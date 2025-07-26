@@ -14,27 +14,10 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# Dark theme CSS fix
+# CSS for better styling
 st.markdown("""
 <style>
-    /* Dark theme fix for chat messages */
-    .chat-message {
-        padding: 10px;
-        margin: 5px 0;
-        border-radius: 8px;
-        color: #000000;  /* Black text */
-    }
-    .user-message {
-        background-color: #e3f2fd;
-        text-align: right;
-        color: #000000;
-    }
-    .assistant-message {
-        background-color: #f5f5f5;
-        color: #000000;
-    }
-    
-    /* Fix for card containers */
+    /* Card containers */
     .card-container {
         background-color: #f8f9fa;
         border-radius: 8px;
@@ -78,8 +61,8 @@ if "sessions_data" not in st.session_state:
     st.session_state.sessions_data = []
 if "selected_session_id" not in st.session_state:
     st.session_state.selected_session_id = None
-if "is_loading" not in st.session_state:
-    st.session_state.is_loading = False
+if "messages" not in st.session_state:
+    st.session_state.messages = {}
 
 async def fetch_sessions():
     """Fetch active sessions from API"""
@@ -90,41 +73,44 @@ async def load_session(session_id: str):
     """Load complete session data from API"""
     session_data = await st.session_state.api_client.get_session(session_id)
     
-    # Debug logging
-    print(f"Loading session {session_id}, received data:")
-    print(f"  project_id: {session_data.get('project_id')}")
-    print(f"  pipeline_id: {session_data.get('pipeline_id')}")
-    print(f"  conversation_history length: {len(session_data.get('conversation_history', []))}")
-    
     # Update the tabs with complete session data
     st.session_state.pipeline_tabs.update_session(session_id, session_data)
     st.session_state.selected_session_id = session_id
     st.session_state.pipeline_tabs.set_active(session_id)
+    
+    # Store messages for native chat
+    if session_id not in st.session_state.messages:
+        st.session_state.messages[session_id] = []
+    
+    # Convert conversation history to chat messages
+    conv_history = session_data.get("conversation_history", [])
+    st.session_state.messages[session_id] = conv_history
 
 async def send_message(session_id: str, message: str):
     """Send a message to the agent"""
-    st.session_state.is_loading = True
     response = await st.session_state.api_client.send_message(session_id, message)
     
-    # Update local state
+    # Add user message
+    user_msg = {
+        "role": "user",
+        "content": message,
+        "timestamp": datetime.now(timezone.utc).isoformat()
+    }
+    st.session_state.messages[session_id].append(user_msg)
+    
+    # Add assistant response
+    assistant_msg = {
+        "role": "assistant",
+        "content": response.get("response", ""),
+        "cards": response.get("cards", []),
+        "timestamp": datetime.now(timezone.utc).isoformat()
+    }
+    st.session_state.messages[session_id].append(assistant_msg)
+    
+    # Update pipeline tabs
     active_session = st.session_state.pipeline_tabs.get_active()
     if active_session:
-        # Ensure conversation_history is a list
-        if not isinstance(active_session.get("conversation_history"), list):
-            active_session["conversation_history"] = []
-            
-        active_session["conversation_history"].append({
-            "role": "user",
-            "content": message,
-            "timestamp": datetime.now(timezone.utc).isoformat()
-        })
-        active_session["conversation_history"].append({
-            "role": "assistant",
-            "content": response.get("response", ""),
-            "cards": response.get("cards", []),
-            "timestamp": datetime.now(timezone.utc).isoformat()
-        })
-    st.session_state.is_loading = False
+        active_session["conversation_history"] = st.session_state.messages[session_id]
 
 def calculate_duration(start_time: datetime) -> str:
     """Calculate duration from start time"""
@@ -155,9 +141,7 @@ with col3:
 query_params = st.query_params
 if "session" in query_params:
     session_id = query_params["session"]
-    # Load this specific session
-    if session_id not in [s['id'] for s in st.session_state.sessions_data]:
-        # Add to sessions data and load it
+    if session_id != st.session_state.selected_session_id:
         asyncio.run(load_session(session_id))
 
 # Auto-load sessions on startup
@@ -218,6 +202,8 @@ with main_col:
     active_session = st.session_state.pipeline_tabs.get_active()
     
     if active_session:
+        session_id = active_session['id']
+        
         # Extract session details
         project_name = active_session.get('project_name', active_session.get('project_id', 'Unknown'))
         pipeline_id = active_session.get('pipeline_id', 'Unknown')
@@ -241,53 +227,46 @@ with main_col:
         
         st.divider()
         
-        # Conversation history
-        chat_container = st.container()
+        # Chat container
+        chat_container = st.container(height=600)
+        
+        # Display messages
         with chat_container:
-            conversation_history = active_session.get("conversation_history", [])
+            messages = st.session_state.messages.get(session_id, [])
             
-            if not conversation_history:
-                st.info("No conversation history yet. The agent should analyze the failure soon...")
-            else:
-                for msg in conversation_history:
-                    if isinstance(msg, dict):
-                        if msg.get("role") == "user":
-                            st.markdown(
-                                f'<div class="chat-message user-message"><strong>You:</strong><br>{msg["content"]}</div>',
-                                unsafe_allow_html=True
-                            )
-                        elif msg.get("role") == "assistant":
-                            # Show assistant message content if no cards
-                            if msg.get("content") and not msg.get("cards"):
-                                st.markdown(
-                                    f'<div class="chat-message assistant-message"><strong>Assistant:</strong><br>{msg["content"]}</div>',
-                                    unsafe_allow_html=True
-                                )
-                            
-                            # Render cards if present
-                            if "cards" in msg and msg["cards"]:
-                                for card in msg["cards"]:
-                                    render_card(card, active_session)
+            for msg in messages:
+                if msg.get("role") == "system":
+                    continue  # Skip system messages
+                    
+                # Use native chat message
+                with st.chat_message(msg["role"]):
+                    # Show cards if present
+                    if "cards" in msg and msg["cards"]:
+                        # Deduplicate cards by type
+                        seen_types = set()
+                        unique_cards = []
+                        for card in msg["cards"]:
+                            card_type = card.get("type", "default")
+                            if card_type not in seen_types or card_type == "error":
+                                seen_types.add(card_type)
+                                unique_cards.append(card)
+                        
+                        for card in unique_cards:
+                            render_card(card, active_session)
+                    elif msg.get("content"):
+                        # Only show content if no cards
+                        st.write(msg["content"])
         
-        # Show loading spinner if waiting for response
-        if st.session_state.is_loading:
+        # Chat input
+        if prompt := st.chat_input("Ask about the failure or request a fix..."):
+            # Add user message to chat
+            with chat_container:
+                with st.chat_message("user"):
+                    st.write(prompt)
+            
+            # Get response
             with st.spinner("Analyzing..."):
-                st.empty()
-        
-        # Input area
-        with st.form("chat_input", clear_on_submit=True):
-            col1, col2 = st.columns([5, 1])
-            with col1:
-                user_input = st.text_input(
-                    "Message",
-                    placeholder="Ask about the failure or request a fix...",
-                    label_visibility="collapsed"
-                )
-            with col2:
-                send = st.form_submit_button("Send", use_container_width=True)
-            
-            if send and user_input:
-                asyncio.run(send_message(active_session['id'], user_input))
+                asyncio.run(send_message(session_id, prompt))
                 st.rerun()
     else:
         st.info("👈 Select a pipeline failure from the left sidebar to start analyzing")
@@ -355,12 +334,3 @@ with details_col:
                     st.success(f"✓ Fix applied")
         else:
             st.text("No fixes applied yet")
-        
-        # Successful fixes
-        successful = active_session.get("successful_fixes", [])
-        if successful:
-            st.divider()
-            st.subheader("✅ Successful Fixes")
-            for fix in successful:
-                if isinstance(fix, dict):
-                    st.success(f"✓ {fix.get('description', 'Fix successful')}")

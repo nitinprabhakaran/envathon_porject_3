@@ -46,6 +46,7 @@ When providing solutions, format them as JSON cards wrapped in triple backticks 
   "code_changes": "optional code snippet",
   "actions": [
     {"label": "Apply Fix", "action": "apply_fix", "data": {}},
+    {"label": "Create MR", "action": "create_mr", "data": {}},
     {"label": "View Details", "action": "view_details"}
   ]
 }
