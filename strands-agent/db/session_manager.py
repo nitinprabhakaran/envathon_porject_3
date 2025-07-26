@@ -5,6 +5,7 @@ import json
 import os
 from contextlib import asynccontextmanager
 from loguru import logger
+import hashlib
 
 class SessionManager:
     def __init__(self):
@@ -43,19 +44,36 @@ class SessionManager:
             )
             
             if existing:
-                return dict(existing)
+                result = dict(existing)
+                # Parse JSON fields
+                for field in ['conversation_history', 'applied_fixes', 'successful_fixes', 'tools_called', 'user_feedback', 'webhook_data']:
+                    if field in result and isinstance(result[field], str):
+                        try:
+                            result[field] = json.loads(result[field])
+                        except:
+                            result[field] = [] if field.endswith('history') or field.endswith('fixes') or field == 'tools_called' else {}
+                return result
             
-            # Create new session
+            # Create new session with empty conversation history
             new_session = await conn.fetchrow(
                 """
-                INSERT INTO sessions (id, project_id, pipeline_id, commit_hash)
-                VALUES ($1, $2, $3, $4)
+                INSERT INTO sessions (id, project_id, pipeline_id, commit_hash, conversation_history)
+                VALUES ($1, $2, $3, $4, $5)
                 RETURNING *
                 """,
-                session_id, project_id, pipeline_id, commit_hash
+                session_id, project_id, pipeline_id, commit_hash, json.dumps([])
             )
             
-            return dict(new_session)
+            result = dict(new_session)
+            # Parse JSON fields for new session
+            for field in ['conversation_history', 'applied_fixes', 'successful_fixes', 'tools_called', 'user_feedback', 'webhook_data']:
+                if field in result and isinstance(result[field], str):
+                    try:
+                        result[field] = json.loads(result[field])
+                    except:
+                        result[field] = [] if field.endswith('history') or field.endswith('fixes') or field == 'tools_called' else {}
+            
+            return result
     
     async def get_session(self, session_id: str) -> Optional[Dict[str, Any]]:
         """Get session by ID"""
@@ -64,7 +82,19 @@ class SessionManager:
                 "SELECT * FROM sessions WHERE id = $1",
                 session_id
             )
-            return dict(row) if row else None
+            if not row:
+                return None
+                
+            result = dict(row)
+            # Parse JSON fields
+            for field in ['conversation_history', 'applied_fixes', 'successful_fixes', 'tools_called', 'user_feedback', 'webhook_data']:
+                if field in result and isinstance(result[field], str):
+                    try:
+                        result[field] = json.loads(result[field])
+                    except:
+                        result[field] = [] if field.endswith('history') or field.endswith('fixes') or field == 'tools_called' else {}
+            
+            return result
     
     async def update_conversation(
         self,
@@ -73,15 +103,38 @@ class SessionManager:
     ):
         """Add a message to conversation history"""
         async with self._get_connection() as conn:
+            # First get current conversation history
+            current = await conn.fetchval(
+                "SELECT conversation_history FROM sessions WHERE id = $1",
+                session_id
+            )
+            
+            if current:
+                if isinstance(current, str):
+                    try:
+                        history = json.loads(current)
+                    except:
+                        history = []
+                else:
+                    history = current
+            else:
+                history = []
+            
+            # Append new message
+            history.append(message)
+            
+            # Update with full history
             await conn.execute(
                 """
                 UPDATE sessions 
-                SET conversation_history = conversation_history || $2::jsonb,
+                SET conversation_history = $2::jsonb,
                     last_activity = CURRENT_TIMESTAMP
                 WHERE id = $1
                 """,
-                session_id, json.dumps([message])
+                session_id, json.dumps(history)
             )
+            
+            logger.info(f"Updated conversation for session {session_id}, history now has {len(history)} messages")
     
     async def update_metadata(
         self,
@@ -112,7 +165,7 @@ class SessionManager:
             
             if "webhook_data" in metadata:
                 await conn.execute(
-                    "UPDATE sessions SET webhook_data = $2 WHERE id = $1",
+                    "UPDATE sessions SET webhook_data = $2::jsonb WHERE id = $1",
                     session_id, json.dumps(metadata["webhook_data"])
                 )
             
@@ -154,13 +207,33 @@ class SessionManager:
         """Record an applied fix"""
         async with self._get_connection() as conn:
             fix_data["applied_at"] = datetime.utcnow().isoformat()
+            
+            # Get current fixes
+            current = await conn.fetchval(
+                "SELECT applied_fixes FROM sessions WHERE id = $1",
+                session_id
+            )
+            
+            if current:
+                if isinstance(current, str):
+                    try:
+                        fixes = json.loads(current)
+                    except:
+                        fixes = []
+                else:
+                    fixes = current
+            else:
+                fixes = []
+            
+            fixes.append(fix_data)
+            
             await conn.execute(
                 """
                 UPDATE sessions 
-                SET applied_fixes = applied_fixes || $2::jsonb
+                SET applied_fixes = $2::jsonb
                 WHERE id = $1
                 """,
-                session_id, json.dumps([fix_data])
+                session_id, json.dumps(fixes)
             )
     
     async def mark_fix_successful(
@@ -195,7 +268,6 @@ class SessionManager:
             session = await self.get_session(session_id)
             
             # Create hash of error signature
-            import hashlib
             error_hash = hashlib.sha256(error_signature.encode()).hexdigest()
             
             # Store fix
@@ -235,4 +307,16 @@ class SessionManager:
                     """
                 )
             
-            return [dict(row) for row in rows]
+            results = []
+            for row in rows:
+                result = dict(row)
+                # Parse JSON fields
+                for field in ['conversation_history', 'applied_fixes', 'successful_fixes', 'tools_called', 'user_feedback', 'webhook_data']:
+                    if field in result and isinstance(result[field], str):
+                        try:
+                            result[field] = json.loads(result[field])
+                        except:
+                            result[field] = [] if field.endswith('history') or field.endswith('fixes') or field == 'tools_called' else {}
+                results.append(result)
+            
+            return results

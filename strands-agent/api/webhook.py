@@ -74,27 +74,46 @@ async def handle_gitlab_webhook(
         commit_hash=data.get("commit", {}).get("sha")
     )
     
+    # Use the actual session ID (might be different if session already existed)
+    actual_session_id = session['id']
+    
     try:
         job_name = agent._extract_failed_job_name(data)
     except:
         job_name = "unknown"
 
-    # Store webhook data
-    await session_manager.update_metadata(session_id, {
+    # Store webhook data and metadata
+    await session_manager.update_metadata(actual_session_id, {
         "webhook_data": data,
         "failed_at": datetime.utcnow().isoformat(),
         "branch": data["object_attributes"]["ref"],
         "pipeline_source": data["object_attributes"]["source"],
         "project_name": data["project"]["name"],
         "job_name": job_name,
+        "failed_stage": agent._extract_failed_stage(data),
+        "error_type": "build_failure",  # Will be updated by analysis
+        "commit_sha": data["object_attributes"]["sha"],
     })
+    
+    # Add initial message to conversation history
+    await session_manager.update_conversation(
+        actual_session_id,
+        {
+            "role": "system",
+            "content": f"Pipeline failure detected for {data['project']['name']} pipeline #{pipeline_id}",
+            "timestamp": datetime.utcnow().isoformat()
+        }
+    )
     
     # Trigger analysis
     try:
         analysis_result = await agent.analyze_failure(
-            session_id=session_id,
+            session_id=actual_session_id,
             webhook_data=data
         )
+        
+        # The agent.analyze_failure already updates conversation history
+        # but we should ensure cards are included in the response
         
         # Post comment to GitLab
         if analysis_result.get("cards"):
@@ -104,15 +123,32 @@ async def handle_gitlab_webhook(
         
         return {
             "status": "success",
-            "session_id": session_id,
+            "session_id": actual_session_id,
             "analysis": analysis_result
         }
         
     except Exception as e:
-        logger.error(f"Analysis failed: {e}")
+        logger.error(f"Analysis failed: {e}", exc_info=True)
+        
+        # Add error to conversation history
+        await session_manager.update_conversation(
+            actual_session_id,
+            {
+                "role": "assistant",
+                "content": f"Failed to analyze pipeline: {str(e)}",
+                "cards": [{
+                    "type": "error",
+                    "title": "Analysis Failed",
+                    "content": f"Failed to analyze pipeline: {str(e)}",
+                    "actions": [{"label": "Retry", "action": "retry_analysis"}]
+                }],
+                "timestamp": datetime.utcnow().isoformat()
+            }
+        )
+        
         return {
             "status": "error",
-            "session_id": session_id,
+            "session_id": actual_session_id,
             "error": str(e)
         }
 
