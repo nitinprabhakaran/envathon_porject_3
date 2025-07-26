@@ -160,3 +160,20 @@ cicd-failure-assistant/
     ├── setup.sh
     └── test_webhook.py
 ```
+
+```bash
+docker exec -it gitlab-runner gitlab-runner register \
+  --non-interactive \
+  --url "http://gitlab:80" \
+  --registration-token "1FKfcPPeEmn945zXaTu6" \
+  --description "colima-docker-runner" \
+  --tag-list "docker,python,java,javascript" \
+  --run-untagged="true" \
+  --locked="false" \
+  --executor "docker" \
+  --description "Host IP Runner" \
+  --docker-image "alpine:latest" \
+  --docker-privileged=true \
+  --docker-network-mode "envathon_project_setup_devops-network"
+
+```
