@@ -12,7 +12,7 @@ from typing import Dict, Any, List
 GITLAB_GROUP_NAME = "envathon"
 SONARQUBE_QUALITY_GATE_NAME = "envathon-gate"
 # Use the Docker service name for container-to-container communication
-WEBHOOK_TARGET_BASE_URL = "http://webhook-handler:8001/webhooks"
+WEBHOOK_TARGET_BASE_URL = "http://strands-agent:8000/webhook"
 
 # Define the projects to be created
 # Using triple single quotes ''' for file content to avoid conflicts with double quotes inside the code.
@@ -257,13 +257,13 @@ SHARED_CI_TEMPLATE = {
 # Shared CI/CD templates for all projects in the envathon group
 
 variables:
-  DOCKER_HOST: tcp://docker:2376
-  DOCKER_TLS_CERTDIR: "/certs"
-  DOCKER_TLS_VERIFY: 1
-  DOCKER_CERT_PATH: "$DOCKER_TLS_CERTDIR/client"
+  variables:
+  DOCKER_HOST: tcp://docker:2375
+  DOCKER_TLS_CERTDIR: ""
+  DOCKER_DRIVER: overlay2
   SONAR_USER_HOME: "${CI_PROJECT_DIR}/.sonar"
   GIT_DEPTH: "0"
-
+  
 .docker-build-template:
   image: docker:24.0.5
   stage: build

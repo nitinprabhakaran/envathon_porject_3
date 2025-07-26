@@ -1,39 +1,40 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 import os
 from dotenv import load_dotenv
+from loguru import logger
 
 from api.webhook import webhook_router
 from api.routes import api_router
 from db.models import init_db
 from vector.qdrant_client import init_vector_db
-from mcp.integrated_runner import MCPManager
 
 load_dotenv()
 
-# Global MCP manager instance
-mcp_manager = None
-
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    """Application lifespan management"""
     # Startup
-    print("Initializing database...")
-    await init_db()
+    logger.info("Starting CI/CD Failure Assistant...")
     
-    print("Initializing vector database...")
-    await init_vector_db()
-    
-    print("Starting MCP servers...")
-    global mcp_manager
-    mcp_manager = MCPManager()
-    await mcp_manager.start()
+    try:
+        logger.info("Initializing database...")
+        await init_db()
+        
+        logger.info("Initializing vector database...")
+        await init_vector_db()
+        
+        logger.info("Application started successfully")
+        
+    except Exception as e:
+        logger.error(f"Failed to initialize application: {e}")
+        raise
     
     yield
     
     # Shutdown
-    print("Stopping MCP servers...")
-    await mcp_manager.stop()
+    logger.info("Shutting down application...")
 
 app = FastAPI(
     title="CI/CD Failure Analysis Agent",
@@ -54,14 +55,20 @@ app.add_middleware(
 app.include_router(webhook_router, prefix="/webhook", tags=["webhooks"])
 app.include_router(api_router, prefix="/api", tags=["api"])
 
+@app.get("/")
+async def root():
+    return {
+        "name": "CI/CD Failure Analysis Agent",
+        "version": "1.0.0",
+        "status": "operational"
+    }
+
 @app.get("/health")
 async def health_check():
     return {
         "status": "healthy",
-        "mcp_servers": {
-            "gitlab": mcp_manager.gitlab_healthy if mcp_manager else False,
-            "sonarqube": mcp_manager.sonar_healthy if mcp_manager else False
-        }
+        "database": "connected",
+        "vector_db": "connected"
     }
 
 if __name__ == "__main__":

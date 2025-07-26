@@ -2,7 +2,7 @@
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 
 -- Sessions table
-CREATE TABLE sessions (
+CREATE TABLE IF NOT EXISTS sessions (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     project_id VARCHAR(255) NOT NULL,
     pipeline_id VARCHAR(255) NOT NULL,
@@ -26,13 +26,14 @@ CREATE TABLE sessions (
     -- Metadata
     tokens_used INTEGER DEFAULT 0,
     tools_called JSONB DEFAULT '[]',
-    user_feedback JSONB DEFAULT '{}'
+    user_feedback JSONB DEFAULT '{}',
+    webhook_data JSONB DEFAULT '{}'
 );
 
 -- Historical fixes table
-CREATE TABLE historical_fixes (
+CREATE TABLE IF NOT EXISTS historical_fixes (
     id SERIAL PRIMARY KEY,
-    session_id UUID REFERENCES sessions(id),
+    session_id UUID REFERENCES sessions(id) ON DELETE CASCADE,
     error_signature_hash VARCHAR(64),
     fix_description TEXT,
     fix_type VARCHAR(50),
@@ -43,9 +44,9 @@ CREATE TABLE historical_fixes (
 );
 
 -- Learning feedback table
-CREATE TABLE agent_feedback (
+CREATE TABLE IF NOT EXISTS agent_feedback (
     id SERIAL PRIMARY KEY,
-    session_id UUID REFERENCES sessions(id),
+    session_id UUID REFERENCES sessions(id) ON DELETE CASCADE,
     interaction_type VARCHAR(50),
     interaction_data JSONB,
     outcome VARCHAR(20),
@@ -54,12 +55,11 @@ CREATE TABLE agent_feedback (
 );
 
 -- Indexes for performance
-CREATE INDEX idx_sessions_project_id ON sessions(project_id);
-CREATE INDEX idx_sessions_pipeline_id ON sessions(pipeline_id);
-CREATE INDEX idx_sessions_status ON sessions(status);
-CREATE INDEX idx_sessions_expires_at ON sessions(expires_at);
-CREATE INDEX idx_historical_fixes_signature ON historical_fixes(error_signature_hash);
-CREATE INDEX idx_historical_fixes_project ON historical_fixes(project_context);
+CREATE INDEX IF NOT EXISTS idx_sessions_project_id ON sessions(project_id);
+CREATE INDEX IF NOT EXISTS idx_sessions_pipeline_id ON sessions(pipeline_id);
+CREATE INDEX IF NOT EXISTS idx_sessions_status ON sessions(status);
+CREATE INDEX IF NOT EXISTS idx_sessions_expires_at ON sessions(expires_at);
+CREATE INDEX IF NOT EXISTS idx_historical_fixes_signature ON historical_fixes(error_signature_hash);
 
 -- Function to update last_activity
 CREATE OR REPLACE FUNCTION update_last_activity()
@@ -71,6 +71,7 @@ END;
 $$ LANGUAGE plpgsql;
 
 -- Trigger to auto-update last_activity
+DROP TRIGGER IF EXISTS update_session_activity ON sessions;
 CREATE TRIGGER update_session_activity
 BEFORE UPDATE ON sessions
 FOR EACH ROW

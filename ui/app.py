@@ -154,7 +154,7 @@ async def main():
             st.divider()
             
             st.subheader("⏱️ Session Info")
-            created = datetime.fromisoformat(active_session.get("created_at", ""))
+            created = datetime.fromisoformat(active_session.get("created_at", datetime.now().isoformat()))
             st.text(f"Started: {created.strftime('%H:%M')}")
             st.text(f"Duration: {calculate_duration(created)}")
             

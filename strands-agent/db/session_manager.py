@@ -4,6 +4,7 @@ from datetime import datetime, timedelta
 import json
 import os
 from contextlib import asynccontextmanager
+from loguru import logger
 
 class SessionManager:
     def __init__(self):
@@ -12,7 +13,7 @@ class SessionManager:
     
     async def _get_pool(self):
         if not self._pool:
-            self._pool = await asyncpg.create_pool(self.db_url)
+            self._pool = await asyncpg.create_pool(self.db_url, min_size=1, max_size=10)
         return self._pool
     
     @asynccontextmanager
@@ -30,13 +31,15 @@ class SessionManager:
     ) -> Dict[str, Any]:
         """Create a new session or return existing one"""
         async with self._get_connection() as conn:
-            # Try to get existing session
+            # Try to get existing active session for this pipeline
             existing = await conn.fetchrow(
                 """
                 SELECT * FROM sessions 
-                WHERE id = $1 OR (project_id = $2 AND pipeline_id = $3 AND status = 'active')
+                WHERE pipeline_id = $1 AND project_id = $2 AND status = 'active'
+                ORDER BY created_at DESC
+                LIMIT 1
                 """,
-                session_id, project_id, pipeline_id
+                pipeline_id, project_id
             )
             
             if existing:
@@ -87,7 +90,7 @@ class SessionManager:
     ):
         """Update session metadata"""
         async with self._get_connection() as conn:
-            # Update specific fields based on metadata keys
+            # Update specific fields
             if "error_signature" in metadata:
                 await conn.execute(
                     "UPDATE sessions SET error_signature = $2 WHERE id = $1",
@@ -104,6 +107,12 @@ class SessionManager:
                 await conn.execute(
                     "UPDATE sessions SET error_type = $2 WHERE id = $1",
                     session_id, metadata["error_type"]
+                )
+            
+            if "webhook_data" in metadata:
+                await conn.execute(
+                    "UPDATE sessions SET webhook_data = $2 WHERE id = $1",
+                    session_id, json.dumps(metadata["webhook_data"])
                 )
     
     async def add_applied_fix(
@@ -174,7 +183,7 @@ class SessionManager:
             return fix_id
     
     async def get_active_sessions(self, project_id: Optional[str] = None) -> List[Dict[str, Any]]:
-        """Get all active sessions, optionally filtered by project"""
+        """Get all active sessions"""
         async with self._get_connection() as conn:
             if project_id:
                 rows = await conn.fetch(
@@ -196,14 +205,3 @@ class SessionManager:
                 )
             
             return [dict(row) for row in rows]
-    
-    async def cleanup_expired_sessions(self):
-        """Clean up expired sessions"""
-        async with self._get_connection() as conn:
-            await conn.execute(
-                """
-                UPDATE sessions 
-                SET status = 'expired' 
-                WHERE expires_at < CURRENT_TIMESTAMP AND status = 'active'
-                """
-            )

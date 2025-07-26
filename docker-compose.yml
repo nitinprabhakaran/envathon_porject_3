@@ -124,6 +124,10 @@ services:
 
         # Webhook settings for failure assistant
         gitlab_rails['webhook_timeout'] = 60
+        gitlab_rails['trusted_proxies'] = ['127.0.0.1', '172.0.0.0/8']
+        gitlab_rails['outbound_local_requests_whitelist'] = ['0.0.0.0/0', '::/0']
+        gitlab_rails['allow_local_requests_from_web_hooks_and_services'] = true
+        gitlab_rails['allow_local_requests_from_system_hooks'] = true
     depends_on:
       postgres-gitlab:
         condition: service_healthy
@@ -160,6 +164,8 @@ services:
       DOCKER_TLS_CERTDIR: ""
       CI_SERVER_URL: http://gitlab:80
       DOCKER_DRIVER: overlay2
+      DOCKER_TLS_VERIFY: "false"
+      DOCKER_CERT_PATH: ""
     networks:
       - devops-network
     restart: unless-stopped
@@ -199,7 +205,7 @@ services:
     volumes:
       - qdrant_data:/qdrant/storage
     environment:
-      - QDRANT__SERVICE__GRPC_PORT="6334"
+      - QDRANT__SERVICE__GRPC_PORT=6334
     networks:
       - devops-network
     

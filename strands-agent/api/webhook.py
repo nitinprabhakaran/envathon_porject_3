@@ -3,7 +3,9 @@ from typing import Dict, Any, Optional
 import hmac
 import hashlib
 import json
+import os
 from datetime import datetime
+from loguru import logger
 
 from agent.core import CICDFailureAgent
 from db.session_manager import SessionManager
@@ -17,7 +19,7 @@ session_manager = SessionManager()
 def verify_gitlab_token(token: str, body: bytes, gitlab_token: str) -> bool:
     """Verify GitLab webhook token"""
     if not gitlab_token:
-        return True  # Skip verification if no token configured
+        return True
     
     expected = hmac.new(
         gitlab_token.encode(),
@@ -34,13 +36,14 @@ async def handle_gitlab_webhook(
 ):
     """Handle GitLab pipeline failure webhooks"""
     
-    # Get raw body for signature verification
+    # Get raw body
     body = await request.body()
     
     # Verify webhook token
-    gitlab_token = request.app.state.settings.get("GITLAB_WEBHOOK_TOKEN")
-    if gitlab_token and not verify_gitlab_token(x_gitlab_token, body, gitlab_token):
-        raise HTTPException(status_code=401, detail="Invalid webhook token")
+    gitlab_webhook_token = os.getenv("GITLAB_WEBHOOK_TOKEN")
+    if gitlab_webhook_token and x_gitlab_token:
+        if not verify_gitlab_token(x_gitlab_token, body, gitlab_webhook_token):
+            raise HTTPException(status_code=401, detail="Invalid webhook token")
     
     # Parse webhook data
     try:
@@ -49,50 +52,46 @@ async def handle_gitlab_webhook(
         raise HTTPException(status_code=400, detail="Invalid JSON payload")
     
     # Check if this is a pipeline failure event
-    if data.get("object_kind") != "pipeline" or data.get("object_attributes", {}).get("status") != "failed":
-        return {"status": "ignored", "reason": "Not a pipeline failure event"}
+    if data.get("object_kind") != "pipeline":
+        return {"status": "ignored", "reason": "Not a pipeline event"}
+    
+    if data.get("object_attributes", {}).get("status") != "failed":
+        return {"status": "ignored", "reason": "Not a failure event"}
     
     # Extract key information
-    project_id = data["project"]["id"]
-    pipeline_id = data["object_attributes"]["id"]
+    project_id = str(data["project"]["id"])
+    pipeline_id = str(data["object_attributes"]["id"])
+    
+    # Create session ID using UUID
+    import uuid
+    session_id = str(uuid.uuid4())
     
     # Create or get session
-    session_id = f"{project_id}_{pipeline_id}"
     session = await session_manager.create_or_get_session(
         session_id=session_id,
-        project_id=str(project_id),
-        pipeline_id=str(pipeline_id),
+        project_id=project_id,
+        pipeline_id=pipeline_id,
         commit_hash=data.get("commit", {}).get("sha")
     )
     
-    # Store initial failure context
+    # Store webhook data
     await session_manager.update_metadata(session_id, {
         "webhook_data": data,
         "failed_at": datetime.utcnow().isoformat()
     })
     
-    # Get MCP manager from app state
-    mcp_manager = request.app.state.mcp_manager
-    
     # Trigger analysis
     try:
         analysis_result = await agent.analyze_failure(
             session_id=session_id,
-            webhook_data=data,
-            mcp_manager=mcp_manager
+            webhook_data=data
         )
         
-        # Post initial comment to GitLab
+        # Post comment to GitLab
         if analysis_result.get("cards"):
             comment = format_gitlab_comment(analysis_result)
-            await mcp_manager.gitlab_call(
-                "add_pipeline_comment",
-                {
-                    "project_id": project_id,
-                    "pipeline_id": pipeline_id,
-                    "comment": comment
-                }
-            )
+            # This would use GitLab API to post comment
+            logger.info(f"Would post comment to pipeline {pipeline_id}")
         
         return {
             "status": "success",
@@ -101,6 +100,7 @@ async def handle_gitlab_webhook(
         }
         
     except Exception as e:
+        logger.error(f"Analysis failed: {e}")
         return {
             "status": "error",
             "session_id": session_id,
@@ -122,12 +122,12 @@ def format_gitlab_comment(analysis_result: Dict[str, Any]) -> str:
     for card in analysis_result.get("cards", []):
         if card["type"] == "analysis":
             comment_parts.append(f"### {card['title']}")
-            comment_parts.append(card['content'])
+            comment_parts.append(card.get('content', ''))
         elif card["type"] == "solution":
             comment_parts.append(f"\n### 💡 {card['title']}")
             comment_parts.append(f"**Confidence:** {card.get('confidence', 'N/A')}%")
             comment_parts.append(f"**Estimated Time:** {card.get('estimated_time', 'Unknown')}")
-            comment_parts.append(f"\n{card['content']}")
+            comment_parts.append(f"\n{card.get('content', '')}")
     
     comment_parts.append(f"\n---\n*Session ID: `{session_id}` | Continue conversation in the UI*")
     
