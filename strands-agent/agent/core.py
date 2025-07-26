@@ -68,7 +68,6 @@ class CICDFailureAgent:
             system_prompt=SYSTEM_PROMPT,
             tools=self._get_minimal_tools(),
             conversation_manager=conversation_manager,
-            max_parallel_tools=3,  # Control parallelism
             load_tools_from_directory=False  # Explicit control
         )
     
