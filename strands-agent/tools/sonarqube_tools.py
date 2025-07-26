@@ -23,20 +23,33 @@ async def get_sonar_client():
         timeout=30.0
     )
 
-def get_sonar_project_key(project_id: Optional[str] = None) -> str:
+async def get_sonar_project_key(project_id: Optional[str] = None) -> str:
     """Get SonarQube project key from GitLab project ID"""
     if not project_id:
         # Try to get from context
         try:
             from strands import Agent
-            # This is a workaround - in production, use proper context passing
-            project_id = "default"
+            current_agent = getattr(Agent, '_current_instance', None)
+            if current_agent and hasattr(current_agent, 'session_state'):
+                project_id = current_agent.session_state.get("project_id")
         except:
             project_id = "default"
     
-    # Assuming SonarQube project key follows pattern: group_projectname
-    # This should match your GitLab project setup
-    return f"envathon_{project_id}"
+    # Get project details from GitLab to get the project name
+    from .gitlab_tools import get_gitlab_client
+    async with await get_gitlab_client() as client:
+        try:
+            response = await client.get(f"/projects/{project_id}")
+            response.raise_for_status()
+            project_data = response.json()
+            project_name = project_data.get("name", project_id)
+            
+            # Return SonarQube project key format
+            return f"envathon_{project_name}"
+        except Exception as e:
+            logger.warning(f"Failed to get project name from GitLab: {e}")
+            # Fallback to project ID
+            return f"envathon_project_{project_id}"
 
 @tool
 async def get_project_quality_status(project_id: Optional[str] = None) -> Dict[str, Any]:
@@ -48,7 +61,7 @@ async def get_project_quality_status(project_id: Optional[str] = None) -> Dict[s
     Returns:
         Project quality status including quality gate, metrics, and ratings
     """
-    project_key = get_sonar_project_key(project_id)
+    project_key = await get_sonar_project_key(project_id)
     
     async with await get_sonar_client() as client:
         try:
@@ -97,7 +110,7 @@ async def get_code_quality_issues(
     Returns:
         List of code quality issues with details
     """
-    project_key = get_sonar_project_key(project_id)
+    project_key = await get_sonar_project_key(project_id)
     
     async with await get_sonar_client() as client:
         try:
@@ -156,7 +169,7 @@ async def get_security_vulnerabilities(project_id: Optional[str] = None) -> List
     )
     
     # Get security hotspots as well
-    project_key = get_sonar_project_key(project_id)
+    project_key = await get_sonar_project_key(project_id)
     
     async with await get_sonar_client() as client:
         try:

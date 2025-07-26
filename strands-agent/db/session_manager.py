@@ -89,6 +89,7 @@ class SessionManager:
         metadata: Dict[str, Any]
     ):
         """Update session metadata"""
+        logger.info(f"update_metadata called with: {metadata}")
         async with self._get_connection() as conn:
             # Update specific fields
             if "error_signature" in metadata:
@@ -113,6 +114,36 @@ class SessionManager:
                 await conn.execute(
                     "UPDATE sessions SET webhook_data = $2 WHERE id = $1",
                     session_id, json.dumps(metadata["webhook_data"])
+                )
+            
+            if "branch" in metadata:
+                await conn.execute(
+                    "UPDATE sessions SET branch = $2 WHERE id = $1",
+                    session_id, metadata["branch"]
+                )
+
+            if "pipeline_source" in metadata:
+                await conn.execute(
+                    "UPDATE sessions SET pipeline_source = $2 WHERE id = $1",
+                    session_id, metadata["pipeline_source"]
+                )
+
+            if "commit_sha" in metadata:
+                await conn.execute(
+                    "UPDATE sessions SET commit_sha = $2 WHERE id = $1",
+                    session_id, metadata["commit_sha"]
+                )
+
+            if "job_name" in metadata:
+                await conn.execute(
+                    "UPDATE sessions SET job_name = $2 WHERE id = $1",
+                    session_id, metadata["job_name"]
+                )
+
+            if "project_name" in metadata:
+                await conn.execute(
+                    "UPDATE sessions SET project_name = $2 WHERE id = $1",
+                    session_id, metadata["project_name"]
                 )
     
     async def add_applied_fix(

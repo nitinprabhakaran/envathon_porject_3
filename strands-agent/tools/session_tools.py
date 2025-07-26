@@ -8,6 +8,23 @@ from datetime import datetime
 from db.session_manager import SessionManager
 from vector.qdrant_client import QdrantManager
 
+def get_current_session_id() -> Optional[str]:
+    """Get session ID from current agent context"""
+    try:
+        # Try to get from tool's execution context
+        import inspect
+        frame = inspect.currentframe()
+        while frame:
+            frame_locals = frame.f_locals
+            if 'self' in frame_locals:
+                agent = frame_locals['self']
+                if hasattr(agent, 'session_state'):
+                    return agent.session_state.get("session_id")
+            frame = frame.f_back
+    except:
+        pass
+    return None
+
 @tool
 async def get_session_context(session_id: Optional[str] = None) -> Dict[str, Any]:
     """Get full session context and history
@@ -19,13 +36,10 @@ async def get_session_context(session_id: Optional[str] = None) -> Dict[str, Any
         Full session context including conversation history
     """
     if not session_id:
-        # Try to get from agent context
-        try:
-            from strands import Agent
-            # This is a workaround - in production, use proper context passing
-            session_id = "current"
-        except:
-            return {"error": "Session ID not found"}
+        session_id = get_current_session_id()
+        
+    if not session_id:
+        return {"error": "Session ID not found in context"}
     
     session_manager = SessionManager()
     session = await session_manager.get_session(session_id)
@@ -65,8 +79,10 @@ async def update_session_state(
         Update confirmation
     """
     if not session_id:
-        # Try to get from agent context
-        session_id = "current"
+        session_id = get_current_session_id()
+        
+    if not session_id:
+        return {"error": "Session ID not found in context"}
     
     session_manager = SessionManager()
     
@@ -173,7 +189,10 @@ async def store_successful_fix(
         Storage confirmation
     """
     if not session_id:
-        session_id = "current"
+        session_id = get_current_session_id()
+        
+    if not session_id:
+        return {"error": "Session ID not found in context"}
     
     session_manager = SessionManager()
     qdrant = QdrantManager()

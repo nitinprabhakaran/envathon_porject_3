@@ -74,10 +74,19 @@ async def handle_gitlab_webhook(
         commit_hash=data.get("commit", {}).get("sha")
     )
     
+    try:
+        job_name = agent._extract_failed_job_name(data)
+    except:
+        job_name = "unknown"
+
     # Store webhook data
     await session_manager.update_metadata(session_id, {
         "webhook_data": data,
-        "failed_at": datetime.utcnow().isoformat()
+        "failed_at": datetime.utcnow().isoformat(),
+        "branch": data["object_attributes"]["ref"],
+        "pipeline_source": data["object_attributes"]["source"],
+        "project_name": data["project"]["name"],
+        "job_name": job_name,
     })
     
     # Trigger analysis

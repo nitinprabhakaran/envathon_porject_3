@@ -62,14 +62,14 @@ class CICDFailureAgent:
                 region=os.getenv("AWS_REGION", "us-west-2"),
                 temperature=0.7,
                 streaming=False,
-                max_tokens=4096  # Add max_tokens to model config
+                max_tokens=4096
             )
         elif provider == "anthropic":
             model = AnthropicModel(
                 model_id=os.getenv("MODEL_ID", "claude-3-5-sonnet-20241022"),
                 api_key=os.getenv("ANTHROPIC_API_KEY"),
                 temperature=0.7,
-                max_tokens=8192  # Add max_tokens to model config
+                max_tokens=8192
             )
         else:
             raise ValueError(f"Unknown LLM provider: {provider}")
@@ -147,7 +147,12 @@ class CICDFailureAgent:
             "failed_stage": self._extract_failed_stage(webhook_data),
             "commit_message": webhook_data.get("commit", {}).get("message", ""),
             "commit_author": webhook_data.get("commit", {}).get("author", {}).get("name", ""),
-            "pipeline_url": webhook_data["object_attributes"]["url"]
+            "pipeline_url": webhook_data["object_attributes"]["url"],
+            "branch": webhook_data["object_attributes"]["ref"], 
+            "pipeline_source": webhook_data["object_attributes"]["source"],
+            "commit_sha": webhook_data["object_attributes"]["sha"],
+            "job_name": self._extract_failed_job_name(webhook_data),
+            "merge_request_id": webhook_data.get("merge_request", {}).get("id") if webhook_data.get("merge_request") else None,
         }
         
         logger.info(f"Failure context: {failure_context}")
@@ -155,37 +160,39 @@ class CICDFailureAgent:
         # Store context in agent's session state
         self.agent.session_state = {
             "session_id": session_id,
-            "project_id": webhook_data["project"]["id"],
-            "pipeline_id": webhook_data["object_attributes"]["id"],
+            "project_id": str(webhook_data["project"]["id"]),
+            "pipeline_id": str(webhook_data["object_attributes"]["id"]),
             "failure_context": failure_context
         }
         
         # Run the agent
         try:
             logger.info("Invoking Strands agent for analysis")
-            # Run the agent
-            logger.info("Invoking Strands agent for analysis")
             
-            # Create a prompt that includes the project_id explicitly
+            # Create a prompt that includes all context explicitly
             prompt = f"""Analyze this CI/CD pipeline failure and provide actionable recommendations:
                 
-                Session ID: {session_id}
-                Project ID: {webhook_data['project']['id']}
-                Project Name: {failure_context['project_name']}
-                Pipeline ID: {failure_context['pipeline_id']}
-                Failed Stage: {failure_context['failed_stage']}
-                Commit: {failure_context['commit_message']}
-                
-                IMPORTANT: When using GitLab tools, always pass project_id="{webhook_data['project']['id']}" as a parameter.
-                
-                Please:
-                1. First check session context for any previous conversation
-                2. Use GitLab tools to get pipeline details and logs (remember to pass project_id)
-                3. Use SonarQube tools to check for quality issues
-                4. Search for similar historical errors
-                5. Provide specific, actionable fixes with confidence scores
-                6. Format response for UI cards with action buttons
-                """
+Session ID: {session_id}
+Project ID: {webhook_data['project']['id']}
+Project Name: {failure_context['project_name']}
+Pipeline ID: {failure_context['pipeline_id']}
+Failed Stage: {failure_context['failed_stage']}
+Commit: {failure_context['commit_message']}
+
+IMPORTANT: When using tools, always pass these parameters explicitly:
+- For GitLab tools: project_id="{webhook_data['project']['id']}"
+- For session tools: session_id="{session_id}"
+- For analysis tools: pipeline_id="{failure_context['pipeline_id']}", project_id="{webhook_data['project']['id']}"
+
+Please:
+1. First check session context using get_session_context(session_id="{session_id}")
+2. Use GitLab tools to get pipeline details and logs (remember to pass project_id)
+3. Use SonarQube tools to check for quality issues (pass project_id)
+4. Search for similar historical errors
+5. Provide specific, actionable fixes with confidence scores
+6. Format response for UI cards with action buttons
+7. Store successful fixes using store_successful_fix with session_id="{session_id}"
+"""
             
             response = self.agent(prompt)
             logger.info("Agent analysis completed successfully")
@@ -250,19 +257,28 @@ class CICDFailureAgent:
         # Set context
         self.agent.session_state = {
             "session_id": session_id,
-            "project_id": session["project_id"],
-            "pipeline_id": session["pipeline_id"]
+            "project_id": str(session["project_id"]),
+            "pipeline_id": str(session["pipeline_id"])
         }
         
         # Run agent
         response = self.agent(
             f"""Continue the conversation for session {session_id}.
             
-            User message: {user_message}
-            
-            Previous conversation context is available via get_session_context tool.
-            Consider what was already discussed and tried.
-            """
+User message: {user_message}
+
+Context:
+- Session ID: {session_id}
+- Project ID: {session["project_id"]}  
+- Pipeline ID: {session["pipeline_id"]}
+
+Remember to always pass these IDs explicitly to tools:
+- For session tools: session_id="{session_id}"
+- For GitLab/SonarQube tools: project_id="{session["project_id"]}"
+
+Previous conversation context is available via get_session_context(session_id="{session_id}").
+Consider what was already discussed and tried.
+"""
         )
         
         # Update session
@@ -326,3 +342,11 @@ class CICDFailureAgent:
         if match:
             return float(match.group(1)) / 100.0
         return 0.7
+    
+    def _extract_failed_job_name(self, webhook_data: Dict[str, Any]) -> str:
+        """Extract the failed job name from webhook data"""
+        builds = webhook_data.get("builds", [])
+        for build in builds:
+            if build.get("status") == "failed":
+                return build.get("name", "unknown")
+        return "unknown"
