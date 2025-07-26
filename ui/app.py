@@ -87,14 +87,19 @@ async def fetch_sessions():
     return sessions
 
 async def load_session(session_id: str):
-    """Load session data from API"""
+    """Load complete session data from API"""
     session_data = await st.session_state.api_client.get_session(session_id)
-    # If data is wrapped in metadata, unwrap it
-    if 'metadata' in session_data and isinstance(session_data['metadata'], dict):
-        # Merge metadata into session_data
-        session_data.update(session_data['metadata'])
+    
+    # Debug logging
+    print(f"Loading session {session_id}, received data:")
+    print(f"  project_id: {session_data.get('project_id')}")
+    print(f"  pipeline_id: {session_data.get('pipeline_id')}")
+    print(f"  conversation_history length: {len(session_data.get('conversation_history', []))}")
+    
+    # Update the tabs with complete session data
     st.session_state.pipeline_tabs.update_session(session_id, session_data)
     st.session_state.selected_session_id = session_id
+    st.session_state.pipeline_tabs.set_active(session_id)
 
 async def send_message(session_id: str, message: str):
     """Send a message to the agent"""
@@ -124,6 +129,11 @@ async def send_message(session_id: str, message: str):
 def calculate_duration(start_time: datetime) -> str:
     """Calculate duration from start time"""
     now = datetime.now(timezone.utc)
+    if isinstance(start_time, str):
+        try:
+            start_time = datetime.fromisoformat(start_time.replace('Z', '+00:00'))
+        except:
+            return "N/A"
     if start_time.tzinfo is None:
         start_time = start_time.replace(tzinfo=timezone.utc)
     duration = now - start_time
@@ -141,10 +151,18 @@ with col3:
     if st.button("🔄 Refresh", key="refresh_btn"):
         st.rerun()
 
-# Fetch sessions data
-if st.button("Load Sessions", key="load_sessions_btn"):
+# Check for session_id parameter in URL
+query_params = st.query_params
+if "session" in query_params:
+    session_id = query_params["session"]
+    # Load this specific session
+    if session_id not in [s['id'] for s in st.session_state.sessions_data]:
+        # Add to sessions data and load it
+        asyncio.run(load_session(session_id))
+
+# Auto-load sessions on startup
+if not st.session_state.sessions_data:
     with st.spinner("Loading sessions..."):
-        st.session_state.sessions_data = []  # Clear first
         st.session_state.sessions_data = asyncio.run(fetch_sessions())
 
 # Main layout
@@ -154,72 +172,102 @@ sidebar_col, main_col, details_col = st.columns([2, 5, 2])
 with sidebar_col:
     st.subheader("📋 Pipeline Failures")
     
+    # Refresh button
+    if st.button("🔄 Refresh Sessions", key="refresh_sessions_btn", use_container_width=True):
+        with st.spinner("Refreshing..."):
+            st.session_state.sessions_data = asyncio.run(fetch_sessions())
+            st.rerun()
+    
+    st.divider()
+    
     # Display sessions
     seen_ids = set()
     for session in st.session_state.sessions_data:
-        if not session.get('project_id') or not session.get('pipeline_id'):
+        session_id = session.get('id')
+        if not session_id or session_id in seen_ids:
             continue
-        if session['id'] in seen_ids:
-            continue
-        seen_ids.add(session['id'])
-
+        seen_ids.add(session_id)
+        
+        # Get project and pipeline info
+        project_id = session.get('project_id', 'Unknown')
+        pipeline_id = session.get('pipeline_id', 'Unknown')
+        project_name = session.get('project_name', f'Project {project_id}')
+        
         status_icon = "🔴" if session.get("status") == "active" else "✅"
         unread = session.get("unread_count", 0)
         badge = f"({unread})" if unread > 0 else ""
         
         # Create unique key for each button
-        button_key = f"pipeline_{session['id']}"
-        project_id = session.get('project_id', 'Unknown')
-        pipeline_id = session.get('pipeline_id', 'Unknown')
-        project_name = session.get('project_name', f'project-{project_id}')
+        button_key = f"pipeline_{session_id}"
         button_label = f"{status_icon} {project_name}#{pipeline_id} {badge}"
         
-        if st.button(button_label, key=button_key, use_container_width=True):
-            asyncio.run(load_session(session['id']))
-            st.session_state.pipeline_tabs.set_active(session['id'])
+        # Highlight active session
+        is_active = st.session_state.selected_session_id == session_id
+        
+        if st.button(
+            button_label, 
+            key=button_key, 
+            use_container_width=True,
+            type="primary" if is_active else "secondary"
+        ):
+            asyncio.run(load_session(session_id))
             st.rerun()
 
 # Main Content - Active Conversation
 with main_col:
     active_session = st.session_state.pipeline_tabs.get_active()
-    st.write("Debug - Active session:", active_session)
     
     if active_session:
+        # Extract session details
         project_name = active_session.get('project_name', active_session.get('project_id', 'Unknown'))
         pipeline_id = active_session.get('pipeline_id', 'Unknown')
         branch = active_session.get('branch', 'N/A')
         source = active_session.get('pipeline_source', 'N/A')
+        pipeline_url = active_session.get('pipeline_url')
 
         st.subheader(f"Pipeline {pipeline_id} - {project_name}")
-        st.caption(f"Branch: {branch} | Source: {source} | Job: {active_session.get('job_name', 'N/A')}")
+        
+        # Pipeline info with link
+        info_cols = st.columns(4)
+        with info_cols[0]:
+            st.caption(f"**Branch:** {branch}")
+        with info_cols[1]:
+            st.caption(f"**Source:** {source}")
+        with info_cols[2]:
+            st.caption(f"**Job:** {active_session.get('job_name', 'N/A')}")
+        with info_cols[3]:
+            if pipeline_url:
+                st.caption(f"[View in GitLab →]({pipeline_url})")
+        
+        st.divider()
         
         # Conversation history
         chat_container = st.container()
         with chat_container:
             conversation_history = active_session.get("conversation_history", [])
-            # Handle if conversation_history is a string (JSON)
-            if isinstance(conversation_history, str):
-                try:
-                    conversation_history = json.loads(conversation_history)
-                except:
-                    conversation_history = []
             
-            for msg in conversation_history:
-                if isinstance(msg, dict) and msg.get("role") == "user":
-                    st.markdown(
-                        f'<div class="chat-message user-message"><strong>You:</strong><br>{msg["content"]}</div>',
-                        unsafe_allow_html=True
-                    )
-                elif isinstance(msg, dict) and msg.get("role") == "assistant":
-                    # Render cards if present
-                    if "cards" in msg and msg["cards"]:
-                        for card in msg["cards"]:
-                            render_card(card, active_session)
-                    else:
-                        st.markdown(
-                            f'<div class="chat-message assistant-message"><strong>Assistant:</strong><br>{msg.get("content", "")}</div>',
-                            unsafe_allow_html=True
-                        )
+            if not conversation_history:
+                st.info("No conversation history yet. The agent should analyze the failure soon...")
+            else:
+                for msg in conversation_history:
+                    if isinstance(msg, dict):
+                        if msg.get("role") == "user":
+                            st.markdown(
+                                f'<div class="chat-message user-message"><strong>You:</strong><br>{msg["content"]}</div>',
+                                unsafe_allow_html=True
+                            )
+                        elif msg.get("role") == "assistant":
+                            # Show assistant message content if no cards
+                            if msg.get("content") and not msg.get("cards"):
+                                st.markdown(
+                                    f'<div class="chat-message assistant-message"><strong>Assistant:</strong><br>{msg["content"]}</div>',
+                                    unsafe_allow_html=True
+                                )
+                            
+                            # Render cards if present
+                            if "cards" in msg and msg["cards"]:
+                                for card in msg["cards"]:
+                                    render_card(card, active_session)
         
         # Show loading spinner if waiting for response
         if st.session_state.is_loading:
@@ -242,7 +290,9 @@ with main_col:
                 asyncio.run(send_message(active_session['id'], user_input))
                 st.rerun()
     else:
-        st.info("Select a pipeline failure from the left sidebar to start analyzing")
+        st.info("👈 Select a pipeline failure from the left sidebar to start analyzing")
+        if st.session_state.sessions_data:
+            st.caption(f"Found {len(st.session_state.sessions_data)} active sessions")
 
 # Right Sidebar - Context Panel
 with details_col:
@@ -254,25 +304,19 @@ with details_col:
         failed_stage = active_session.get("failed_stage", "N/A")
         error_type = active_session.get("error_type", "N/A")
         
-        # Check webhook_data for additional info
-        webhook_data = active_session.get("webhook_data", {})
-        if isinstance(webhook_data, str):
-            try:
-                webhook_data = json.loads(webhook_data)
-            except:
-                webhook_data = {}
+        # Status metrics
+        col1, col2 = st.columns(2)
+        with col1:
+            st.metric("Status", status.title())
+        with col2:
+            st.metric("Stage", failed_stage)
         
-        # Try to get failed stage from webhook data if not in session
-        if failed_stage == "N/A" and webhook_data:
-            builds = webhook_data.get("builds", [])
-            for build in builds:
-                if build.get("status") == "failed":
-                    failed_stage = build.get("stage", "N/A")
-                    break
+        st.metric("Error Type", error_type.replace("_", " ").title())
         
-        st.metric("Status", status)
-        st.metric("Failed Stage", failed_stage)
-        st.metric("Error Type", error_type)
+        # Error signature if available
+        if error_sig := active_session.get("error_signature"):
+            with st.expander("Error Signature"):
+                st.code(error_sig[:200] + "..." if len(error_sig) > 200 else error_sig)
         
         st.divider()
         
@@ -283,8 +327,13 @@ with details_col:
                 created = datetime.fromisoformat(created.replace('Z', '+00:00'))
             except:
                 created = datetime.now(timezone.utc)
+        
         st.text(f"Started: {created.strftime('%H:%M')}")
         st.text(f"Duration: {calculate_duration(created)}")
+        
+        # Session ID (for debugging)
+        with st.expander("Session ID"):
+            st.code(active_session.get('id', 'N/A'))
         
         st.divider()
         
@@ -298,7 +347,20 @@ with details_col:
         
         if fixes:
             for fix in fixes:
-                fix_type = fix.get('type', 'Fix') if isinstance(fix, dict) else 'Fix'
-                st.success(f"✓ {fix_type}")
+                if isinstance(fix, dict):
+                    fix_type = fix.get('type', fix.get('fix_type', 'Fix'))
+                    fix_desc = fix.get('description', 'Applied')
+                    st.success(f"✓ {fix_type}: {fix_desc}")
+                else:
+                    st.success(f"✓ Fix applied")
         else:
             st.text("No fixes applied yet")
+        
+        # Successful fixes
+        successful = active_session.get("successful_fixes", [])
+        if successful:
+            st.divider()
+            st.subheader("✅ Successful Fixes")
+            for fix in successful:
+                if isinstance(fix, dict):
+                    st.success(f"✓ {fix.get('description', 'Fix successful')}")
