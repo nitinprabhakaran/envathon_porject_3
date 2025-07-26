@@ -1,0 +1,17 @@
+FROM gitlab/gitlab-runner:latest
+
+# Install additional tools if needed
+RUN apt-get update && apt-get install -y \
+    curl \
+    git \
+    jq \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy any custom scripts or configurations
+# COPY scripts/ /scripts/
+
+# Set permissions
+RUN chmod +x /usr/bin/gitlab-runner
+
+ENTRYPOINT ["/usr/bin/dumb-init", "/entrypoint"]
+CMD ["run", "--user=gitlab-runner", "--working-directory=/home/gitlab-runner"]

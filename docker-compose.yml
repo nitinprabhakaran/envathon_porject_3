@@ -1,0 +1,285 @@
+version: '3.8'
+
+services:
+  # Infrastructure Services
+  postgres-gitlab:
+    image: postgres:16-alpine
+    container_name: postgres-gitlab
+    environment:
+      POSTGRES_USER: gitlab
+      POSTGRES_PASSWORD: gitlab123
+      POSTGRES_DB: gitlabhq_production
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U gitlab"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    volumes:
+      - postgres_gitlab_data:/var/lib/postgresql/data
+    networks:
+      - devops-network
+    restart: unless-stopped
+
+  postgres-sonar:
+    image: postgres:16-alpine
+    container_name: postgres-sonar
+    environment:
+      POSTGRES_USER: sonar
+      POSTGRES_PASSWORD: sonar123
+      POSTGRES_DB: sonarqube
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U sonar"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    volumes:
+      - postgres_sonar_data:/var/lib/postgresql/data
+    networks:
+      - devops-network
+    restart: unless-stopped
+
+  postgres-assistant:
+    image: postgres:15
+    platform: linux/arm64
+    container_name: postgres-assistant
+    environment:
+      POSTGRES_DB: cicd_assistant
+      POSTGRES_USER: ${DB_USER:-cicd_user}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-secure_password}
+    volumes:
+      - postgres_assistant_data:/var/lib/postgresql/data
+      - ./init.sql:/docker-entrypoint-initdb.d/init.sql
+    ports:
+      - "5433:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-cicd_user}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - devops-network
+
+  redis:
+    image: redis:alpine
+    container_name: redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - devops-network
+
+  # GitLab
+  gitlab:
+    image: yrzr/gitlab-ce-arm64v8:18.0.4-ce.0
+    container_name: gitlab
+    hostname: 'gitlab'
+    ports:
+      - "8080:80"
+      - "2222:22"
+    environment:
+      GITLAB_OMNIBUS_CONFIG: |
+        external_url 'http://gitlab:80'
+        nginx['listen_port'] = 80
+        gitlab_rails['gitlab_shell_ssh_port'] = 2222
+        gitlab_rails['initial_root_password'] = 'Nitin3011'
+        
+        # Disable container registry to avoid certificate issues
+        registry['enable'] = false
+        gitlab_rails['registry_enabled'] = false
+        
+        # CI/CD settings
+        gitlab_ci['gitlab_ci_all_broken_builds'] = false
+        gitlab_ci['gitlab_ci_disable_validates_dependencies'] = true
+        
+        # External PostgreSQL configuration
+        gitlab_rails['db_adapter'] = 'postgresql'
+        gitlab_rails['db_host'] = 'postgres-gitlab'
+        gitlab_rails['db_port'] = 5432
+        gitlab_rails['db_username'] = 'gitlab'
+        gitlab_rails['db_password'] = 'gitlab123'
+        gitlab_rails['db_database'] = 'gitlabhq_production'
+        postgresql['enable'] = false
+        gitlab_rails['auto_migrate'] = true
+        
+        # Performance optimizations
+        puma['worker_processes'] = 2
+        sidekiq['max_concurrency'] = 5
+        postgresql['shared_buffers'] = "256MB"
+        
+        # Disable unnecessary features
+        prometheus_monitoring['enable'] = false
+        alertmanager['enable'] = false
+        registry['enable'] = false
+        gitlab_pages['enable'] = false
+        gitlab_kas['enable'] = false
+        mattermost['enable'] = false
+        
+        # Redis configuration
+        redis['enable'] = false
+        gitlab_rails['redis_host'] = 'redis'
+        gitlab_rails['redis_port'] = 6379
+
+        # Webhook settings for failure assistant
+        gitlab_rails['webhook_timeout'] = 60
+    depends_on:
+      postgres-gitlab:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    volumes:
+      - gitlab_config:/etc/gitlab
+      - gitlab_logs:/var/log/gitlab
+      - gitlab_data:/var/opt/gitlab
+    networks:
+      - devops-network
+    restart: unless-stopped
+
+  gitlab-runner:
+    build:
+      context: .
+      dockerfile: Dockerfile.gitlab-runner
+    container_name: gitlab-runner
+    platform: linux/arm64
+    privileged: true
+    dns:
+      - 8.8.8.8
+      - 1.1.1.1
+    depends_on:
+      gitlab:
+        condition: service_started
+    volumes:
+      - gitlab_runner_config:/etc/gitlab-runner
+      - /var/run/docker.sock:/var/run/docker.sock:rw
+      - /Users/nitin/.colima:/colima:ro
+      - /Users/nitin/Envathon_Project_Setup:/builds:rw
+    environment:
+      DOCKER_HOST: unix:///var/run/docker.sock
+      DOCKER_TLS_CERTDIR: ""
+      CI_SERVER_URL: http://gitlab:80
+      DOCKER_DRIVER: overlay2
+    networks:
+      - devops-network
+    restart: unless-stopped
+    user: "0:0"
+
+  # SonarQube
+  sonarqube:
+    image: sonarqube:9.9-community
+    platform: linux/amd64
+    container_name: sonarqube
+    ports:
+      - "9001:9000"
+    environment:
+      SONAR_ES_BOOTSTRAP_CHECKS_DISABLE: "true"
+      SONAR_JDBC_URL: jdbc:postgresql://postgres-sonar:5432/sonarqube
+      SONAR_JDBC_USERNAME: sonar
+      SONAR_JDBC_PASSWORD: sonar123
+    volumes:
+      - sonarqube_data:/opt/sonarqube/data
+      - sonarqube_extensions:/opt/sonarqube/extensions
+      - sonarqube_logs:/opt/sonarqube/logs
+    depends_on:
+      postgres-sonar:
+        condition: service_healthy
+    networks:
+      - devops-network
+    restart: unless-stopped
+
+  # CI/CD Failure Assistant Services
+  qdrant:
+    image: qdrant/qdrant:latest
+    platform: linux/arm64
+    container_name: qdrant
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+    volumes:
+      - qdrant_data:/qdrant/storage
+    environment:
+      - QDRANT__SERVICE__GRPC_PORT="6334"
+    networks:
+      - devops-network
+    
+  strands-agent:
+    build:
+      context: ./strands-agent
+      dockerfile: Dockerfile
+      platforms:
+        - linux/arm64
+    container_name: strands-agent
+    depends_on:
+      postgres-assistant:
+        condition: service_healthy
+      qdrant:
+        condition: service_started
+      gitlab:
+        condition: service_started
+      sonarqube:
+        condition: service_started
+    environment:
+      - DATABASE_URL=postgresql://${DB_USER:-cicd_user}:${DB_PASSWORD:-secure_password}@postgres-assistant:5432/cicd_assistant
+      - QDRANT_URL=http://qdrant:6333
+      - LLM_PROVIDER=${LLM_PROVIDER:-bedrock}
+      - MODEL_ID=${MODEL_ID:-anthropic.claude-v2}
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
+      - AWS_SESSION_TOKEN=${AWS_SESSION_TOKEN}
+      - AWS_REGION=${AWS_REGION:-us-east-1}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - GITLAB_URL=http://gitlab:80
+      - GITLAB_TOKEN=${GITLAB_TOKEN}
+      - SONAR_HOST_URL=http://sonarqube:9000
+      - SONAR_TOKEN=${SONAR_TOKEN}
+      - SESSION_TIMEOUT_HOURS=4
+      - MAX_TOKENS_PER_SESSION=50000
+      - LOG_LEVEL=INFO
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./logs:/app/logs
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks:
+      - devops-network
+    
+  streamlit-ui:
+    build:
+      context: ./ui
+      dockerfile: Dockerfile
+      platforms:
+        - linux/arm64
+    container_name: streamlit-ui
+    depends_on:
+      - strands-agent
+    environment:
+      - STRANDS_API_URL=http://strands-agent:8000
+    ports:
+      - "8501:8501"
+    volumes:
+      - ./ui:/app
+    networks:
+      - devops-network
+
+networks:
+  devops-network:
+    driver: bridge
+    driver_opts:
+      com.docker.network.bridge.enable_icc: "true"
+      com.docker.network.bridge.enable_ip_masquerade: "true"
+      com.docker.network.driver.mtu: "1500"
+
+volumes:
+  gitlab_config:
+  gitlab_logs:
+  gitlab_data:
+  gitlab_runner_config:
+  sonarqube_data:
+  sonarqube_extensions:
+  sonarqube_logs:
+  redis_data:
+  postgres_gitlab_data:
+  postgres_sonar_data:
+  postgres_assistant_data:
+  qdrant_data:
