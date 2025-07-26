@@ -74,9 +74,11 @@ if "last_refresh" not in st.session_state:
     st.session_state.last_refresh = None
 
 @st.cache_data(ttl=10)
-async def fetch_sessions_cached():
+def fetch_sessions_cached():
     """Fetch active sessions with caching"""
-    return await st.session_state.api_client.get_active_sessions()
+    async def _fetch():
+        return await st.session_state.api_client.get_active_sessions()
+    return asyncio.run(_fetch())
 
 async def load_session(session_id: str):
     """Load complete session data from API"""
@@ -167,7 +169,7 @@ if "session" in query_params:
 now = time.time()
 if not st.session_state.sessions_data or (st.session_state.last_refresh and now - st.session_state.last_refresh > 30):
     with st.spinner("Loading sessions..."):
-        st.session_state.sessions_data = asyncio.run(fetch_sessions_cached())
+        st.session_state.sessions_data = fetch_sessions_cached()
         st.session_state.last_refresh = now
 
 # Main layout
@@ -181,7 +183,7 @@ with sidebar_col:
     if st.button("🔄 Refresh Sessions", key="refresh_sessions_btn", use_container_width=True):
         with st.spinner("Refreshing..."):
             st.cache_data.clear()
-            st.session_state.sessions_data = asyncio.run(fetch_sessions_cached())
+            st.session_state.sessions_data = fetch_sessions_cached()
             st.session_state.last_refresh = time.time()
             st.rerun()
     
