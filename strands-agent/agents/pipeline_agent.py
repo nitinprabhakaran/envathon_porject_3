@@ -61,11 +61,13 @@ class PipelineAgent:
             self.model = BedrockModel(
                 region=settings.aws_region,
                 access_key_id=settings.aws_access_key_id,
-                secret_access_key=settings.aws_secret_access_key
+                secret_access_key=settings.aws_secret_access_key,
+                model_kwargs={"max_tokens": 4096}
             )
         else:
             self.model = AnthropicModel(
-                api_key=settings.anthropic_api_key
+                api_key=settings.anthropic_api_key,
+                model_kwargs={"max_tokens": 4096}
             )
         
         # Initialize agent with tools
@@ -82,6 +84,9 @@ class PipelineAgent:
             ]
         )
         log.info("Pipeline agent initialized")
+        
+        # Debug: Check available methods
+        log.info(f"Agent methods: {[m for m in dir(self.agent) if not m.startswith('_')]}")
     
     async def analyze_failure(
         self,
@@ -122,7 +127,7 @@ Use the available tools to:
 Remember: Do NOT create a merge request. Only analyze and propose solutions."""
         
         # Run analysis
-        response = await self.agent.invoke(prompt)
+        response = await self.agent.invoke_async(prompt)
         log.info(f"Analysis complete for session {session_id}")
         return response
     
@@ -158,6 +163,6 @@ Use the create_merge_request tool with the exact file changes we discussed."""
         else:
             prompt = message
         
-        response = await self.agent.invoke(prompt)
+        response = await self.agent.arun(prompt)
         log.debug(f"Generated response for session {session_id}")
         return response

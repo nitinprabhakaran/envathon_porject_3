@@ -70,11 +70,13 @@ class QualityAgent:
             self.model = BedrockModel(
                 region=settings.aws_region,
                 access_key_id=settings.aws_access_key_id,
-                secret_access_key=settings.aws_secret_access_key
+                secret_access_key=settings.aws_secret_access_key,
+                model_kwargs={"max_tokens": 4096}
             )
         else:
             self.model = AnthropicModel(
-                api_key=settings.anthropic_api_key
+                api_key=settings.anthropic_api_key,
+                model_kwargs={"max_tokens": 4096}
             )
         
         # Initialize agent with tools
@@ -122,7 +124,7 @@ Important:
 - Use project_id="{gitlab_project_id}" for GitLab API calls
 - Do NOT create a merge request, only analyze and propose fixes"""
         
-        response = await self.agent.invoke(prompt)
+        response = await self.agent.invoke_async(prompt)
         log.info(f"Quality analysis complete for session {session_id}")
         return response
     
@@ -158,6 +160,6 @@ Use the create_merge_request tool with the exact file changes we discussed."""
         else:
             prompt = message
         
-        response = await self.agent.invoke(prompt)
+        response = await self.agent.invoke_async(prompt)
         log.debug(f"Generated quality response for session {session_id}")
         return response
