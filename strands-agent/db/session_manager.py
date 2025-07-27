@@ -57,8 +57,8 @@ class SessionManager:
             # Create new session with empty conversation history and ACTIVE status
             new_session = await conn.fetchrow(
                 """
-                INSERT INTO sessions (id, project_id, pipeline_id, commit_sha, conversation_history, status)
-                VALUES ($1, $2, $3, $4, $5, 'active')
+                INSERT INTO sessions (id, project_id, pipeline_id, commit_sha, conversation_history, status, session_type)
+                VALUES ($1, $2, $3, $4, $5, 'active', 'pipeline')
                 RETURNING *
                 """,
                 session_id, project_id, pipeline_id, commit_hash, json.dumps([])
@@ -74,6 +74,57 @@ class SessionManager:
                         result[field] = [] if field.endswith('history') or field.endswith('fixes') or field == 'tools_called' else {}
             
             return result
+    
+    async def create_quality_session(
+        self,
+        session_id: str,
+        project_id: str,
+        project_name: str,
+        quality_gate_status: str = "ERROR"
+    ) -> Dict[str, Any]:
+        """Create a new quality analysis session"""
+        async with self._get_connection() as conn:
+            new_session = await conn.fetchrow(
+                """
+                INSERT INTO sessions (id, project_id, project_name, session_type, 
+                                    quality_gate_status, conversation_history, status)
+                VALUES ($1, $2, $3, 'quality', $4, $5, 'active')
+                RETURNING *
+                """,
+                session_id, project_id, project_name, quality_gate_status, json.dumps([])
+            )
+            
+            result = dict(new_session)
+            # Parse JSON fields
+            for field in ['conversation_history', 'applied_fixes', 'successful_fixes', 'tools_called', 'user_feedback', 'webhook_data']:
+                if field in result and isinstance(result[field], str):
+                    try:
+                        result[field] = json.loads(result[field])
+                    except:
+                        result[field] = [] if field.endswith('history') or field.endswith('fixes') or field == 'tools_called' else {}
+            
+            return result
+    
+    async def update_quality_metrics(
+        self,
+        session_id: str,
+        total_issues: int,
+        critical_issues: int,
+        major_issues: int
+    ):
+        """Update quality metrics for a session"""
+        async with self._get_connection() as conn:
+            await conn.execute(
+                """
+                UPDATE sessions 
+                SET total_issues = $2,
+                    critical_issues = $3,
+                    major_issues = $4,
+                    last_activity = CURRENT_TIMESTAMP
+                WHERE id = $1
+                """,
+                session_id, total_issues, critical_issues, major_issues
+            )
     
     async def get_session(self, session_id: str) -> Optional[Dict[str, Any]]:
         """Get session by ID"""
@@ -170,7 +221,10 @@ class SessionManager:
                 "job_name": "job_name",
                 "project_name": "project_name",
                 "merge_request_id": "merge_request_id",
-                "pipeline_url": "pipeline_url"
+                "pipeline_url": "pipeline_url",
+                "project_key": "project_id",  # For SonarQube
+                "analyzed_at": "last_activity",
+                "quality_conditions": "webhook_data"
             }
             
             for key, value in metadata.items():
@@ -285,7 +339,7 @@ class SessionManager:
             # Debug: First check what's in the database
             debug_rows = await conn.fetch(
                 """
-                SELECT id, status, expires_at, created_at, project_id, pipeline_id 
+                SELECT id, status, expires_at, created_at, project_id, pipeline_id, session_type 
                 FROM sessions 
                 ORDER BY created_at DESC 
                 LIMIT 5
@@ -293,7 +347,7 @@ class SessionManager:
             )
             logger.info(f"Debug - Recent sessions: {[dict(r) for r in debug_rows]}")
             
-            # Main query - remove the expires_at check temporarily for debugging
+            # Main query
             if project_id:
                 rows = await conn.fetch(
                     """
@@ -327,62 +381,3 @@ class SessionManager:
                 results.append(result)
             
             return results
-    
-    async def create_quality_session(
-        self,
-        session_id: str,
-        project_id: str,
-        project_name: str,
-        quality_gate_status: str = "ERROR"
-    ) -> Dict[str, Any]:
-        """Create a new quality analysis session"""
-        async with self._get_connection() as conn:
-            new_session = await conn.fetchrow(
-                """
-                INSERT INTO sessions (id, project_id, project_name, session_type, 
-                                    quality_gate_status, conversation_history, status)
-                VALUES ($1, $2, $3, 'quality', $4, $5, 'active')
-                RETURNING *
-                """,
-                session_id, project_id, project_name, quality_gate_status, json.dumps([])
-            )
-            
-            result = dict(new_session)
-            # Parse JSON fields
-            for field in ['conversation_history', 'applied_fixes', 'successful_fixes', 'tools_called', 'user_feedback', 'webhook_data']:
-                if field in result and isinstance(result[field], str):
-                    try:
-                        result[field] = json.loads(result[field])
-                    except:
-                        result[field] = [] if field.endswith('history') or field.endswith('fixes') or field == 'tools_called' else {}
-            
-            return result
-    
-    async def update_quality_metrics(
-        self,
-        session_id: str,
-        total_issues: int,
-        critical_issues: int,
-        major_issues: int
-    ):
-        """Update quality metrics for a session"""
-        async with self._get_connection() as conn:
-            await conn.execute(
-                """
-                UPDATE sessions 
-                SET total_issues = $2,
-                    critical_issues = $3,
-                    major_issues = $4,
-                    last_activity = CURRENT_TIMESTAMP
-                WHERE id = $1
-                """,
-                session_id, total_issues, critical_issues, major_issues
-            )
-    
-    async def create_or_get_session(
-        self,
-        session_id: str,
-        project_id: str,
-        pipeline_id: str,
-        commit_hash: Optional[str] = None
-    ) -> Dict[str, Any]:
