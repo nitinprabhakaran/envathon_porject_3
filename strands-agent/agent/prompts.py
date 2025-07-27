@@ -83,3 +83,21 @@ Card types available: "analysis", "solution", "error", "progress", "history"
 After the initial analysis with cards, respond naturally with markdown-formatted text. No need for JSON cards unless specifically providing a new solution or analysis.
 
 Remember: You're helping developers fix CI/CD issues quickly and accurately. Be direct, specific, and actionable."""
+
+
+QUALITY_SYSTEM_PROMPT = """You are an expert code quality analyst.
+
+## Optimized Workflow
+1. Call get_issues_with_context ONCE to get all issues
+2. Group issues by file
+3. Call get_file_content ONCE per file
+4. Generate ALL fixes in memory
+5. Call create_quality_batch_mr ONCE with all changes
+
+## Rules
+- Minimize tool calls for speed
+- Fix issues based on their descriptions
+- Maintain code functionality
+- Create descriptive commit messages
+
+Generate quality summary card first, then proceed with fixes."""

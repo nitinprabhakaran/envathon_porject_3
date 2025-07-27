@@ -291,3 +291,37 @@ async def add_pipeline_comment(pipeline_id: str, comment: str, project_id: Optio
         except Exception as e:
             logger.error(f"Failed to add comment: {e}")
             return {"error": str(e)}
+
+@tool
+async def get_project_by_name(project_name: str) -> Optional[Dict[str, Any]]:
+    """Get GitLab project by name
+    
+    Args:
+        project_name: Project name to search for
+    
+    Returns:
+        Project details including ID
+    """
+    async with await get_gitlab_client() as client:
+        try:
+            # Search for project by name
+            response = await client.get(
+                "/projects",
+                params={"search": project_name, "simple": True}
+            )
+            response.raise_for_status()
+            
+            projects = response.json()
+            # Find exact match
+            for project in projects:
+                if project.get("name") == project_name:
+                    return {
+                        "id": str(project["id"]),
+                        "name": project["name"],
+                        "path_with_namespace": project.get("path_with_namespace")
+                    }
+            
+            return None
+        except Exception as e:
+            logger.error(f"Failed to get project by name: {e}")
+            return None

@@ -7,6 +7,7 @@ from loguru import logger
 
 from agent.quality_agent import QualityAnalysisAgent
 from db.session_manager import SessionManager
+from tools.gitlab_tools import get_project_by_name
 
 sonarqube_router = APIRouter()
 
@@ -128,3 +129,57 @@ async def run_quality_analysis(session_id: str, webhook_data: Dict[str, Any]):
                 "timestamp": datetime.utcnow().isoformat()
             }
         )
+
+async def handle_sonarqube_webhook(request: Request):
+    """Handle SonarQube quality gate failure webhooks"""
+    
+    # Parse webhook data
+    try:
+        data = await request.json()
+    except Exception as e:
+        logger.error(f"Failed to parse SonarQube webhook: {e}")
+        raise HTTPException(status_code=400, detail="Invalid JSON payload")
+    
+    # Check if quality gate failed
+    quality_gate = data.get("qualityGate", {})
+    if quality_gate.get("status") != "ERROR":
+        return {"status": "ignored", "reason": "Quality gate passed"}
+    
+    # Extract project information
+    project = data.get("project", {})
+    project_key = project.get("key", "")
+    project_name = project.get("name", "Unknown")
+    
+    # Extract actual project name from SonarQube key
+    if project_key.startswith("envathon_"):
+        actual_project_name = project_key[9:]  # Remove prefix
+    else:
+        actual_project_name = project_name
+    
+    # Look up GitLab project ID dynamically
+    gitlab_project = await get_project_by_name(actual_project_name)
+    if not gitlab_project:
+        logger.error(f"Could not find GitLab project for {actual_project_name}")
+        gitlab_project_id = actual_project_name  # Fallback
+    else:
+        gitlab_project_id = gitlab_project["id"]
+    
+    # Create session
+    session_id = str(uuid.uuid4())
+    
+    # Create quality session
+    session = await session_manager.create_quality_session(
+        session_id=session_id,
+        project_id=gitlab_project_id,
+        project_name=project_name,
+        quality_gate_status=quality_gate.get("status", "ERROR")
+    )
+    
+    # Store webhook data with both IDs
+    await session_manager.update_metadata(session_id, {
+        "webhook_data": data,
+        "sonarqube_project_key": project_key,
+        "gitlab_project_id": gitlab_project_id,
+        "analyzed_at": data.get("analysedAt"),
+        "branch": data.get("branch", {}).get("name", "main"),
+    })
