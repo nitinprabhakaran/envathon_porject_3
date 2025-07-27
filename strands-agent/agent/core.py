@@ -151,6 +151,16 @@ class CICDFailureAgent:
             "pipeline_id": str(webhook_data["object_attributes"]["id"]),
             "failure_context": failure_context
         }
+
+        failed_jobs = failure_context.get("all_failed_jobs", [])
+        if len(failed_jobs) > 1:
+            prompt = f"""Analyze this pipeline failure:
+        
+        Pipeline #{failure_context['pipeline_id']} has multiple failed jobs:
+        {', '.join([f"{job['name']} ({job['stage']})" for job in failed_jobs])}
+        Project: {failure_context['project_name']} (ID: {webhook_data['project']['id']})
+        
+        Investigate all failed jobs and provide solutions."""
         
         # Optimized prompt for minimal tool usage
         prompt = f"""Analyze this pipeline failure:

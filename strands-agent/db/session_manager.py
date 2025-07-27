@@ -1,3 +1,4 @@
+from importlib import metadata
 import asyncpg
 from typing import Dict, Any, Optional, List
 from datetime import datetime, timedelta
@@ -205,6 +206,11 @@ class SessionManager:
     ):
         """Update session metadata"""
         logger.info(f"update_metadata called with: {list(metadata.keys())}")
+
+        # Handle all_failed_jobs specially
+        if "all_failed_jobs" in metadata:
+            metadata["all_failed_jobs"] = json.dumps(metadata["all_failed_jobs"])
+            
         async with self._get_connection() as conn:
             # Build update query dynamically
             update_fields = []

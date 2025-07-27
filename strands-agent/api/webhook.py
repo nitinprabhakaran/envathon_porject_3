@@ -107,22 +107,78 @@ async def handle_gitlab_webhook(
     project_id = str(data["project"]["id"])
     pipeline_id = str(data["object_attributes"]["id"])
     webhook_key = f"{project_id}:{pipeline_id}"
+    
+    # Extract current failed job info
+    current_failed_job = None
+    for build in data.get("builds", []):
+        if build.get("status") == "failed":
+            current_failed_job = {
+                "name": build.get("name", "unknown"),
+                "stage": build.get("stage", "unknown"),
+                "id": build.get("id"),
+                "failure_reason": build.get("failure_reason")
+            }
+            break
 
-    # Check if we recently processed this
+    # Check if we recently processed this pipeline
     if webhook_key in recent_webhooks:
-        last_processed = recent_webhooks[webhook_key]
-        if (datetime.utcnow() - last_processed).seconds < 60:  # Within 60 seconds
-            return {"status": "duplicate", "message": "Recently processed"}
+        # Find existing session
+        existing_sessions = await session_manager.get_active_sessions(project_id)
+        for session in existing_sessions:
+            if session.get("pipeline_id") == pipeline_id and session.get("status") == "active":
+                # Update existing session with new failed job
+                session_id = str(session["id"])
+                
+                # Get current failed jobs list
+                all_failed_jobs = session.get("all_failed_jobs", [])
+                if isinstance(all_failed_jobs, str):
+                    try:
+                        all_failed_jobs = json.loads(all_failed_jobs)
+                    except:
+                        all_failed_jobs = []
+                
+                # Add new failed job if not already tracked
+                if current_failed_job and not any(
+                    job.get("id") == current_failed_job["id"] 
+                    for job in all_failed_jobs
+                ):
+                    all_failed_jobs.append(current_failed_job)
+                    
+                    # Update metadata
+                    await session_manager.update_metadata(session_id, {
+                        "all_failed_jobs": all_failed_jobs,
+                        "last_updated": datetime.utcnow().isoformat()
+                    })
+                    
+                    # Add notification to conversation
+                    await session_manager.update_conversation(
+                        session_id,
+                        {
+                            "role": "system",
+                            "content": f"Additional job failed: {current_failed_job['name']} in {current_failed_job['stage']} stage",
+                            "timestamp": datetime.utcnow().isoformat()
+                        }
+                    )
+                    
+                    # Trigger additional analysis
+                    asyncio.create_task(analyze_additional_failure(session_id, current_failed_job, data))
+                
+                return {
+                    "status": "updated",
+                    "session_id": session_id,
+                    "message": f"Added failed job to existing session",
+                    "ui_url": f"http://localhost:8501/?session={session_id}"
+                }
     
     recent_webhooks[webhook_key] = datetime.utcnow()
     
-    # Create session ID using UUID
+    # Create new session for first failure
     import uuid
     session_id = str(uuid.uuid4())
     
     await update_progress(session_id, "initializing", 5, "Creating session...")
     
-    # Create or get session - THIS IS KEY
+    # Create or get session
     session = await session_manager.create_or_get_session(
         session_id=session_id,
         project_id=project_id,
@@ -130,33 +186,25 @@ async def handle_gitlab_webhook(
         commit_hash=data.get("commit", {}).get("sha")
     )
     
-    # Use the actual session ID (might be different if session already existed)
+    # Use the actual session ID
     actual_session_id = session['id']
     
     await update_progress(actual_session_id, "processing", 10, "Storing metadata...")
     
-    # Extract failed job info
-    failed_job_name = "unknown"
-    failed_stage = "unknown"
-    for build in data.get("builds", []):
-        if build.get("status") == "failed":
-            failed_job_name = build.get("name", "unknown")
-            failed_stage = build.get("stage", "unknown")
-            break
-    
-    # Store webhook data and metadata - IMPORTANT: Set all required fields
+    # Store webhook data and metadata with all failed jobs
     await session_manager.update_metadata(actual_session_id, {
         "webhook_data": data,
         "failed_at": datetime.utcnow().isoformat(),
         "branch": data["object_attributes"]["ref"],
         "pipeline_source": data["object_attributes"]["source"],
         "project_name": data["project"]["name"],
-        "job_name": failed_job_name,
-        "failed_stage": failed_stage,
+        "job_name": current_failed_job["name"] if current_failed_job else "unknown",
+        "failed_stage": current_failed_job["stage"] if current_failed_job else "unknown",
         "error_type": "build_failure",
         "commit_sha": data["object_attributes"]["sha"],
         "pipeline_url": data["object_attributes"]["url"],
-        "error_signature": f"Pipeline {pipeline_id} failed at {failed_stage} stage"
+        "error_signature": f"Pipeline {pipeline_id} failed",
+        "all_failed_jobs": [current_failed_job] if current_failed_job else []
     })
     
     # Add initial message to conversation history
@@ -181,6 +229,48 @@ async def handle_gitlab_webhook(
         "message": "Analysis started in background",
         "ui_url": f"http://localhost:8501/?session={actual_session_id}"
     }
+
+async def analyze_additional_failure(session_id: str, failed_job: Dict[str, Any], webhook_data: Dict[str, Any]):
+    """Analyze additional failed job"""
+    try:
+        # Get session
+        session = await session_manager.get_session(session_id)
+        if not session:
+            return
+        
+        # Prepare context for agent
+        agent.session_state = {
+            "session_id": session_id,
+            "project_id": str(session["project_id"]),
+            "pipeline_id": str(session["pipeline_id"])
+        }
+        
+        # Ask agent to analyze the additional failure
+        prompt = f"""An additional job has failed in the same pipeline:
+
+Job: {failed_job['name']} 
+Stage: {failed_job['stage']}
+Failure reason: {failed_job.get('failure_reason', 'Unknown')}
+
+Analyze this additional failure and provide solutions."""
+        
+        response_text = ""
+        async for event in agent.agent.stream_async(prompt):
+            if "data" in event:
+                response_text += event["data"]
+        
+        # Store response
+        await session_manager.update_conversation(
+            session_id,
+            {
+                "role": "assistant",
+                "content": response_text,
+                "timestamp": datetime.utcnow().isoformat()
+            }
+        )
+        
+    except Exception as e:
+        logger.error(f"Additional analysis failed: {e}", exc_info=True)
 
 async def run_analysis_with_progress(session_id: str, webhook_data: Dict[str, Any]):
     """Run analysis with progress updates"""
