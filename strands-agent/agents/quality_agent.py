@@ -92,13 +92,6 @@ class QualityAgent:
             get_project_info
         ]
         
-        # Initialize base agent
-        self.base_agent = Agent(
-            model=self.model,
-            system_prompt=QUALITY_SYSTEM_PROMPT,
-            tools=self.tools
-        )
-        
         log.info("Quality agent initialized")
     
     async def analyze_quality_issues(
@@ -129,16 +122,20 @@ Important:
 - Use project_id="{gitlab_project_id}" for GitLab API calls
 - Do NOT create a merge request, only analyze and propose fixes"""
         
-        result = await self.base_agent.invoke_async(prompt)
+        # Create fresh agent for analysis
+        agent = Agent(
+            model=self.model,
+            system_prompt=QUALITY_SYSTEM_PROMPT,
+            tools=self.tools
+        )
+        
+        result = await agent.invoke_async(prompt)
         log.info(f"Quality analysis complete for session {session_id}")
         
-        # Extract response text
+        # Extract text from result
         if hasattr(result, 'message'):
             return result.message
-        elif hasattr(result, 'content'):
-            return result.content
-        else:
-            return str(result)
+        return str(result)
     
     async def handle_user_message(
         self,
@@ -150,55 +147,40 @@ Important:
         """Handle user message in conversation"""
         log.info(f"Handling user message for quality session {session_id}")
         
-        # Build conversation messages
-        messages = []
-        
-        # Add all previous messages
+        # Prepare context from conversation history
+        context_text = ""
         for msg in conversation_history:
             if msg["role"] == "system":
-                # Include system messages as context in first user message
-                if not messages:
-                    messages.append({
-                        "role": "user",
-                        "content": f"[Context: {msg['content']}]"
-                    })
-            elif msg["role"] in ["user", "assistant"]:
-                messages.append({
-                    "role": msg["role"],
-                    "content": msg["content"]
-                })
+                context_text += f"{msg['content']}\n"
+            elif msg["role"] == "assistant" and msg["content"]:
+                context_text += f"Previous analysis:\n{msg['content']}\n"
         
-        # Create agent with conversation history
-        agent_with_history = Agent(
-            model=self.model,
-            system_prompt=QUALITY_SYSTEM_PROMPT,
-            tools=self.tools,
-            messages=messages
-        )
-        
-        # Check if user wants to create MR
+        # Build final prompt with context
         if "create" in message.lower() and ("mr" in message.lower() or "merge request" in message.lower()):
-            # Generate branch name
             timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
             branch_name = f"sonarqube_agent_fix_{timestamp}"
             
-            prompt = f"""The user wants to create a merge request with the quality fixes.
+            final_prompt = f"""{context_text}
+
+The user wants to create a merge request with the quality fixes.
 
 GitLab Project ID: {context['gitlab_project_id']}
 Branch Name: {branch_name}
 
-Based on our previous analysis, create a merge request with all the fixes for the quality issues.
-Use the create_merge_request tool with the exact file changes we discussed."""
+Based on the previous analysis, create a merge request with all the fixes for the quality issues.
+Use the create_merge_request tool with the exact file changes discussed."""
         else:
-            prompt = message
+            final_prompt = f"{context_text}\n{message}" if context_text else message
         
-        result = await agent_with_history.invoke_async(prompt)
+        # Create fresh agent and invoke
+        agent = Agent(
+            model=self.model,
+            system_prompt=QUALITY_SYSTEM_PROMPT,
+            tools=self.tools
+        )
+        
+        result = await agent.invoke_async(final_prompt)
         log.debug(f"Generated response for session {session_id}")
         
-        # Extract response text
-        if hasattr(result, 'message'):
-            return result.message
-        elif hasattr(result, 'content'):
-            return result.content
-        else:
-            return str(result)
+        # Return the message directly
+        return result.message

@@ -81,29 +81,26 @@ async def send_message(session_id: str, request: MessageRequest):
                 session_id, request.message, conversation_history, context
             )
         
-        # Extract response text properly
-        if hasattr(response, 'message'):
-            response_text = response.message
-        elif hasattr(response, 'content'):
-            # Handle Anthropic response format
-            if isinstance(response.content, list) and len(response.content) > 0:
-                response_text = response.content[0].get('text', str(response.content))
-            else:
-                response_text = response.content
-        elif isinstance(response, dict):
-            if 'message' in response:
-                response_text = response['message']
-            elif 'content' in response:
-                content = response['content']
-                if isinstance(content, list) and len(content) > 0:
-                    response_text = content[0].get('text', str(content))
-                else:
-                    response_text = content
-            else:
-                response_text = str(response)
-        elif isinstance(response, str):
+        # Extract response text from agent result
+        response_text = ""
+        if isinstance(response, str):
             response_text = response
-        else:
+        elif hasattr(response, 'message'):
+            response_text = response.message
+        elif hasattr(response, 'messages') and response.messages:
+            # Extract from messages list
+            for msg in response.messages:
+                if msg.get('role') == 'assistant':
+                    content = msg.get('content', [])
+                    if isinstance(content, list):
+                        for item in content:
+                            if isinstance(item, dict) and 'text' in item:
+                                response_text += item['text']
+                    elif isinstance(content, str):
+                        response_text = content
+                    break
+        
+        if not response_text:
             response_text = str(response)
         
         # Add agent response
