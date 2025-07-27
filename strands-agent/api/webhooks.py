@@ -214,7 +214,91 @@ async def analyze_quality_issues(session_id: str, project_key: str, gitlab_proje
         )
 
 async def get_gitlab_project_id(sonarqube_key: str) -> Optional[str]:
-    """Map SonarQube project key to GitLab project ID"""
-    # In production, implement proper mapping logic
-    # For demo, return a mock ID
-    return "123"  # Replace with actual lookup
+    """Map SonarQube project key to GitLab project ID
+    
+    Strategy:
+    1. Try exact match with project path
+    2. Try match with project name
+    3. Search in group if key contains group prefix
+    """
+    from tools.gitlab import get_gitlab_client
+    
+    log.info(f"Looking up GitLab project for SonarQube key: {sonarqube_key}")
+    
+    async with await get_gitlab_client() as client:
+        try:
+            # Strategy 1: Direct lookup by path (most common case)
+            # SonarQube keys often match GitLab project paths
+            if "/" in sonarqube_key:
+                # It's a full path like "group/project"
+                encoded_path = sonarqube_key.replace("/", "%2F")
+                try:
+                    response = await client.get(f"/projects/{encoded_path}")
+                    if response.status_code == 200:
+                        project_id = str(response.json().get("id"))
+                        log.info(f"Found project by path: {sonarqube_key} -> {project_id}")
+                        return project_id
+                except:
+                    pass
+            
+            # Strategy 2: Search by name (if key is just project name)
+            search_params = {"search": sonarqube_key, "simple": "true"}
+            response = await client.get("/projects", params=search_params)
+            
+            if response.status_code == 200:
+                projects = response.json()
+                
+                # Try exact name match first
+                for project in projects:
+                    if project.get("name") == sonarqube_key:
+                        project_id = str(project.get("id"))
+                        log.info(f"Found project by exact name match: {sonarqube_key} -> {project_id}")
+                        return project_id
+                
+                # Try path_with_namespace match
+                for project in projects:
+                    if project.get("path_with_namespace", "").endswith(f"/{sonarqube_key}"):
+                        project_id = str(project.get("id"))
+                        log.info(f"Found project by path suffix: {sonarqube_key} -> {project_id}")
+                        return project_id
+                
+                # If only one result, use it
+                if len(projects) == 1:
+                    project_id = str(projects[0].get("id"))
+                    log.info(f"Found single project match: {sonarqube_key} -> {project_id}")
+                    return project_id
+            
+            # Strategy 3: If key contains underscore, try without group prefix
+            # e.g., "envathon_payment-service" -> "payment-service"
+            if "_" in sonarqube_key:
+                parts = sonarqube_key.split("_", 1)
+                if len(parts) == 2:
+                    group_name, project_name = parts
+                    
+                    # Search in specific group
+                    group_response = await client.get(f"/groups", params={"search": group_name})
+                    if group_response.status_code == 200:
+                        groups = group_response.json()
+                        for group in groups:
+                            if group.get("name").lower() == group_name.lower():
+                                group_id = group.get("id")
+                                
+                                # Get projects in this group
+                                projects_response = await client.get(
+                                    f"/groups/{group_id}/projects",
+                                    params={"search": project_name}
+                                )
+                                if projects_response.status_code == 200:
+                                    group_projects = projects_response.json()
+                                    for project in group_projects:
+                                        if project.get("name") == project_name:
+                                            project_id = str(project.get("id"))
+                                            log.info(f"Found project in group: {sonarqube_key} -> {project_id}")
+                                            return project_id
+            
+            log.error(f"Could not find GitLab project for SonarQube key: {sonarqube_key}")
+            return None
+            
+        except Exception as e:
+            log.error(f"Error looking up GitLab project: {e}")
+            return None

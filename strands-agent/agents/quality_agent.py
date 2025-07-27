@@ -69,15 +69,19 @@ class QualityAgent:
         # Initialize LLM based on provider
         if settings.llm_provider == "bedrock":
             self.model = BedrockModel(
-                region=settings.aws_region,
-                access_key_id=settings.aws_access_key_id,
-                secret_access_key=settings.aws_secret_access_key,
-                model_kwargs={"max_tokens": 4096}
+                model_id=os.getenv("MODEL_ID", "us.anthropic.claude-3-5-sonnet-20241022-v2:0"),
+                region=os.getenv("AWS_REGION", "us-west-2"),
+                temperature=0.3,
+                streaming=True,
+                max_tokens=4096,
+                top_p=0.8
             )
         else:
             self.model = AnthropicModel(
-                api_key=settings.anthropic_api_key,
-                model_kwargs={"max_tokens": 4096}
+                model_id=os.getenv("MODEL_ID", "claude-3-5-sonnet-20241022"),
+                api_key=os.getenv("ANTHROPIC_API_KEY"),
+                temperature=0.3,
+                max_tokens=4096
             )
         
         # Store tools for reuse
