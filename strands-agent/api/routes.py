@@ -74,15 +74,73 @@ def serialize_session(session: Dict[str, Any]) -> Dict[str, Any]:
 async def get_active_sessions():
     """Get all active sessions"""
     try:
+        logger.info("Fetching active sessions from database...")
         sessions = await session_manager.get_active_sessions()
+        logger.info(f"Raw sessions count: {len(sessions)}")
+        
+        if sessions:
+            logger.info(f"First session data: {sessions[0]}")
+        
         serialized_sessions = [serialize_session(session) for session in sessions]
         logger.info(f"Returning {len(serialized_sessions)} active sessions")
+        
+        # Return just the list for compatibility
         return serialized_sessions
     except Exception as e:
-        logger.error(f"Failed to get active sessions: {e}")
+        logger.error(f"Failed to get active sessions: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
-@api_router.get("/sessions/{session_id}")
+@api_router.get("/sessions/all")
+async def get_all_sessions():
+    """Get ALL sessions for debugging"""
+    try:
+        async with session_manager._get_connection() as conn:
+            rows = await conn.fetch("SELECT * FROM sessions ORDER BY created_at DESC LIMIT 10")
+            all_sessions = []
+            for row in rows:
+                session = dict(row)
+                all_sessions.append({
+                    "id": str(session.get("id")),
+                    "status": session.get("status"),
+                    "created_at": str(session.get("created_at")),
+                    "expires_at": str(session.get("expires_at")),
+                    "project_id": session.get("project_id"),
+                    "pipeline_id": session.get("pipeline_id")
+                })
+            return {
+                "total": len(all_sessions),
+                "sessions": all_sessions
+            }
+    except Exception as e:
+        logger.error(f"Failed to get all sessions: {e}")
+        return {"error": str(e)}
+
+@api_router.get("/debug/check-session/{session_id}")
+async def debug_check_session(session_id: str):
+    """Debug endpoint to check session details"""
+    try:
+        async with session_manager._get_connection() as conn:
+            # Get raw session data
+            row = await conn.fetchrow(
+                "SELECT * FROM sessions WHERE id = $1",
+                session_id
+            )
+            if row:
+                session_data = dict(row)
+                return {
+                    "found": True,
+                    "id": str(session_data.get("id")),
+                    "status": session_data.get("status"),
+                    "created_at": str(session_data.get("created_at")),
+                    "expires_at": str(session_data.get("expires_at")),
+                    "project_id": session_data.get("project_id"),
+                    "pipeline_id": session_data.get("pipeline_id"),
+                    "conversation_length": len(json.loads(session_data.get("conversation_history", "[]")))
+                }
+            else:
+                return {"found": False, "session_id": session_id}
+    except Exception as e:
+        return {"error": str(e)}
 async def get_session(session_id: str):
     """Get specific session details"""
     try:
@@ -126,7 +184,6 @@ async def apply_fix(session_id: str, request: ApplyFixRequest):
         if not session:
             raise HTTPException(status_code=404, detail="Session not found")
         
-        # Record the fix application
         await session_manager.add_applied_fix(
             session_id,
             {
@@ -137,7 +194,6 @@ async def apply_fix(session_id: str, request: ApplyFixRequest):
             }
         )
         
-        # Simulate fix application with progress
         return {
             "status": "success",
             "fix_id": request.fix_id,
@@ -193,7 +249,6 @@ sonar-scan-job:
         
         branch_name = fix_data.get("branch", f"fix/pipeline-{session_id[:8]}")
         
-        # Create the MR using GitLab tools
         result = await create_merge_request(
             title=f"Fix: Add Maven build step before Docker build",
             description=f"""## 🔧 Pipeline Fix
@@ -220,7 +275,6 @@ Session: `{session_id}`""",
         if "error" in result:
             raise HTTPException(status_code=500, detail=result["error"])
         
-        # Update session with MR info
         await session_manager.add_applied_fix(
             session_id,
             {

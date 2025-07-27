@@ -91,7 +91,7 @@ async def handle_gitlab_webhook(
     
     await update_progress(session_id, "initializing", 5, "Creating session...")
     
-    # Create or get session
+    # Create or get session - THIS IS KEY
     session = await session_manager.create_or_get_session(
         session_id=session_id,
         project_id=project_id,
@@ -104,22 +104,28 @@ async def handle_gitlab_webhook(
     
     await update_progress(actual_session_id, "processing", 10, "Storing metadata...")
     
-    try:
-        job_name = agent._extract_failed_job_name(data)
-    except:
-        job_name = "unknown"
-
-    # Store webhook data and metadata
+    # Extract failed job info
+    failed_job_name = "unknown"
+    failed_stage = "unknown"
+    for build in data.get("builds", []):
+        if build.get("status") == "failed":
+            failed_job_name = build.get("name", "unknown")
+            failed_stage = build.get("stage", "unknown")
+            break
+    
+    # Store webhook data and metadata - IMPORTANT: Set all required fields
     await session_manager.update_metadata(actual_session_id, {
         "webhook_data": data,
         "failed_at": datetime.utcnow().isoformat(),
         "branch": data["object_attributes"]["ref"],
         "pipeline_source": data["object_attributes"]["source"],
         "project_name": data["project"]["name"],
-        "job_name": job_name,
-        "failed_stage": agent._extract_failed_stage(data),
-        "error_type": "build_failure",  # Will be updated by analysis
+        "job_name": failed_job_name,
+        "failed_stage": failed_stage,
+        "error_type": "build_failure",
         "commit_sha": data["object_attributes"]["sha"],
+        "pipeline_url": data["object_attributes"]["url"],
+        "error_signature": f"Pipeline {pipeline_id} failed at {failed_stage} stage"
     })
     
     # Add initial message to conversation history
@@ -137,10 +143,12 @@ async def handle_gitlab_webhook(
     # Run analysis in background
     asyncio.create_task(run_analysis_with_progress(actual_session_id, data))
     
+    # Return the session ID for UI redirect
     return {
         "status": "analyzing",
         "session_id": actual_session_id,
-        "message": "Analysis started in background"
+        "message": "Analysis started in background",
+        "ui_url": f"http://localhost:8501/?session={actual_session_id}"
     }
 
 async def run_analysis_with_progress(session_id: str, webhook_data: Dict[str, Any]):
@@ -178,6 +186,7 @@ async def run_analysis_with_progress(session_id: str, webhook_data: Dict[str, An
         if analysis_result.get("cards"):
             comment = format_gitlab_comment(analysis_result)
             logger.info(f"Would post comment to pipeline {webhook_data['object_attributes']['id']}")
+            # In production, you would actually post the comment using GitLab API
         
     except Exception as e:
         logger.error(f"Analysis failed: {e}", exc_info=True)

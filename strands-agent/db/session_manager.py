@@ -54,11 +54,11 @@ class SessionManager:
                             result[field] = [] if field.endswith('history') or field.endswith('fixes') or field == 'tools_called' else {}
                 return result
             
-            # Create new session with empty conversation history
+            # Create new session with empty conversation history and ACTIVE status
             new_session = await conn.fetchrow(
                 """
-                INSERT INTO sessions (id, project_id, pipeline_id, commit_hash, conversation_history)
-                VALUES ($1, $2, $3, $4, $5)
+                INSERT INTO sessions (id, project_id, pipeline_id, commit_sha, conversation_history, status)
+                VALUES ($1, $2, $3, $4, $5, 'active')
                 RETURNING *
                 """,
                 session_id, project_id, pipeline_id, commit_hash, json.dumps([])
@@ -78,9 +78,20 @@ class SessionManager:
     async def get_session(self, session_id: str) -> Optional[Dict[str, Any]]:
         """Get session by ID"""
         async with self._get_connection() as conn:
+            # Handle both string and UUID formats
+            try:
+                from uuid import UUID
+                if isinstance(session_id, str):
+                    session_uuid = UUID(session_id)
+                else:
+                    session_uuid = session_id
+            except:
+                logger.error(f"Invalid session ID format: {session_id}")
+                return None
+                
             row = await conn.fetchrow(
                 "SELECT * FROM sessions WHERE id = $1",
-                session_id
+                session_uuid
             )
             if not row:
                 return None
@@ -142,62 +153,45 @@ class SessionManager:
         metadata: Dict[str, Any]
     ):
         """Update session metadata"""
-        logger.info(f"update_metadata called with: {metadata}")
+        logger.info(f"update_metadata called with: {list(metadata.keys())}")
         async with self._get_connection() as conn:
-            # Update specific fields
-            if "error_signature" in metadata:
-                await conn.execute(
-                    "UPDATE sessions SET error_signature = $2 WHERE id = $1",
-                    session_id, metadata["error_signature"]
-                )
+            # Build update query dynamically
+            update_fields = []
+            params = [session_id]  # First parameter is always session_id
+            param_count = 1
             
-            if "failed_stage" in metadata:
-                await conn.execute(
-                    "UPDATE sessions SET failed_stage = $2 WHERE id = $1",
-                    session_id, metadata["failed_stage"]
-                )
+            field_mapping = {
+                "error_signature": "error_signature",
+                "failed_stage": "failed_stage",
+                "error_type": "error_type",
+                "branch": "branch",
+                "pipeline_source": "pipeline_source",
+                "commit_sha": "commit_hash",
+                "job_name": "job_name",
+                "project_name": "project_name",
+                "merge_request_id": "merge_request_id",
+                "pipeline_url": "pipeline_url"
+            }
             
-            if "error_type" in metadata:
-                await conn.execute(
-                    "UPDATE sessions SET error_type = $2 WHERE id = $1",
-                    session_id, metadata["error_type"]
-                )
+            for key, value in metadata.items():
+                if key == "webhook_data":
+                    param_count += 1
+                    params.append(json.dumps(value))
+                    update_fields.append(f"webhook_data = ${param_count}::jsonb")
+                elif key in field_mapping:
+                    param_count += 1
+                    params.append(value)
+                    update_fields.append(f"{field_mapping[key]} = ${param_count}")
             
-            if "webhook_data" in metadata:
-                await conn.execute(
-                    "UPDATE sessions SET webhook_data = $2::jsonb WHERE id = $1",
-                    session_id, json.dumps(metadata["webhook_data"])
-                )
-            
-            if "branch" in metadata:
-                await conn.execute(
-                    "UPDATE sessions SET branch = $2 WHERE id = $1",
-                    session_id, metadata["branch"]
-                )
-
-            if "pipeline_source" in metadata:
-                await conn.execute(
-                    "UPDATE sessions SET pipeline_source = $2 WHERE id = $1",
-                    session_id, metadata["pipeline_source"]
-                )
-
-            if "commit_sha" in metadata:
-                await conn.execute(
-                    "UPDATE sessions SET commit_sha = $2 WHERE id = $1",
-                    session_id, metadata["commit_sha"]
-                )
-
-            if "job_name" in metadata:
-                await conn.execute(
-                    "UPDATE sessions SET job_name = $2 WHERE id = $1",
-                    session_id, metadata["job_name"]
-                )
-
-            if "project_name" in metadata:
-                await conn.execute(
-                    "UPDATE sessions SET project_name = $2 WHERE id = $1",
-                    session_id, metadata["project_name"]
-                )
+            if update_fields:
+                query = f"""
+                    UPDATE sessions 
+                    SET {', '.join(update_fields)},
+                        last_activity = CURRENT_TIMESTAMP
+                    WHERE id = $1
+                """
+                await conn.execute(query, *params)
+                logger.info(f"Updated metadata for session {session_id}")
     
     async def add_applied_fix(
         self,
@@ -288,12 +282,23 @@ class SessionManager:
     async def get_active_sessions(self, project_id: Optional[str] = None) -> List[Dict[str, Any]]:
         """Get all active sessions"""
         async with self._get_connection() as conn:
+            # Debug: First check what's in the database
+            debug_rows = await conn.fetch(
+                """
+                SELECT id, status, expires_at, created_at, project_id, pipeline_id 
+                FROM sessions 
+                ORDER BY created_at DESC 
+                LIMIT 5
+                """
+            )
+            logger.info(f"Debug - Recent sessions: {[dict(r) for r in debug_rows]}")
+            
+            # Main query - remove the expires_at check temporarily for debugging
             if project_id:
                 rows = await conn.fetch(
                     """
                     SELECT * FROM sessions 
-                    WHERE project_id = $1 AND status = 'active' 
-                    AND expires_at > CURRENT_TIMESTAMP
+                    WHERE project_id = $1 AND status = 'active'
                     ORDER BY last_activity DESC
                     """,
                     project_id
@@ -302,10 +307,12 @@ class SessionManager:
                 rows = await conn.fetch(
                     """
                     SELECT * FROM sessions 
-                    WHERE status = 'active' AND expires_at > CURRENT_TIMESTAMP
+                    WHERE status = 'active'
                     ORDER BY last_activity DESC
                     """
                 )
+            
+            logger.info(f"Found {len(rows)} active sessions")
             
             results = []
             for row in rows:
