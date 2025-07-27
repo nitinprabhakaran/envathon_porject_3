@@ -1,15 +1,11 @@
 import streamlit as st
 import asyncio
 from datetime import datetime, timezone
-import json, time
+import time
+from typing import Dict, Any, List
 from components.cards import render_card
 from components.quality_cards import render_quality_card
-from components.pipeline_tabs import PipelineTabs
 from utils.api_client import APIClient
-import logging
-import re
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
 
 # Page config
 st.set_page_config(
@@ -19,45 +15,35 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# CSS for better styling
+# Custom CSS
 st.markdown("""
 <style>
-    /* Card containers */
+    .stChatMessage {
+        padding: 0.5rem 1rem;
+        margin: 0.5rem 0;
+    }
     .card-container {
         background-color: #f8f9fa;
         border-radius: 8px;
         padding: 15px;
         margin: 10px 0;
         box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-        color: #000000;
     }
-    
-    /* Fix button responsiveness */
     .stButton > button {
         width: 100%;
-        transition: all 0.3s ease;
+        white-space: nowrap;
     }
-    
-    .stButton > button:hover {
-        background-color: #0056b3;
-        transform: translateY(-1px);
-    }
-    
-    /* Tab styling */
-    .stTabs [data-baseweb="tab-list"] {
-        gap: 10px;
-    }
-    
-    .stTabs [data-baseweb="tab"] {
-        height: 50px;
-        white-space: pre-wrap;
-        background-color: #f0f0f0;
+    .session-item {
+        padding: 0.5rem;
+        margin: 0.25rem 0;
         border-radius: 4px;
-        padding: 10px 20px;
-        font-weight: 500;
+        cursor: pointer;
+        transition: background-color 0.2s;
     }
-    
-    .stTabs [aria-selected="true"] {
+    .session-item:hover {
+        background-color: #f0f0f0;
+    }
+    .session-item.active {
         background-color: #0066cc;
         color: white;
     }
@@ -65,409 +51,205 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # Initialize session state
-if "pipeline_tabs" not in st.session_state:
-    st.session_state.pipeline_tabs = PipelineTabs()
+if "active_tab" not in st.session_state:
+    st.session_state.active_tab = "pipeline"
+if "selected_session" not in st.session_state:
+    st.session_state.selected_session = None
 if "api_client" not in st.session_state:
     st.session_state.api_client = APIClient()
-if "sessions_data" not in st.session_state:
-    st.session_state.sessions_data = []
-if "selected_session_id" not in st.session_state:
-    st.session_state.selected_session_id = None
-if "messages" not in st.session_state:
-    st.session_state.messages = {}
-if "loading_session" not in st.session_state:
-    st.session_state.loading_session = None
-if "last_refresh" not in st.session_state:
-    st.session_state.last_refresh = None
+if "sessions_cache" not in st.session_state:
+    st.session_state.sessions_cache = {}
 
 # Helper functions
-def parse_response_for_cards(response_text: str) -> tuple:
-    """Parse AI response to extract confidence, solution and create cards"""
-    cards = []
-    
-    # For quality sessions, create appropriate cards
-    if "merge request has been created successfully" in response_text.lower():
-        cards.append({
-            "type": "quality_summary",
-            "title": "Quality Issues Fixed",
-            "bugs": 0,  # Extract from response if available
-            "vulnerabilities": 0,
-            "code_smells": 0,
-            "effort": "Completed"
-        })
-        
-        # Extract merge request info
-        if "merge request" in response_text.lower():
-            cards.append({
-                "type": "solution",
-                "title": "Merge Request Created",
-                "confidence": 100,
-                "content": "All quality issues have been fixed and a merge request has been created.",
-                "fix_type": "quality",
-                "actions": [
-                    {"label": "View MR", "action": "view_mr"}
-                ]
-            })
+def format_session_display(session: Dict[str, Any]) -> str:
+    """Format session for display"""
+    if session.get("session_type") == "quality":
+        status_icon = "🚨" if session.get("quality_gate_status") == "ERROR" else "⚠️"
+        return f"{status_icon} {session.get('project_name', 'Unknown')} ({session.get('total_issues', 0)} issues)"
     else:
-        # Default analysis card for other responses
-        cards.append({
-            "type": "analysis",
-            "title": "Quality Analysis",
-            "content": response_text[:200] + "..." if len(response_text) > 200 else response_text,
-            "confidence": 0,
-            "error_type": "quality_gate"
-        })
-    
-    return cards
+        status_icon = "🔴" if session.get("status") == "active" else "✅"
+        return f"{status_icon} {session.get('project_name', 'Unknown')}#{session.get('pipeline_id', 'Unknown')}"
 
-@st.cache_data(ttl=10)
-def fetch_sessions_cached():
+def extract_quality_info(response: str) -> Dict[str, Any]:
+    """Extract quality fix information from response"""
+    info = {
+        "issues_fixed": 0,
+        "merge_request_created": False,
+        "summary": response[:200] + "..." if len(response) > 200 else response
+    }
+    
+    if "merge request has been created successfully" in response.lower():
+        info["merge_request_created"] = True
+        # Extract number of issues fixed if mentioned
+        import re
+        match = re.search(r'(\d+)\s+sonarqube\s+issues', response.lower())
+        if match:
+            info["issues_fixed"] = int(match.group(1))
+    
+    return info
+
+@st.cache_data(ttl=30)
+def fetch_sessions():
     """Fetch active sessions with caching"""
     async def _fetch():
-        sessions = await st.session_state.api_client.get_active_sessions()
-        logger.info(f"Fetched {len(sessions)} active sessions")
-        return sessions
+        return await st.session_state.api_client.get_active_sessions()
     return asyncio.run(_fetch())
 
-async def load_session(session_id: str):
-    """Load complete session data from API"""
-    logger.info(f"Loading session: {session_id}")
-    if st.session_state.loading_session == session_id:
-        return
-    
-    st.session_state.loading_session = session_id
-    
-    try:
+async def load_session_data(session_id: str):
+    """Load session data"""
+    if session_id not in st.session_state.sessions_cache:
         session_data = await st.session_state.api_client.get_session(session_id)
-        
-        # Update the tabs with complete session data
-        st.session_state.pipeline_tabs.update_session(session_id, session_data)
-        st.session_state.selected_session_id = session_id
-        st.session_state.pipeline_tabs.set_active(session_id)
-        
-        # Store messages for native chat
-        if session_id not in st.session_state.messages:
-            st.session_state.messages[session_id] = []
-        
-        # Convert conversation history to chat messages with cards
-        conv_history = session_data.get("conversation_history", [])
-        messages = []
-        for msg in conv_history:
-            if msg.get("role") == "assistant" and "cards" not in msg and msg.get("content"):
-                # Parse response to create cards
-                cards = parse_response_for_cards(msg["content"])
-                msg["cards"] = cards
-            messages.append(msg)
-        
-        st.session_state.messages[session_id] = messages
-        
-    finally:
-        st.session_state.loading_session = None
-
-async def send_message(session_id: str, message: str):
-    """Send a message to the agent"""
-    response = await st.session_state.api_client.send_message(session_id, message)
-    
-    # Add user message
-    user_msg = {
-        "role": "user",
-        "content": message,
-        "timestamp": datetime.now(timezone.utc).isoformat()
-    }
-    st.session_state.messages[session_id].append(user_msg)
-    
-    # Parse response for cards
-    response_text = response.get("response", "")
-    cards = parse_response_for_cards(response_text) if response_text else response.get("cards", [])
-    
-    # Add assistant response
-    assistant_msg = {
-        "role": "assistant",
-        "content": response_text,
-        "cards": cards,
-        "timestamp": datetime.now(timezone.utc).isoformat()
-    }
-    st.session_state.messages[session_id].append(assistant_msg)
-    
-    # Update pipeline tabs
-    active_session = st.session_state.pipeline_tabs.get_active()
-    if active_session:
-        active_session["conversation_history"] = st.session_state.messages[session_id]
-        st.session_state.pipeline_tabs.update_session(session_id, active_session)
-
-def calculate_duration(start_time: datetime) -> str:
-    """Calculate duration from start time"""
-    now = datetime.now(timezone.utc)
-    if isinstance(start_time, str):
-        try:
-            start_time = datetime.fromisoformat(start_time.replace('Z', '+00:00'))
-        except:
-            return "N/A"
-    if start_time.tzinfo is None:
-        start_time = start_time.replace(tzinfo=timezone.utc)
-    duration = now - start_time
-    hours = duration.seconds // 3600
-    minutes = (duration.seconds % 3600) // 60
-    return f"{hours}h {minutes}m"
-
-def render_conversation(active_session, session_id, quality_mode=False):
-    """Render conversation with cards"""
-    chat_container = st.container(height=600)
-    
-    # Display messages
-    with chat_container:
-        messages = st.session_state.messages.get(session_id, [])
-        
-        for idx, msg in enumerate(messages):
-            if msg.get("role") == "system":
-                continue
-            
-            with st.chat_message(msg["role"]):
-                # Display content
-                if msg.get("content"):
-                    st.markdown(msg["content"])
-                
-                # Display cards if present
-                if "cards" in msg and msg["cards"]:
-                    for card in msg["cards"]:
-                        if quality_mode and card.get("type") in ["quality_summary", "issue_category", "batch_fix"]:
-                            render_quality_card(card, active_session)
-                        else:
-                            render_card(card, active_session)
-    
-    # Chat input with unique key
-    chat_key = f"chat_input_{session_id}_{int(time.time())}"
-    if prompt := st.chat_input("Ask about the issue...", key=chat_key):
-        with chat_container:
-            with st.chat_message("user"):
-                st.write(prompt)
-        
-        with st.spinner("Analyzing..."):
-            asyncio.run(send_message(session_id, prompt))
-            time.sleep(0.5)  # Small delay to ensure UI updates
-            st.rerun()
+        st.session_state.sessions_cache[session_id] = session_data
+    return st.session_state.sessions_cache[session_id]
 
 # Header
-col1, col2, col3 = st.columns([3, 2, 1])
-with col1:
-    st.title("🔧 CI/CD Failure Assistant")
-with col3:
-    if st.button("🔄 Refresh", key="refresh_btn", use_container_width=True):
-        st.cache_data.clear()
-        st.rerun()
+st.title("🔧 CI/CD Failure Assistant")
 
-# Check for session_id in URL
-query_params = st.query_params
-if "session" in query_params:
-    session_id = query_params["session"]
-    if session_id != st.session_state.selected_session_id:
-        asyncio.run(load_session(session_id))
-
-# Auto-load sessions
-now = time.time()
-if not st.session_state.sessions_data or (st.session_state.last_refresh and now - st.session_state.last_refresh > 30):
-    with st.spinner("Loading sessions..."):
-        st.session_state.sessions_data = fetch_sessions_cached()
-        st.session_state.last_refresh = now
-
-# Load selected session if any
-if st.session_state.selected_session_id and st.session_state.selected_session_id not in st.session_state.messages:
-    asyncio.run(load_session(st.session_state.selected_session_id))
-
-# Main tabs
+# Tab selection
 tab1, tab2 = st.tabs(["🚀 Pipeline Failures", "📊 Quality Issues"])
 
-# Pipeline Failures Tab
+# Get sessions
+sessions = fetch_sessions()
+pipeline_sessions = [s for s in sessions if s.get("session_type", "pipeline") == "pipeline"]
+quality_sessions = [s for s in sessions if s.get("session_type") == "quality"]
+
 with tab1:
-    # Filter sessions by type
-    pipeline_sessions = [s for s in st.session_state.sessions_data if s.get("session_type", "pipeline") == "pipeline"]
-    
-    # Main layout
-    sidebar_col, main_col, details_col = st.columns([2, 5, 2])
-    
-    # Left Sidebar - Pipeline List
-    with sidebar_col:
-        st.subheader("📋 Pipeline Failures")
+    if pipeline_sessions:
+        # Use columns for layout
+        col1, col2 = st.columns([1, 3])
         
-        if st.button("🔄 Refresh List", key="refresh_pipeline_btn", use_container_width=True):
-            st.cache_data.clear()
-            st.rerun()
+        with col1:
+            st.subheader("Active Pipelines")
+            for session in pipeline_sessions:
+                if st.button(
+                    format_session_display(session),
+                    key=f"pipe_{session['id']}",
+                    use_container_width=True,
+                    type="primary" if session['id'] == st.session_state.selected_session else "secondary"
+                ):
+                    st.session_state.selected_session = session['id']
+                    st.rerun()
         
-        st.divider()
-        
-        # Display pipeline sessions
-        for idx, session in enumerate(pipeline_sessions):
-            session_id = session.get('id')
-            if not session_id:
-                continue
-            
-            project_name = session.get('project_name', 'Unknown')
-            pipeline_id = session.get('pipeline_id', 'Unknown')
-            status_icon = "🔴" if session.get("status") == "active" else "✅"
-            
-            button_key = f"pipeline_{session_id}_{idx}"
-            button_label = f"{status_icon} {project_name}#{pipeline_id}"
-            
-            is_active = st.session_state.selected_session_id == session_id
-            
-            if st.button(
-                button_label, 
-                key=button_key, 
-                use_container_width=True,
-                type="primary" if is_active else "secondary"
-            ):
-                st.session_state.selected_session_id = session_id
-                st.rerun()
-    
-    # Main Content - Active Conversation
-    with main_col:
-        active_session = None
-        if st.session_state.selected_session_id:
-            # Find session in our data
-            for s in st.session_state.sessions_data:
-                if s.get('id') == st.session_state.selected_session_id and s.get("session_type", "pipeline") == "pipeline":
-                    active_session = s
-                    break
-        
-        if active_session:
-            session_id = active_session['id']
-            project_name = active_session.get('project_name', 'Unknown')
-            pipeline_id = active_session.get('pipeline_id', 'Unknown')
-            
-            st.subheader(f"Pipeline {pipeline_id} - {project_name}")
-            
-            # Pipeline info
-            info_cols = st.columns(4)
-            with info_cols[0]:
-                st.caption(f"**Branch:** {active_session.get('branch', 'N/A')}")
-            with info_cols[1]:
-                st.caption(f"**Source:** {active_session.get('pipeline_source', 'N/A')}")
-            with info_cols[2]:
-                if failed_jobs := active_session.get('all_failed_jobs', []):
-                    if len(failed_jobs) > 1:
-                        st.caption(f"**Failed Jobs:** {', '.join([j['name'] for j in failed_jobs])}")
-                    else:
-                        st.caption(f"**Job:** {active_session.get('job_name', 'N/A')}")
-            with info_cols[3]:
-                if url := active_session.get('pipeline_url'):
-                    st.caption(f"[View in GitLab →]({url})")
-            
-            st.divider()
-            
-            # Chat container
-            render_conversation(active_session, session_id)
-        else:
-            st.info("👈 Select a pipeline failure from the left sidebar")
-    
-    # Right Sidebar - Context Panel
-    with details_col:
-        if active_session:
-            st.subheader("📊 Pipeline Details")
-            
-            # Status metrics
-            col1, col2 = st.columns(2)
-            with col1:
-                st.metric("Status", active_session.get("status", "Unknown").title())
-            with col2:
-                st.metric("Stage", active_session.get("failed_stage", "N/A"))
-            
-            st.metric("Error Type", active_session.get("error_type", "N/A").replace("_", " ").title())
-            
-            # Session info
-            st.divider()
-            st.subheader("⏱️ Session Info")
-            created = active_session.get("created_at", datetime.now().isoformat())
-            st.text(f"Duration: {calculate_duration(created)}")
+        with col2:
+            if st.session_state.selected_session:
+                session_data = asyncio.run(load_session_data(st.session_state.selected_session))
+                
+                # Session header
+                st.subheader(f"Pipeline {session_data.get('pipeline_id')} - {session_data.get('project_name')}")
+                
+                # Metadata
+                cols = st.columns(4)
+                cols[0].metric("Branch", session_data.get('branch', 'N/A'))
+                cols[1].metric("Stage", session_data.get('failed_stage', 'N/A'))
+                cols[2].metric("Status", session_data.get('status', 'Unknown'))
+                cols[3].metric("Error Type", session_data.get('error_type', 'N/A'))
+                
+                # Chat interface
+                st.divider()
+                messages = session_data.get('conversation_history', [])
+                
+                # Display messages
+                for msg in messages:
+                    if msg.get('role') == 'system':
+                        continue
+                    
+                    with st.chat_message(msg['role']):
+                        st.write(msg.get('content', ''))
+                        
+                        # Render cards if present
+                        if 'cards' in msg:
+                            for card in msg['cards']:
+                                render_card(card, session_data)
+                
+                # Chat input
+                if prompt := st.chat_input("Ask about the failure..."):
+                    with st.spinner("Analyzing..."):
+                        response = asyncio.run(
+                            st.session_state.api_client.send_message(
+                                st.session_state.selected_session,
+                                prompt
+                            )
+                        )
+                        st.rerun()
+            else:
+                st.info("Select a pipeline from the left to view details")
+    else:
+        st.info("No active pipeline failures")
 
-# Quality Issues Tab
 with tab2:
-    # Filter sessions by type
-    quality_sessions = [s for s in st.session_state.sessions_data if s.get("session_type") == "quality"]
-    
-    # Main layout
-    sidebar_col, main_col, details_col = st.columns([2, 5, 2])
-    
-    # Left Sidebar - Quality Sessions
-    with sidebar_col:
-        st.subheader("📊 Quality Sessions")
+    if quality_sessions:
+        col1, col2 = st.columns([1, 3])
         
-        if st.button("🔄 Refresh List", key="refresh_quality_btn", use_container_width=True):
-            st.cache_data.clear()
-            st.rerun()
+        with col1:
+            st.subheader("Quality Sessions")
+            for session in quality_sessions:
+                if st.button(
+                    format_session_display(session),
+                    key=f"qual_{session['id']}",
+                    use_container_width=True,
+                    type="primary" if session['id'] == st.session_state.selected_session else "secondary"
+                ):
+                    st.session_state.selected_session = session['id']
+                    st.rerun()
         
-        st.divider()
-        
-        # Display quality sessions
-        for idx, session in enumerate(quality_sessions):
-            session_id = session.get('id')
-            if not session_id:
-                continue
-            
-            project_name = session.get('project_name', 'Unknown')
-            gate_status = session.get('quality_gate_status', 'ERROR')
-            total_issues = session.get('total_issues', 0)
-            
-            status_icon = "🚨" if gate_status == "ERROR" else "⚠️"
-            
-            button_key = f"quality_{session_id}_{idx}"
-            button_label = f"{status_icon} {project_name} ({total_issues} issues)"
-            
-            is_active = st.session_state.selected_session_id == session_id
-            
-            if st.button(
-                button_label, 
-                key=button_key, 
-                use_container_width=True,
-                type="primary" if is_active else "secondary"
-            ):
-                st.session_state.selected_session_id = session_id
-                st.rerun()
-    
-    # Main Content - Quality Dashboard or Conversation
-    with main_col:
-        active_session = None
-        if st.session_state.selected_session_id:
-            # Find session in our data
-            for s in st.session_state.sessions_data:
-                if s.get('id') == st.session_state.selected_session_id and s.get("session_type") == "quality":
-                    active_session = s
-                    break
-        
-        if active_session:
-            session_id = active_session['id']
-            project_name = active_session.get('project_name', 'Unknown')
-            
-            st.subheader(f"Quality Analysis - {project_name}")
-            
-            # Quality summary
-            col1, col2, col3 = st.columns(3)
-            with col1:
-                st.metric("Quality Gate", active_session.get('quality_gate_status', 'ERROR'), delta_color="inverse")
-            with col2:
-                st.metric("Total Issues", active_session.get('total_issues', 0))
-            with col3:
-                st.metric("Critical Issues", active_session.get('critical_issues', 0))
-            
-            st.divider()
-            
-            # Chat container
-            render_conversation(active_session, session_id, quality_mode=True)
-        else:
-            st.info("👈 Select a quality session from the left sidebar")
-    
-    # Right Sidebar - Quality Details
-    with details_col:
-        if active_session:
-            st.subheader("📊 Quality Details")
-            
-            st.metric("Bugs", active_session.get("bugs_count", 0))
-            st.metric("Vulnerabilities", active_session.get("vulnerabilities_count", 0))
-            st.metric("Code Smells", active_session.get("code_smells_count", 0))
-            
-            st.divider()
-            st.subheader("⏱️ Session Info")
-            created = active_session.get("created_at", datetime.now().isoformat())
-            st.text(f"Duration: {calculate_duration(created)}")
+        with col2:
+            if st.session_state.selected_session:
+                session_data = asyncio.run(load_session_data(st.session_state.selected_session))
+                
+                # Session header
+                st.subheader(f"Quality Analysis - {session_data.get('project_name')}")
+                
+                # Quality metrics
+                cols = st.columns(4)
+                cols[0].metric("Quality Gate", session_data.get('quality_gate_status', 'ERROR'))
+                cols[1].metric("Total Issues", session_data.get('total_issues', 0))
+                cols[2].metric("Critical", session_data.get('critical_issues', 0))
+                cols[3].metric("Major", session_data.get('major_issues', 0))
+                
+                # Chat interface
+                st.divider()
+                messages = session_data.get('conversation_history', [])
+                
+                for msg in messages:
+                    if msg.get('role') == 'system':
+                        continue
+                    
+                    with st.chat_message(msg['role']):
+                        content = msg.get('content', '')
+                        
+                        # For quality responses, extract and display key info
+                        if msg['role'] == 'assistant' and session_data.get('session_type') == 'quality':
+                            info = extract_quality_info(content)
+                            if info['merge_request_created']:
+                                st.success(f"✅ Fixed {info['issues_fixed']} issues and created merge request")
+                            else:
+                                st.write(info['summary'])
+                        else:
+                            st.write(content)
+                
+                # Chat input
+                if prompt := st.chat_input("Ask about quality issues..."):
+                    with st.spinner("Analyzing..."):
+                        response = asyncio.run(
+                            st.session_state.api_client.send_message(
+                                st.session_state.selected_session,
+                                prompt
+                            )
+                        )
+                        st.rerun()
+            else:
+                st.info("Select a quality session from the left")
+    else:
+        st.info("No active quality issues")
 
-if __name__ == "__main__":
-    pass
+# Auto-refresh
+if st.sidebar.button("🔄 Refresh", use_container_width=True):
+    st.cache_data.clear()
+    st.rerun()
+
+# Check URL params
+if "session" in st.query_params:
+    session_id = st.query_params["session"]
+    if session_id != st.session_state.selected_session:
+        st.session_state.selected_session = session_id
+        st.rerun()
