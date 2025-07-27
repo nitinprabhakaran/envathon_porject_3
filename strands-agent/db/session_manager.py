@@ -165,6 +165,12 @@ class SessionManager:
         message: Dict[str, Any]
     ):
         """Add a message to conversation history"""
+
+        # Check for error patterns in assistant messages
+        if message.get("role") == "assistant" and message.get("content"):
+            if "ERROR IN TOOL CALL:" in message["content"]:
+                logger.error(f"Tool call error detected in session {session_id}: {message['content']}")
+                
         async with self._get_connection() as conn:
             # First get current conversation history
             current = await conn.fetchval(
@@ -210,7 +216,7 @@ class SessionManager:
         # Handle all_failed_jobs specially
         if "all_failed_jobs" in metadata:
             metadata["all_failed_jobs"] = json.dumps(metadata["all_failed_jobs"])
-            
+
         async with self._get_connection() as conn:
             # Build update query dynamically
             update_fields = []

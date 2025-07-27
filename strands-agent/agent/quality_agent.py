@@ -28,31 +28,16 @@ from tools.gitlab_tools import get_file_content, create_merge_request
 
 QUALITY_SYSTEM_PROMPT = """You are an expert code quality analyst.
 
-Analyze SonarQube quality gate failures and provide fixes.
+When analyzing SonarQube quality gate failures:
+- The session context contains both 'sonarqube_key' (for SonarQube API) and 'project_id' (for GitLab API)
+- Use the appropriate ID for each API
 
-IMPORTANT: When calling tools that need project_id, use the GitLab project ID from the session context, NOT the SonarQube key.
+If a tool call fails:
+- Output: "ERROR IN TOOL CALL: [tool_name] - [error_message]"
+- Analyze the error and adjust your approach
+- Do not retry the same failing call more than twice
 
-Workflow:
-1. Use get_issues_with_context to get all issues (this uses SonarQube key)
-2. Group issues by file
-3. Use get_file_content for each file (pass the GitLab project_id from context)
-4. Fix all issues in the code
-5. Call create_merge_request with the fixed code
-
-When calling create_merge_request:
-- title: "Fix X SonarQube issues"
-- description: Detailed list of fixes
-- changes: Dictionary where keys are file paths (e.g., "analytics/processor.py") and values are the COMPLETE fixed file content as strings
-- source_branch: "quality-fixes-[timestamp]"
-- target_branch: "main"
-- project_id: The GitLab project ID from session context
-
-Example of changes format:
-{
-    "analytics/processor.py": "import pandas as pd\\nimport numpy as np\\n# ... rest of the fixed file content",
-    "analytics/utils.py": "# Fixed utility functions\\n# ... complete file content"
-}
-"""
+When working with merge requests, the 'changes' parameter expects a Python dictionary where keys are file paths and values are complete file contents as strings."""
 
 class QualityAnalysisAgent:
     def __init__(self):
@@ -86,8 +71,7 @@ class QualityAnalysisAgent:
                 create_merge_request,
                 get_project_quality_status,
                 analyze_quality_gate
-            ],
-            max_retries=2  # Limit retries to prevent loops
+            ]
         )
     
     async def analyze_quality_issues(
