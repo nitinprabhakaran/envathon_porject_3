@@ -261,16 +261,25 @@ with main_col:
         # Chat container
         chat_container = st.container(height=600)
         
+        if active_session and session_id in st.session_state.messages:
+            msgs = st.session_state.messages[session_id]
+            assistant_msgs = [i for i, m in enumerate(msgs) if m.get("role") == "assistant"]
+            st.sidebar.write(f"Debug: {len(assistant_msgs)} assistant messages at indices: {assistant_msgs}")
+
         # Display messages
         with chat_container:
             messages = st.session_state.messages.get(session_id, [])
             
+            # Find the index of the last assistant message with cards
+            last_assistant_with_cards_idx = -1
+            for i in range(len(messages)-1, -1, -1):
+                msg = messages[i]
+                if msg.get("role") == "assistant" and msg.get("cards"):
+                    last_assistant_with_cards_idx = i
+                    break
             for idx, msg in enumerate(messages):
                 if msg.get("role") == "system":
                     continue
-
-                # Check if this is the latest assistant message
-                is_latest_assistant_msg = False
                 
                 if msg.get("role") == "assistant":
                     # Check if there are no more assistant messages after this one
@@ -295,8 +304,8 @@ with main_col:
                                 unique_cards.append(card)
                         
                         for card in unique_cards:
-                            if not is_latest_assistant_msg and card.get("type") == "solution":
-                                # Remove action buttons for older cards
+                            # Only show buttons on the last assistant message with cards
+                            if idx != last_assistant_with_cards_idx and card.get("type") == "solution":
                                 card_copy = card.copy()
                                 card_copy["actions"] = []
                                 render_card(card_copy, active_session)
