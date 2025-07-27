@@ -152,11 +152,6 @@ Remember: Do NOT create a merge request. Only analyze and propose solutions."""
         """Handle user message in conversation"""
         log.info(f"Handling user message for session {session_id}")
 
-        self.agent.conversation_manager.clear()
-        
-        # Clear any existing conversation
-        self.agent.conversation_manager.clear()
-        
         # Add all messages including system context
         for msg in conversation_history:
             if msg["role"] in ["user", "assistant"]:

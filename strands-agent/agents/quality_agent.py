@@ -145,11 +145,6 @@ Important:
         """Handle user message in conversation"""
         log.info(f"Handling user message for quality session {session_id}")
         
-        self.agent.conversation_manager.clear()
-        
-        # Clear any existing conversation
-        self.agent.conversation_manager.clear()
-        
         # Add all messages including system context
         for msg in conversation_history:
             if msg["role"] in ["user", "assistant"]:

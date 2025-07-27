@@ -1,6 +1,7 @@
 """Quality issues page"""
 import streamlit as st
 import asyncio
+import json
 from datetime import datetime
 from utils.api_client import APIClient
 from utils.logger import setup_logger
@@ -74,7 +75,6 @@ with col2:
             
             # Ensure conversation_history is properly parsed
             if isinstance(session.get("conversation_history"), str):
-                import json
                 session["conversation_history"] = json.loads(session["conversation_history"])
             
             # Load conversation history
@@ -97,23 +97,19 @@ with col2:
             
             st.divider()
             
-            # Load conversation history
-            if session_id not in st.session_state.quality_messages:
-                st.session_state.quality_messages[session_id] = session.get("conversation_history", [])
-            
             # Display conversation
             messages = st.session_state.quality_messages[session_id]
             
-            # Create a container for messages
-            message_container = st.container(height=500)
-            
-            with message_container:
-                for msg in messages:
-                    if msg["role"] == "system":
-                        continue
+            # Show all messages in chat format
+            for msg in messages:
+                if msg["role"] == "system":
+                    continue
                     
-                    with st.chat_message(msg["role"]):
-                        st.markdown(msg["content"])
+                with st.chat_message(msg["role"]):
+                    content = msg.get("content", "")
+                    if isinstance(content, dict):
+                        content = content.get("message", str(content))
+                    st.markdown(content)
             
             # Check if MR was created
             has_mr = any(
@@ -128,28 +124,42 @@ with col2:
             with action_cols[1]:
                 if not has_mr and st.button("🔀 Create MR", key="create_quality_mr", use_container_width=True):
                     log.info(f"Creating MR for quality session {session_id}")
-                    with st.spinner("Creating merge request..."):
-                        try:
-                            response = asyncio.run(
-                                st.session_state.api_client.send_message(
-                                    session_id,
-                                    "Create a merge request with all the quality fixes we discussed"
+                    
+                    # Add user message
+                    user_msg = "Create a merge request with all the quality fixes we discussed"
+                    st.session_state.quality_messages[session_id].append({
+                        "role": "user",
+                        "content": user_msg,
+                        "timestamp": datetime.utcnow().isoformat()
+                    })
+                    
+                    # Show in chat
+                    with st.chat_message("user"):
+                        st.markdown(user_msg)
+                    
+                    # Get response
+                    with st.chat_message("assistant"):
+                        with st.spinner("Creating merge request..."):
+                            try:
+                                response = asyncio.run(
+                                    st.session_state.api_client.send_message(session_id, user_msg)
                                 )
-                            )
-                            response_content = response.get("response", "")
-                            if isinstance(response_content, dict):
-                                response_content = response_content.get("message", str(response_content))
-                            
-                            # Add response to messages
-                            st.session_state.pipeline_messages[session_id].append({
-                                "role": "assistant",
-                                "content": response_content,
-                                "timestamp": datetime.utcnow().isoformat()
-                            })
-                            st.rerun()
-                        except Exception as e:
-                            st.error(f"Failed to create MR: {e}")
-                            log.error(f"Failed to create MR: {e}")
+                                response_content = response.get("response", "")
+                                if isinstance(response_content, dict):
+                                    response_content = response_content.get("message", str(response_content))
+                                
+                                st.markdown(response_content)
+                                
+                                # Add response to messages
+                                st.session_state.quality_messages[session_id].append({
+                                    "role": "assistant",
+                                    "content": response_content,
+                                    "timestamp": datetime.utcnow().isoformat()
+                                })
+                                st.rerun()
+                            except Exception as e:
+                                st.error(f"Failed to create MR: {e}")
+                                log.error(f"Failed to create MR: {e}")
             
             with action_cols[2]:
                 if session.get("merge_request_url"):
@@ -159,36 +169,43 @@ with col2:
             if prompt := st.chat_input("Ask about the quality issues...", key="quality_chat"):
                 log.info(f"Sending message to quality session {session_id}: {prompt[:50]}...")
                 
-                # Add user message
+                # Add user message to state
                 st.session_state.quality_messages[session_id].append({
                     "role": "user",
                     "content": prompt,
                     "timestamp": datetime.utcnow().isoformat()
                 })
                 
-                # Send to API
-                with st.spinner("Analyzing..."):
-                    try:
-                        response = asyncio.run(
-                            st.session_state.api_client.send_message(session_id, prompt)
-                        )
-                        
-                        response_content = response.get("response", "")
-                        if isinstance(response_content, dict):
-                            response_content = response_content.get("message", str(response_content))
+                # Show user message
+                with st.chat_message("user"):
+                    st.markdown(prompt)
+                
+                # Get and show assistant response
+                with st.chat_message("assistant"):
+                    with st.spinner("Analyzing..."):
+                        try:
+                            response = asyncio.run(
+                                st.session_state.api_client.send_message(session_id, prompt)
+                            )
                             
-                        # Add response to messages
-                        st.session_state.pipeline_messages[session_id].append({
-                            "role": "assistant",
-                            "content": response_content,
-                            "timestamp": datetime.utcnow().isoformat()
-                        })
-                        
-                        st.rerun()
-                        
-                    except Exception as e:
-                        st.error(f"Failed to send message: {e}")
-                        log.error(f"Failed to send message: {e}")
+                            response_content = response.get("response", "")
+                            if isinstance(response_content, dict):
+                                response_content = response_content.get("message", str(response_content))
+                            
+                            st.markdown(response_content)
+                            
+                            # Add response to messages
+                            st.session_state.quality_messages[session_id].append({
+                                "role": "assistant",
+                                "content": response_content,
+                                "timestamp": datetime.utcnow().isoformat()
+                            })
+                            
+                            st.rerun()
+                            
+                        except Exception as e:
+                            st.error(f"Failed to send message: {e}")
+                            log.error(f"Failed to send message: {e}")
         
         except Exception as e:
             st.error(f"Failed to load session: {e}")
