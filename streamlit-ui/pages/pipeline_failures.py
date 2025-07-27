@@ -72,7 +72,16 @@ with col2:
         try:
             # Load session details
             session = asyncio.run(st.session_state.api_client.get_session(session_id))
+
+            # Ensure conversation_history is properly parsed
+            if isinstance(session.get("conversation_history"), str):
+                import json
+                session["conversation_history"] = json.loads(session["conversation_history"])
             
+            # Load conversation history
+            if session_id not in st.session_state.pipeline_messages:
+                st.session_state.pipeline_messages[session_id] = session.get("conversation_history", [])
+
             # Session header
             st.subheader(f"Pipeline {session.get('pipeline_id')} - {session.get('project_name')}")
             

@@ -1,4 +1,5 @@
 """Session management API endpoints"""
+import json
 from fastapi import APIRouter, HTTPException
 from typing import Dict, Any, List
 from pydantic import BaseModel
@@ -38,7 +39,13 @@ async def get_session(session_id: str):
         session = await session_manager.get_session(session_id)
         if not session:
             raise HTTPException(status_code=404, detail="Session not found")
-        return session
+        if session:
+            result = dict(session)
+            # Parse JSON fields
+            for field in ['conversation_history', 'webhook_data']:
+                if field in result and isinstance(result[field], str):
+                    result[field] = json.loads(result[field])
+            return result
     except HTTPException:
         raise
     except Exception as e:
