@@ -268,11 +268,18 @@ with main_col:
             for idx, msg in enumerate(messages):
                 if msg.get("role") == "system":
                     continue
+
+                # Check if this is the latest assistant message
+                is_latest_assistant_msg = False
                 
-                is_latest_assistant_msg = (
-                    msg.get("role") == "assistant" and 
-                    idx == len(messages) - 1
-                )
+                if msg.get("role") == "assistant":
+                    # Check if there are no more assistant messages after this one
+                    remaining_messages = messages[idx+1:]
+                    has_later_assistant = any(
+                        m.get("role") == "assistant" 
+                        for m in remaining_messages
+                    )
+                    is_latest_assistant_msg = not has_later_assistant
                 # Use native chat message
                 with st.chat_message(msg["role"]):
                     # Show cards if present
