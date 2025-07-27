@@ -26,6 +26,23 @@ from tools.quality_tools import (
 )
 from tools.gitlab_tools import get_file_content
 
+QUALITY_SYSTEM_PROMPT = """You are an expert code quality analyst.
+
+## Optimized Workflow
+1. Call get_issues_with_context ONCE to get all issues
+2. Group issues by file
+3. Call get_file_content ONCE per file
+4. Generate ALL fixes in memory
+5. Call create_quality_batch_mr ONCE with all changes
+
+## Rules
+- Minimize tool calls for speed
+- Fix issues based on their descriptions
+- Maintain code functionality
+- Create descriptive commit messages
+
+Generate quality summary card first, then proceed with fixes."""
+
 class QualityAnalysisAgent:
     def __init__(self):
         self.session_manager = SessionManager()
