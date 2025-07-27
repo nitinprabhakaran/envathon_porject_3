@@ -121,8 +121,11 @@ with col2:
                         st.markdown(content)
             
             # Check if MR was created
-            has_mr = any("merge_request" in msg.get("content", "").lower() and "created" in msg.get("content", "").lower() 
-                        for msg in messages if msg["role"] == "assistant")
+            has_mr = any(
+                "merge_request" in str(msg.get("content", "")).lower() and 
+                "created" in str(msg.get("content", "")).lower() 
+                for msg in messages if msg["role"] == "assistant"
+            )
             
             # Action buttons
             action_cols = st.columns([3, 1, 1])
