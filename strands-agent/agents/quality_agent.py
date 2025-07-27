@@ -2,6 +2,7 @@
 from typing import Dict, Any, List
 from datetime import datetime
 from strands import Agent
+import os
 from strands.models.bedrock import BedrockModel
 from strands.models.anthropic import AnthropicModel
 from utils.logger import log
@@ -124,9 +125,10 @@ Important:
 - Use project_id="{gitlab_project_id}" for GitLab API calls
 - Do NOT create a merge request, only analyze and propose fixes"""
         
-        response = await self.agent.invoke_async(prompt)
+        result = await self.agent.invoke_async(prompt)
         log.info(f"Quality analysis complete for session {session_id}")
-        return response
+        log.debug(f"AgentResult attributes: {[attr for attr in dir(result) if not attr.startswith('_')]}")
+        return str(result)
     
     async def handle_user_message(
         self,
@@ -161,5 +163,5 @@ Use the create_merge_request tool with the exact file changes we discussed."""
             prompt = message
         
         response = await self.agent.invoke_async(prompt)
-        log.debug(f"Generated quality response for session {session_id}")
-        return response
+        log.debug(f"Generated response for session {session_id}")
+        return response.content

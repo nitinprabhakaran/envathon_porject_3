@@ -2,6 +2,7 @@
 from typing import Dict, Any, List
 from datetime import datetime
 from strands import Agent
+import os
 from strands.models.bedrock import BedrockModel
 from strands.models.anthropic import AnthropicModel
 from utils.logger import log
@@ -59,15 +60,19 @@ class PipelineAgent:
         # Initialize LLM based on provider
         if settings.llm_provider == "bedrock":
             self.model = BedrockModel(
-                region=settings.aws_region,
-                access_key_id=settings.aws_access_key_id,
-                secret_access_key=settings.aws_secret_access_key,
-                model_kwargs={"max_tokens": 4096}
+                model_id=os.getenv("MODEL_ID", "us.anthropic.claude-3-5-sonnet-20241022-v2:0"),
+                region=os.getenv("AWS_REGION", "us-west-2"),
+                temperature=0.3,
+                streaming=True,
+                max_tokens=4096,
+                top_p=0.8
             )
         else:
             self.model = AnthropicModel(
-                api_key=settings.anthropic_api_key,
-                model_kwargs={"max_tokens": 4096}
+                model_id=os.getenv("MODEL_ID", "claude-3-5-sonnet-20241022"),
+                api_key=os.getenv("ANTHROPIC_API_KEY"),
+                temperature=0.3,
+                max_tokens=4096
             )
         
         # Initialize agent with tools
@@ -127,9 +132,10 @@ Use the available tools to:
 Remember: Do NOT create a merge request. Only analyze and propose solutions."""
         
         # Run analysis
-        response = await self.agent.invoke_async(prompt)
+        result = await self.agent.invoke_async(prompt)
         log.info(f"Analysis complete for session {session_id}")
-        return response
+        log.info(result)
+        return str(result)
     
     async def handle_user_message(
         self,
@@ -163,6 +169,6 @@ Use the create_merge_request tool with the exact file changes we discussed."""
         else:
             prompt = message
         
-        response = await self.agent.arun(prompt)
+        response = await self.agent.invoke_async(prompt)
         log.debug(f"Generated response for session {session_id}")
-        return response
+        return response.content
