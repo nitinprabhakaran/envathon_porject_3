@@ -85,40 +85,37 @@ def parse_response_for_cards(response_text: str) -> tuple:
     """Parse AI response to extract confidence, solution and create cards"""
     cards = []
     
-    # Extract confidence
-    confidence_match = re.search(r'\*\*Confidence\*\*:\s*(\d+)%', response_text)
-    confidence = int(confidence_match.group(1)) if confidence_match else 0
-    
-    # Extract root cause
-    root_cause_match = re.search(r'\*\*Root Cause\*\*:\s*(.+?)(?=\n|$)', response_text)
-    root_cause = root_cause_match.group(1) if root_cause_match else "Unknown"
-    
-    # Create analysis card
-    cards.append({
-        "type": "analysis",
-        "title": "Pipeline Failure Analysis",
-        "content": f"Root cause: {root_cause}",
-        "confidence": confidence,
-        "error_type": "build_failure"
-    })
-    
-    # Check if there's a solution with high confidence
-    if confidence >= 80 and "I can create a merge request" in response_text:
-        # Extract solution details
-        solution_match = re.search(r'### 💡 Solution\n(.+?)### Next Steps', response_text, re.DOTALL)
-        solution_text = solution_match.group(1).strip() if solution_match else "Apply recommended fixes"
-        
+    # For quality sessions, create appropriate cards
+    if "merge request has been created successfully" in response_text.lower():
         cards.append({
-            "type": "solution",
-            "title": "Recommended Fix",
-            "confidence": confidence,
-            "estimated_time": "5-10 minutes",
-            "content": solution_text[:200] + "..." if len(solution_text) > 200 else solution_text,
-            "fix_type": "config",
-            "actions": [
-                {"label": "Apply Fix", "action": "apply_fix"},
-                {"label": "Create MR", "action": "create_mr"}
-            ]
+            "type": "quality_summary",
+            "title": "Quality Issues Fixed",
+            "bugs": 0,  # Extract from response if available
+            "vulnerabilities": 0,
+            "code_smells": 0,
+            "effort": "Completed"
+        })
+        
+        # Extract merge request info
+        if "merge request" in response_text.lower():
+            cards.append({
+                "type": "solution",
+                "title": "Merge Request Created",
+                "confidence": 100,
+                "content": "All quality issues have been fixed and a merge request has been created.",
+                "fix_type": "quality",
+                "actions": [
+                    {"label": "View MR", "action": "view_mr"}
+                ]
+            })
+    else:
+        # Default analysis card for other responses
+        cards.append({
+            "type": "analysis",
+            "title": "Quality Analysis",
+            "content": response_text[:200] + "..." if len(response_text) > 200 else response_text,
+            "confidence": 0,
+            "error_type": "quality_gate"
         })
     
     return cards

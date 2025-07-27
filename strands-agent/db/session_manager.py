@@ -395,18 +395,20 @@ class SessionManager:
     async def check_existing_quality_session(self, project_id: str) -> Optional[Dict[str, Any]]:
         """Check if there's an existing active quality session for a project"""
         async with self._get_connection() as conn:
+            # Add time check - only consider sessions created in last hour
             row = await conn.fetchrow(
                 """
                 SELECT * FROM sessions 
                 WHERE project_id = $1 
                 AND session_type = 'quality' 
                 AND status = 'active'
+                AND created_at > (CURRENT_TIMESTAMP - INTERVAL '1 hour')
                 ORDER BY created_at DESC
                 LIMIT 1
                 """,
                 project_id
             )
-
+            
             if row:
                 result = dict(row)
                 # Parse JSON fields
@@ -417,5 +419,5 @@ class SessionManager:
                         except:
                             result[field] = [] if field.endswith('history') or field.endswith('fixes') or field == 'tools_called' else {}
                 return result
-
+            
             return None

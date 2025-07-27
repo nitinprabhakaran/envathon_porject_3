@@ -99,8 +99,7 @@ async def handle_gitlab_webhook(
             return {
                 "status": "redirected", 
                 "reason": "SonarQube failure already tracked in quality session",
-                "session_id": existing_quality_session["id"],
-                "ui_url": f"http://localhost:8501/?session={existing_quality_session['id']}&tab=quality"
+                "session_id": existing_quality_session["id"]
             }
     
     # Extract key information
@@ -166,8 +165,7 @@ async def handle_gitlab_webhook(
                 return {
                     "status": "updated",
                     "session_id": session_id,
-                    "message": f"Added failed job to existing session",
-                    "ui_url": f"http://localhost:8501/?session={session_id}"
+                    "message": f"Added failed job to existing session"
                 }
     
     recent_webhooks[webhook_key] = datetime.utcnow()
@@ -226,8 +224,7 @@ async def handle_gitlab_webhook(
     return {
         "status": "analyzing",
         "session_id": actual_session_id,
-        "message": "Analysis started in background",
-        "ui_url": f"http://localhost:8501/?session={actual_session_id}"
+        "message": "Analysis started in background"
     }
 
 async def analyze_additional_failure(session_id: str, failed_job: Dict[str, Any], webhook_data: Dict[str, Any]):
@@ -337,8 +334,6 @@ def format_gitlab_comment(analysis_result: Dict[str, Any]) -> str:
     
     # Add session link
     session_id = analysis_result["session_id"]
-    ui_url = f"http://localhost:8501/?session={session_id}"
-    comment_parts.append(f"[View Interactive Analysis]({ui_url})\n")
     
     # Add cards content
     for card in analysis_result.get("cards", []):

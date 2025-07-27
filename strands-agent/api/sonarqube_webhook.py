@@ -54,6 +54,16 @@ async def handle_sonarqube_webhook(request: Request):
         logger.error(f"Failed to parse SonarQube webhook: {e}")
         raise HTTPException(status_code=400, detail="Invalid JSON payload")
     
+    # Check for existing active quality session for this project
+    existing_session = await session_manager.check_existing_quality_session(gitlab_project_id)
+    if existing_session:
+        logger.info(f"Existing quality session found for project {gitlab_project_id}")
+        return {
+            "status": "existing",
+            "session_id": str(existing_session['id']),
+            "message": "Using existing quality session"
+        }
+
     # Check if quality gate failed
     quality_gate = data.get("qualityGate", {})
     if quality_gate.get("status") != "ERROR":
@@ -122,8 +132,7 @@ async def handle_sonarqube_webhook(request: Request):
     return {
         "status": "analyzing",
         "session_id": session_id,
-        "message": "Quality analysis started",
-        "ui_url": f"http://localhost:8501/?session={session_id}&tab=quality"
+        "message": "Quality analysis started"
     }
 
 async def run_quality_analysis(session_id: str, webhook_data: Dict[str, Any], sonarqube_key: str, gitlab_project_id: str):

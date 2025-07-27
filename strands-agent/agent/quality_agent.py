@@ -32,12 +32,13 @@ When analyzing SonarQube quality gate failures:
 - The session context contains both 'sonarqube_key' (for SonarQube API) and 'project_id' (for GitLab API)
 - Use the appropriate ID for each API
 
-If a tool call fails:
-- Output: "ERROR IN TOOL CALL: [tool_name] - [error_message]"
-- Analyze the error and adjust your approach
-- Do not retry the same failing call more than twice
+Output format:
+- Start with a summary of issues found
+- If it is feasible, show small snippets of the changes you made in code
+- Show the fixes applied
+- End with the merge request status
 
-When working with merge requests, the 'changes' parameter expects a Python dictionary where keys are file paths and values are complete file contents as strings."""
+Do not describe the tools you used or the workflow steps."""
 
 class QualityAnalysisAgent:
     def __init__(self):
