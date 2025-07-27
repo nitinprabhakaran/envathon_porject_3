@@ -200,3 +200,25 @@ async def get_security_vulnerabilities(project_id: Optional[str] = None) -> List
         except Exception as e:
             logger.error(f"Failed to get security hotspots: {e}")
             return vulnerabilities  # Return what we have even if hotspots fail
+
+@tool
+async def get_quality_gate_details(project_key: str) -> Dict[str, Any]:
+    """Get detailed quality gate status and conditions
+    
+    Args:
+        project_key: SonarQube project key
+    
+    Returns:
+        Quality gate details including conditions and metrics
+    """
+    async with await get_sonar_client() as client:
+        try:
+            response = await client.get(
+                "/qualitygates/project_status",
+                params={"projectKey": project_key}
+            )
+            response.raise_for_status()
+            return response.json()
+        except Exception as e:
+            logger.error(f"Failed to get quality gate details: {e}")
+            return {"error": str(e)}

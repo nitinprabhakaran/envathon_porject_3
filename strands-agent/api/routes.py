@@ -307,3 +307,32 @@ Session: `{session_id}`""",
     except Exception as e:
         logger.error(f"Failed to create MR: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
+
+@api_router.post("/sessions/{session_id}/message")
+async def send_message(session_id: str, request: MessageRequest):
+    """Send a message to the agent for a specific session"""
+    try:
+        session = await session_manager.get_session(session_id)
+        if not session:
+            raise HTTPException(status_code=404, detail="Session not found")
+        
+        # Route to appropriate agent based on session type
+        if session.get("session_type") == "quality":
+            from agent.quality_agent import QualityAnalysisAgent
+            quality_agent = QualityAnalysisAgent()
+            response = await quality_agent.continue_conversation(
+                session_id=session_id,
+                user_message=request.message
+            )
+        else:
+            response = await agent.continue_conversation(
+                session_id=session_id,
+                user_message=request.message
+            )
+        
+        return response
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        logger.error(f"Failed to process message: {e}")
+        raise HTTPException(status_code=500, detail=str(e))

@@ -327,3 +327,62 @@ class SessionManager:
                 results.append(result)
             
             return results
+    
+    async def create_quality_session(
+        self,
+        session_id: str,
+        project_id: str,
+        project_name: str,
+        quality_gate_status: str = "ERROR"
+    ) -> Dict[str, Any]:
+        """Create a new quality analysis session"""
+        async with self._get_connection() as conn:
+            new_session = await conn.fetchrow(
+                """
+                INSERT INTO sessions (id, project_id, project_name, session_type, 
+                                    quality_gate_status, conversation_history, status)
+                VALUES ($1, $2, $3, 'quality', $4, $5, 'active')
+                RETURNING *
+                """,
+                session_id, project_id, project_name, quality_gate_status, json.dumps([])
+            )
+            
+            result = dict(new_session)
+            # Parse JSON fields
+            for field in ['conversation_history', 'applied_fixes', 'successful_fixes', 'tools_called', 'user_feedback', 'webhook_data']:
+                if field in result and isinstance(result[field], str):
+                    try:
+                        result[field] = json.loads(result[field])
+                    except:
+                        result[field] = [] if field.endswith('history') or field.endswith('fixes') or field == 'tools_called' else {}
+            
+            return result
+    
+    async def update_quality_metrics(
+        self,
+        session_id: str,
+        total_issues: int,
+        critical_issues: int,
+        major_issues: int
+    ):
+        """Update quality metrics for a session"""
+        async with self._get_connection() as conn:
+            await conn.execute(
+                """
+                UPDATE sessions 
+                SET total_issues = $2,
+                    critical_issues = $3,
+                    major_issues = $4,
+                    last_activity = CURRENT_TIMESTAMP
+                WHERE id = $1
+                """,
+                session_id, total_issues, critical_issues, major_issues
+            )
+    
+    async def create_or_get_session(
+        self,
+        session_id: str,
+        project_id: str,
+        pipeline_id: str,
+        commit_hash: Optional[str] = None
+    ) -> Dict[str, Any]:

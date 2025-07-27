@@ -4,6 +4,9 @@ from contextlib import asynccontextmanager
 import os
 from dotenv import load_dotenv
 from loguru import logger
+from api.webhook import webhook_router
+from api.sonarqube_webhook import sonarqube_router
+from api.routes import api_router
 
 from api.webhook import webhook_router
 from api.routes import api_router

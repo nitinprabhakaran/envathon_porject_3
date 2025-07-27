@@ -79,13 +79,17 @@ def render_solution_card(card: Dict[str, Any], session_data: Optional[Dict[str, 
         
         # Show code changes if present
         if code_changes := card.get('code_changes'):
-            with st.expander("View Code Changes"):
+            with st.expander("View Fix steps"):
                 st.code(code_changes, language=card.get('language', 'yaml'))
         
         # Action buttons
         if actions := card.get('actions', []):
             cols = st.columns(len(actions))
             for i, action in enumerate(actions):
+                # Skip "Apply Fix" button
+                if action.get('action') == 'apply_fix':
+                    continue
+
                 with cols[i]:
                     # Generate unique key using card content hash
                     import hashlib
