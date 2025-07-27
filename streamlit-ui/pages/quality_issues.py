@@ -106,10 +106,7 @@ with col2:
                     continue
                     
                 with st.chat_message(msg["role"]):
-                    content = msg.get("content", "")
-                    if isinstance(content, dict):
-                        content = content.get("message", str(content))
-                    st.markdown(content)
+                    st.markdown(msg.get("content", ""))
             
             # Check if MR was created
             has_mr = any(

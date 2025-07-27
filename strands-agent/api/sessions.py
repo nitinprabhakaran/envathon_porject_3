@@ -103,7 +103,7 @@ async def send_message(session_id: str, request: MessageRequest):
         if not response_text:
             response_text = str(response)
         
-        # Add agent response
+        # Add agent response - store as plain text
         await session_manager.add_message(session_id, "assistant", response_text)
         
         log.info(f"Generated response for session {session_id}")
