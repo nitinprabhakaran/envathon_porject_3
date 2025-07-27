@@ -165,6 +165,12 @@ async def analyze_pipeline_failure(session_id: str, project_id: str, pipeline_id
             session_id, project_id, pipeline_id, webhook_data
         )
         
+        # Extract text if analysis is a complex object
+        if isinstance(analysis, dict) and "content" in analysis:
+            content = analysis["content"]
+            if isinstance(content, list) and len(content) > 0:
+                analysis = content[0].get("text", str(analysis))
+        
         # Store analysis in conversation
         await session_manager.add_message(session_id, "assistant", analysis)
         
@@ -187,6 +193,12 @@ async def analyze_quality_issues(session_id: str, project_key: str, gitlab_proje
         analysis = await quality_agent.analyze_quality_issues(
             session_id, project_key, gitlab_project_id, webhook_data
         )
+        
+        # Extract text if analysis is a complex object
+        if isinstance(analysis, dict) and "content" in analysis:
+            content = analysis["content"]
+            if isinstance(content, list) and len(content) > 0:
+                analysis = content[0].get("text", str(analysis))
         
         # Store analysis in conversation
         await session_manager.add_message(session_id, "assistant", analysis)
