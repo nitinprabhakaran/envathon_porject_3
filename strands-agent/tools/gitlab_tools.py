@@ -1,6 +1,7 @@
 import os
 from typing import Dict, Any, List, Optional
 import httpx
+from datetime import datetime
 from strands import tool
 from loguru import logger
 import json
@@ -247,7 +248,22 @@ async def create_merge_request(
                 }
             )
             response.raise_for_status()
-            return response.json()
+            mr_data = response.json()
+        
+            # Add this code to update session metadata
+            from db.session_manager import SessionManager
+            session_manager = SessionManager()
+
+            # Get session ID from agent context
+            session_id = get_current_session_state().get("session_id")
+            if session_id:
+                await session_manager.update_metadata(session_id, {
+                    "merge_request_url": mr_data.get("web_url"),
+                    "merge_request_id": mr_data.get("iid"),
+                    "merge_request_created_at": datetime.utcnow().isoformat()
+                })
+
+            return mr_data
             
         except Exception as e:
             logger.error(f"Failed to create merge request: {e}")
