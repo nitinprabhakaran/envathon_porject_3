@@ -1072,7 +1072,7 @@ class GitLabSetup:
         
         # Set group variables
         info("Setting group-level CI/CD variables...")
-        group.variables.create({'key': 'SONAR_HOST_URL', 'value': sonar_url})
+        group.variables.create({'key': 'SONAR_HOST_URL', 'value': "http://sonarqube:9000"})
         group.variables.create({'key': 'SONAR_TOKEN', 'value': sonar_token, 'masked': True})
         group.variables.create({'key': 'DOCKER_REGISTRY', 'value': 'registry.gitlab.com'})
         
