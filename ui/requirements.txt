@@ -1,8 +1,0 @@
-streamlit
-httpx
-pandas
-plotly
-python-dotenv
-asyncio
-aiofiles
-loguru

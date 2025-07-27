@@ -1,0 +1,12 @@
+# Core
+streamlit
+httpx
+asyncio
+
+# Utilities
+loguru
+python-dotenv
+
+# Development
+pytest
+pytest-asyncio

@@ -1,1 +1,0 @@
-# Vector database package initialization
