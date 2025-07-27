@@ -53,16 +53,6 @@ async def handle_sonarqube_webhook(request: Request):
     except Exception as e:
         logger.error(f"Failed to parse SonarQube webhook: {e}")
         raise HTTPException(status_code=400, detail="Invalid JSON payload")
-    
-    # Check for existing active quality session for this project
-    existing_session = await session_manager.check_existing_quality_session(gitlab_project_id)
-    if existing_session:
-        logger.info(f"Existing quality session found for project {gitlab_project_id}")
-        return {
-            "status": "existing",
-            "session_id": str(existing_session['id']),
-            "message": "Using existing quality session"
-        }
 
     # Check if quality gate failed
     quality_gate = data.get("qualityGate", {})
@@ -76,10 +66,20 @@ async def handle_sonarqube_webhook(request: Request):
     
     # Since SonarQube key = project name now, use it directly
     gitlab_project_id = await get_gitlab_project_id(sonarqube_key)
-    
+
     if not gitlab_project_id:
         logger.error(f"Could not find GitLab project for SonarQube project {sonarqube_key}")
         raise HTTPException(status_code=404, detail=f"GitLab project not found for {project_name}")
+
+    # Check for existing active quality session for this project
+    existing_session = await session_manager.check_existing_quality_session(gitlab_project_id)
+    if existing_session:
+        logger.info(f"Existing quality session found for project {gitlab_project_id}")
+        return {
+            "status": "existing",
+            "session_id": str(existing_session['id']),
+            "message": "Using existing quality session"
+        }
     
     # Create session
     session_id = str(uuid.uuid4())
