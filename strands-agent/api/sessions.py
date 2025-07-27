@@ -39,13 +39,7 @@ async def get_session(session_id: str):
         session = await session_manager.get_session(session_id)
         if not session:
             raise HTTPException(status_code=404, detail="Session not found")
-        if session:
-            result = dict(session)
-            # Parse JSON fields
-            for field in ['conversation_history', 'webhook_data']:
-                if field in result and isinstance(result[field], str):
-                    result[field] = json.loads(result[field])
-            return result
+        return session
     except HTTPException:
         raise
     except Exception as e:
@@ -87,16 +81,32 @@ async def send_message(session_id: str, request: MessageRequest):
                 session_id, request.message, conversation_history, context
             )
         
-        # Add agent response
+        # Extract response text properly
         if hasattr(response, 'message'):
             response_text = response.message
         elif hasattr(response, 'content'):
-            response_text = response.content
+            # Handle Anthropic response format
+            if isinstance(response.content, list) and len(response.content) > 0:
+                response_text = response.content[0].get('text', str(response.content))
+            else:
+                response_text = response.content
+        elif isinstance(response, dict):
+            if 'message' in response:
+                response_text = response['message']
+            elif 'content' in response:
+                content = response['content']
+                if isinstance(content, list) and len(content) > 0:
+                    response_text = content[0].get('text', str(content))
+                else:
+                    response_text = content
+            else:
+                response_text = str(response)
         elif isinstance(response, str):
             response_text = response
         else:
             response_text = str(response)
-
+        
+        # Add agent response
         await session_manager.add_message(session_id, "assistant", response_text)
         
         log.info(f"Generated response for session {session_id}")

@@ -75,23 +75,24 @@ class PipelineAgent:
                 max_tokens=4096
             )
         
-        # Initialize agent with tools
-        self.agent = Agent(
+        # Store tools for reuse
+        self.tools = [
+            get_pipeline_jobs,
+            get_job_logs,
+            get_file_content,
+            get_recent_commits,
+            create_merge_request,
+            get_project_info
+        ]
+        
+        # Initialize base agent
+        self.base_agent = Agent(
             model=self.model,
             system_prompt=PIPELINE_SYSTEM_PROMPT,
-            tools=[
-                get_pipeline_jobs,
-                get_job_logs,
-                get_file_content,
-                get_recent_commits,
-                create_merge_request,
-                get_project_info
-            ]
+            tools=self.tools
         )
-        log.info("Pipeline agent initialized")
         
-        # Debug: Check available methods
-        log.info(f"Agent methods: {[m for m in dir(self.agent) if not m.startswith('_')]}")
+        log.info("Pipeline agent initialized")
     
     async def analyze_failure(
         self,
@@ -132,8 +133,9 @@ Use the available tools to:
 Remember: Do NOT create a merge request. Only analyze and propose solutions."""
         
         # Run analysis
-        result = await self.agent.invoke_async(prompt)
+        result = await self.base_agent.invoke_async(prompt)
         log.info(f"Analysis complete for session {session_id}")
+        
         # Extract response text
         if hasattr(result, 'message'):
             return result.message
@@ -151,20 +153,32 @@ Remember: Do NOT create a merge request. Only analyze and propose solutions."""
     ) -> str:
         """Handle user message in conversation"""
         log.info(f"Handling user message for session {session_id}")
-
-        # Add all messages including system context
+        
+        # Build conversation messages
+        messages = []
+        
+        # Add all previous messages
         for msg in conversation_history:
-            if msg["role"] in ["user", "assistant"]:
-                self.agent.conversation_manager.add_message(
-                    role=msg["role"],
-                    content=msg["content"]
-                )
-            elif msg["role"] == "system":
-                # Add system messages as assistant context
-                self.agent.conversation_manager.add_message(
-                    role="assistant",
-                    content=f"[System Context: {msg['content']}]"
-                )
+            if msg["role"] == "system":
+                # Include system messages as context in first user message
+                if not messages:
+                    messages.append({
+                        "role": "user",
+                        "content": f"[Context: {msg['content']}]"
+                    })
+            elif msg["role"] in ["user", "assistant"]:
+                messages.append({
+                    "role": msg["role"],
+                    "content": msg["content"]
+                })
+        
+        # Create agent with conversation history
+        agent_with_history = Agent(
+            model=self.model,
+            system_prompt=PIPELINE_SYSTEM_PROMPT,
+            tools=self.tools,
+            messages=messages
+        )
         
         # Check if user wants to create MR
         if "create" in message.lower() and ("mr" in message.lower() or "merge request" in message.lower()):
@@ -181,9 +195,10 @@ Based on our previous analysis, create a merge request with the necessary fixes.
 Use the create_merge_request tool with the exact file changes we discussed."""
         else:
             prompt = message
-
-        result = await self.agent.invoke_async(prompt)
-
+        
+        result = await agent_with_history.invoke_async(prompt)
+        log.debug(f"Generated response for session {session_id}")
+        
         # Extract response text
         if hasattr(result, 'message'):
             return result.message
