@@ -75,7 +75,7 @@ def extract_quality_info(response: str) -> Dict[str, Any]:
     info = {
         "issues_fixed": 0,
         "merge_request_created": False,
-        "summary": response[:200] + "..." if len(response) > 200 else response
+        "summary": response
     }
     
     if "merge request has been created successfully" in response.lower():
@@ -222,8 +222,7 @@ with tab2:
                             info = extract_quality_info(content)
                             if info['merge_request_created']:
                                 st.success(f"✅ Fixed {info['issues_fixed']} issues and created merge request")
-                            else:
-                                st.write(info['summary'])
+                            st.markdown(content)
                         else:
                             st.write(content)
                 
