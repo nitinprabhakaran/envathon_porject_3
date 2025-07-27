@@ -12,7 +12,8 @@ from db.session_manager import SessionManager
 from tools.sonarqube_tools import (
     get_project_quality_status,
     get_code_quality_issues,
-    get_security_vulnerabilities
+    get_security_vulnerabilities,
+    get_issues_with_context
 )
 from tools.quality_tools import (
     analyze_quality_gate,
@@ -21,7 +22,6 @@ from tools.quality_tools import (
     create_quality_mr,
     get_all_project_issues,
     get_issue_details,
-    get_issues_with_context,
     create_quality_batch_mr
 )
 from tools.gitlab_tools import get_file_content, create_merge_request

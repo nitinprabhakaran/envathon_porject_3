@@ -229,3 +229,79 @@ async def get_quality_gate_details(project_key: str) -> Dict[str, Any]:
         except Exception as e:
             logger.error(f"Failed to get quality gate details: {e}")
             return {"error": str(e)}
+
+@tool
+async def check_project_exists(project_key: str) -> bool:
+    """Check if a project exists in SonarQube"""
+    async with await get_sonar_client() as client:
+        try:
+            response = await client.get(
+                "/projects/search",
+                params={"projects": project_key}
+            )
+            response.raise_for_status()
+            data = response.json()
+            components = data.get("components", [])
+            return any(c.get("key") == project_key for c in components)
+        except:
+            return False
+
+@tool
+async def get_issues_with_context(
+    project_key: Optional[str] = None,
+    limit: int = 50
+) -> List[Dict[str, Any]]:
+    """Get all SonarQube issues with file paths and line numbers"""
+    if not project_key:
+        # Get from context
+        try:
+            from strands import Agent
+            current_agent = getattr(Agent, '_current_instance', None)
+            if current_agent and hasattr(current_agent, 'session_state'):
+                project_key = current_agent.session_state.get("sonarqube_key")
+        except:
+            pass
+    
+    if not project_key:
+        return []
+    
+    # Check if project exists first
+    if not await check_project_exists(project_key):
+        logger.warning(f"Project {project_key} not found in SonarQube")
+        return []
+    
+    from .sonarqube_tools import get_sonar_client
+    
+    async with await get_sonar_client() as client:
+        try:
+            response = await client.get(
+                "/issues/search",
+                params={
+                    "componentKeys": project_key,
+                    "ps": limit,
+                    "resolved": "false"
+                }
+            )
+            response.raise_for_status()
+            
+            issues = []
+            for issue in response.json().get("issues", []):
+                component = issue.get("component", "")
+                file_path = component.split(":")[-1] if ":" in component else component
+                
+                issues.append({
+                    "key": issue.get("key"),
+                    "file_path": file_path,
+                    "line": issue.get("line"),
+                    "type": issue.get("type"),
+                    "severity": issue.get("severity"),
+                    "message": issue.get("message"),
+                    "rule": issue.get("rule"),
+                    "effort": issue.get("effort")
+                })
+            
+            return issues
+            
+        except Exception as e:
+            logger.error(f"Failed to get issues: {e}")
+            return []
