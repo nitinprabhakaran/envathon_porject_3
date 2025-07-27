@@ -55,8 +55,7 @@ async def handle_sonarqube_webhook(request: Request):
         "webhook_data": data,
         "project_key": project_key,
         "analyzed_at": data.get("analysedAt"),
-        "branch": data.get("branch", {}).get("name", "main"),
-        "quality_conditions": quality_gate.get("conditions", [])
+        "branch": data.get("branch", {}).get("name", "main")
     })
     
     # Count issues by severity
