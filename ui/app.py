@@ -265,10 +265,14 @@ with main_col:
         with chat_container:
             messages = st.session_state.messages.get(session_id, [])
             
-            for msg in messages:
+            for idx, msg in enumerate(messages):
                 if msg.get("role") == "system":
                     continue
-                    
+                
+                is_latest_assistant_msg = (
+                    msg.get("role") == "assistant" and 
+                    idx == len(messages) - 1
+                )
                 # Use native chat message
                 with st.chat_message(msg["role"]):
                     # Show cards if present
@@ -284,7 +288,13 @@ with main_col:
                                 unique_cards.append(card)
                         
                         for card in unique_cards:
-                            render_card(card, active_session)
+                            if not is_latest_assistant_msg and card.get("type") == "solution":
+                                # Remove action buttons for older cards
+                                card_copy = card.copy()
+                                card_copy["actions"] = []
+                                render_card(card_copy, active_session)
+                            else:
+                                render_card(card, active_session)
                     elif msg.get("content"):
                         # Only show content if no cards
                         st.write(msg["content"])

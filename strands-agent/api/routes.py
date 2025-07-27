@@ -178,6 +178,7 @@ async def send_message(session_id: str, request: MessageRequest):
 @api_router.post("/sessions/{session_id}/apply-fix")
 async def apply_fix(session_id: str, request: ApplyFixRequest):
     """Apply a suggested fix"""
+    logger.info(f"Apply fix request received: session={session_id}, fix_id={request.fix_id}")
     try:
         session = await session_manager.get_session(session_id)
         if not session:
@@ -192,6 +193,7 @@ async def apply_fix(session_id: str, request: ApplyFixRequest):
                 "applied_at": datetime.utcnow().isoformat()
             }
         )
+        logger.info(f"Fix applied successfully: {request.fix_id}")
         
         return {
             "status": "success",
@@ -213,6 +215,7 @@ async def apply_fix(session_id: str, request: ApplyFixRequest):
 @api_router.post("/sessions/{session_id}/create-mr")
 async def create_merge_request_endpoint(session_id: str, request: CreateMRRequest):
     """Create a merge request for a fix"""
+    logger.info(f"Create MR request received: session={session_id}, fix_id={request.fix_id}")
     try:
         session = await session_manager.get_session(session_id)
         if not session:
@@ -270,7 +273,7 @@ Session: `{session_id}`""",
             target_branch="main",
             project_id=project_id
         )
-        
+        logger.info(f"Fix applied successfully: {request.fix_id}")
         if "error" in result:
             raise HTTPException(status_code=500, detail=result["error"])
         

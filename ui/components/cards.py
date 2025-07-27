@@ -1,6 +1,7 @@
 import streamlit as st
 from typing import Dict, Any, Optional
 import time
+from loguru import logger
 
 def render_card(card: Dict[str, Any], session_data: Optional[Dict[str, Any]] = None):
     """Render different types of UI cards with session context"""
@@ -86,9 +87,14 @@ def render_solution_card(card: Dict[str, Any], session_data: Optional[Dict[str, 
             cols = st.columns(len(actions))
             for i, action in enumerate(actions):
                 with cols[i]:
-                    # Generate unique key using timestamp and index
-                    card_id = f"{int(time.time() * 1000)}_{i}"
-                    if st.button(action['label'], key=f"solution_{card_id}"):
+                    # Generate unique key using card content hash
+                    import hashlib
+                    card_hash = hashlib.md5(
+                        f"{card.get('title', '')}{card.get('content', '')}{i}".encode()
+                    ).hexdigest()[:8]
+                    button_key = f"solution_{card_hash}_{i}"
+                    
+                    if st.button(action['label'], key=button_key):
                         handle_action(action, session_data)
 
 def render_error_card(card: Dict[str, Any], session_data: Optional[Dict[str, Any]] = None):
@@ -180,11 +186,13 @@ def handle_action(action: Dict[str, Any], session_data: Optional[Dict[str, Any]]
         with st.spinner("Applying fix..."):
             client = APIClient()
             fix_id = action_data.get('fix_id', f"fix-{int(time.time())}")
+            logger.info(f"Sending apply_fix request: {fix_id}")
             result = asyncio.run(client.apply_fix(
                 session_data['id'], 
                 fix_id, 
                 action_data
             ))
+            logger.info(f"Apply fix response: {result.get('status')}")
             if result.get('status') == 'success':
                 st.success("✅ Fix applied successfully!")
                 st.rerun()
@@ -196,10 +204,12 @@ def handle_action(action: Dict[str, Any], session_data: Optional[Dict[str, Any]]
         with st.spinner("Creating merge request..."):
             client = APIClient()
             fix_id = action_data.get('fix_id', f"mr-{int(time.time())}")
+            logger.info(f"Sending create_mr request: {fix_id}")
             result = asyncio.run(client.create_merge_request(
                 session_data['id'],
                 {'fix_id': fix_id, 'fix_data': action_data}
             ))
+            logger.info(f"Create MR response: {result.get('status')}")
             if result.get('status') == 'success':
                 mr_info = result.get('merge_request', {})
                 st.success(f"✅ Merge request created!")
