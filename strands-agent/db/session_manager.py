@@ -224,7 +224,6 @@ class SessionManager:
                 "pipeline_url": "pipeline_url",
                 "project_key": "project_id",  # For SonarQube
                 "analyzed_at": "last_activity",
-                "quality_conditions": "webhook_data"
             }
             
             for key, value in metadata.items():
@@ -381,3 +380,31 @@ class SessionManager:
                 results.append(result)
             
             return results
+    
+    async def check_existing_quality_session(self, project_id: str) -> Optional[Dict[str, Any]]:
+        """Check if there's an existing active quality session for a project"""
+        async with self._get_connection() as conn:
+            row = await conn.fetchrow(
+                """
+                SELECT * FROM sessions 
+                WHERE project_id = $1 
+                AND session_type = 'quality' 
+                AND status = 'active'
+                ORDER BY created_at DESC
+                LIMIT 1
+                """,
+                project_id
+            )
+            
+            if row:
+                result = dict(row)
+                # Parse JSON fields
+                for field in ['conversation_history', 'applied_fixes', 'successful_fixes', 'tools_called', 'user_feedback', 'webhook_data']:
+                    if field in result and isinstance(result[field], str):
+                        try:
+                            result[field] = json.loads(result[field])
+                        except:
+                            result[field] = [] if field.endswith('history') or field.endswith('fixes') or field == 'tools_called' else {}
+                return result
+            
+            return None
