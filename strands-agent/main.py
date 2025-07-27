@@ -10,6 +10,10 @@ from api.routes import api_router
 from db.models import init_db
 from vector.qdrant_client import init_vector_db
 
+import logging
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("asyncio").setLevel(logging.WARNING)
+
 load_dotenv()
 
 @asynccontextmanager

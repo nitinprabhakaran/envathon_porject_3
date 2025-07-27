@@ -5,6 +5,9 @@ import json, time
 from components.cards import render_card
 from components.pipeline_tabs import PipelineTabs
 from utils.api_client import APIClient
+import logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 # Page config
 st.set_page_config(
@@ -77,11 +80,14 @@ if "last_refresh" not in st.session_state:
 def fetch_sessions_cached():
     """Fetch active sessions with caching"""
     async def _fetch():
-        return await st.session_state.api_client.get_active_sessions()
+        sessions = await st.session_state.api_client.get_active_sessions()
+        logger.info(f"Fetched {len(sessions)} active sessions")
+        return sessions
     return asyncio.run(_fetch())
 
 async def load_session(session_id: str):
     """Load complete session data from API"""
+    logger.info(f"Loading session: {session_id}")
     # Prevent double loading
     if st.session_state.loading_session == session_id:
         return

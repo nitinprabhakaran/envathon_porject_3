@@ -78,9 +78,6 @@ async def get_active_sessions():
         sessions = await session_manager.get_active_sessions()
         logger.info(f"Raw sessions count: {len(sessions)}")
         
-        if sessions:
-            logger.info(f"First session data: {sessions[0]}")
-        
         serialized_sessions = [serialize_session(session) for session in sessions]
         logger.info(f"Returning {len(serialized_sessions)} active sessions")
         
@@ -141,6 +138,8 @@ async def debug_check_session(session_id: str):
                 return {"found": False, "session_id": session_id}
     except Exception as e:
         return {"error": str(e)}
+
+@api_router.get("/sessions/{session_id}")
 async def get_session(session_id: str):
     """Get specific session details"""
     try:
