@@ -270,13 +270,19 @@ with main_col:
         with chat_container:
             messages = st.session_state.messages.get(session_id, [])
             
-            # Find the index of the last assistant message with cards
-            last_assistant_with_cards_idx = -1
+            # Find the index of the last assistant message with solution cards
+            last_solution_card_idx = -1
             for i in range(len(messages)-1, -1, -1):
                 msg = messages[i]
                 if msg.get("role") == "assistant" and msg.get("cards"):
-                    last_assistant_with_cards_idx = i
-                    break
+                    # Check if any card is a solution type
+                    for card in msg["cards"]:
+                        if card.get("type") == "solution":
+                            last_solution_card_idx = i
+                            break
+                    if last_solution_card_idx != -1:
+                        break
+
             for idx, msg in enumerate(messages):
                 if msg.get("role") == "system":
                     continue
@@ -305,7 +311,7 @@ with main_col:
                         
                         for card in unique_cards:
                             # Only show buttons on the last assistant message with cards
-                            if idx != last_assistant_with_cards_idx and card.get("type") == "solution":
+                            if card.get("type") == "solution" and idx != last_solution_card_idx:
                                 card_copy = card.copy()
                                 card_copy["actions"] = []
                                 render_card(card_copy, active_session)

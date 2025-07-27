@@ -20,6 +20,8 @@ session_manager = SessionManager()
 # Progress tracking
 analysis_progress = {}
 
+recent_webhooks = {}
+
 def verify_gitlab_token(token: str, body: bytes, gitlab_token: str) -> bool:
     """Verify GitLab webhook token"""
     if not gitlab_token:
@@ -84,6 +86,15 @@ async def handle_gitlab_webhook(
     # Extract key information
     project_id = str(data["project"]["id"])
     pipeline_id = str(data["object_attributes"]["id"])
+    webhook_key = f"{project_id}:{pipeline_id}"
+
+    # Check if we recently processed this
+    if webhook_key in recent_webhooks:
+        last_processed = recent_webhooks[webhook_key]
+        if (datetime.utcnow() - last_processed).seconds < 60:  # Within 60 seconds
+            return {"status": "duplicate", "message": "Recently processed"}
+    
+    recent_webhooks[webhook_key] = datetime.utcnow()
     
     # Create session ID using UUID
     import uuid
