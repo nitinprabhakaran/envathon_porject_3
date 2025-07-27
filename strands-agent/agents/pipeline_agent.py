@@ -2,7 +2,8 @@
 from typing import Dict, Any, List
 from datetime import datetime
 from strands import Agent
-from strands.models import BedrockModel, AnthropicModel
+from strands.models.bedrock import BedrockModel
+from strands.models.anthropic import AnthropicModel
 from utils.logger import log
 from config import settings
 from tools.gitlab import (
@@ -121,7 +122,7 @@ Use the available tools to:
 Remember: Do NOT create a merge request. Only analyze and propose solutions."""
         
         # Run analysis
-        response = await self.agent.run(prompt)
+        response = await self.agent.invoke(prompt)
         log.info(f"Analysis complete for session {session_id}")
         return response
     
@@ -157,6 +158,6 @@ Use the create_merge_request tool with the exact file changes we discussed."""
         else:
             prompt = message
         
-        response = await self.agent.run(prompt)
+        response = await self.agent.invoke(prompt)
         log.debug(f"Generated response for session {session_id}")
         return response

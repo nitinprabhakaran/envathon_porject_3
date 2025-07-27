@@ -1,7 +1,5 @@
-version: '3.8'
-
 services:
-  # Infrastructure Services
+  # Infrastructure Services (keeping existing ones)
   postgres-gitlab:
     image: postgres:16-alpine
     container_name: postgres-gitlab
@@ -195,20 +193,6 @@ services:
     restart: unless-stopped
 
   # CI/CD Failure Assistant Services
-  qdrant:
-    image: qdrant/qdrant:latest
-    platform: linux/arm64
-    container_name: qdrant
-    ports:
-      - "6333:6333"
-      - "6334:6334"
-    volumes:
-      - qdrant_data:/qdrant/storage
-    environment:
-      - QDRANT__SERVICE__GRPC_PORT=6334
-    networks:
-      - devops-network
-    
   strands-agent:
     build:
       context: ./strands-agent
@@ -219,17 +203,13 @@ services:
     depends_on:
       postgres-assistant:
         condition: service_healthy
-      qdrant:
-        condition: service_started
       gitlab:
         condition: service_started
       sonarqube:
         condition: service_started
     environment:
       - DATABASE_URL=postgresql://${DB_USER:-cicd_assistant}:${DB_PASSWORD:-secure_password}@postgres-assistant:5432/cicd_assistant
-      - QDRANT_URL=http://qdrant:6333
       - LLM_PROVIDER=${LLM_PROVIDER:-bedrock}
-      - MODEL_ID=${MODEL_ID:-anthropic.claude-v2}
       - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
       - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
       - AWS_SESSION_TOKEN=${AWS_SESSION_TOKEN}
@@ -240,19 +220,18 @@ services:
       - SONAR_HOST_URL=http://sonarqube:9000
       - SONAR_TOKEN=${SONAR_TOKEN}
       - SESSION_TIMEOUT_HOURS=4
-      - MAX_TOKENS_PER_SESSION=50000
       - LOG_LEVEL=INFO
     ports:
       - "8000:8000"
     volumes:
       - ./logs:/app/logs
-      - /var/run/docker.sock:/var/run/docker.sock:ro
     networks:
       - devops-network
+    restart: unless-stopped
     
   streamlit-ui:
     build:
-      context: ./ui
+      context: ./streamlit-ui
       dockerfile: Dockerfile
       platforms:
         - linux/arm64
@@ -260,13 +239,15 @@ services:
     depends_on:
       - strands-agent
     environment:
-      - STRANDS_API_URL=http://strands-agent:8000
+      - STREAMLIT_API_URL=http://strands-agent:8000
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
     ports:
       - "8501:8501"
     volumes:
-      - ./ui:/app
+      - ./logs:/app/logs
     networks:
       - devops-network
+    restart: unless-stopped
 
 networks:
   devops-network:
@@ -288,4 +269,3 @@ volumes:
   postgres_gitlab_data:
   postgres_sonar_data:
   postgres_assistant_data:
-  qdrant_data:

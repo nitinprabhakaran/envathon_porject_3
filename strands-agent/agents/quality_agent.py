@@ -2,7 +2,8 @@
 from typing import Dict, Any, List
 from datetime import datetime
 from strands import Agent
-from strands.models import BedrockModel, AnthropicModel
+from strands.models.bedrock import BedrockModel
+from strands.models.anthropic import AnthropicModel
 from utils.logger import log
 from config import settings
 from tools.sonarqube import (
@@ -121,7 +122,7 @@ Important:
 - Use project_id="{gitlab_project_id}" for GitLab API calls
 - Do NOT create a merge request, only analyze and propose fixes"""
         
-        response = await self.agent.run(prompt)
+        response = await self.agent.invoke(prompt)
         log.info(f"Quality analysis complete for session {session_id}")
         return response
     
@@ -157,6 +158,6 @@ Use the create_merge_request tool with the exact file changes we discussed."""
         else:
             prompt = message
         
-        response = await self.agent.run(prompt)
+        response = await self.agent.invoke(prompt)
         log.debug(f"Generated quality response for session {session_id}")
         return response

@@ -16,7 +16,7 @@ from datetime import datetime
 # Configuration
 GROUP_NAME = "envathon"
 QUALITY_GATE_NAME = "envathon-gate"
-AGENT_WEBHOOK_URL = "http://strands-agent:8000/webhook"
+AGENT_WEBHOOK_URL = "http://strands-agent:8000/webhooks"
 
 # Color codes for output
 class Colors:

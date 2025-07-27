@@ -36,8 +36,11 @@ with col1:
         st.rerun()
     
     # Fetch sessions
+    async def fetch_sessions():
+        return await st.session_state.api_client.get_active_sessions()
+    
     try:
-        sessions = asyncio.run(st.session_state.api_client.get_active_sessions())
+        sessions = asyncio.run(fetch_sessions())
         quality_sessions = [s for s in sessions if s.get("session_type") == "quality"]
         
         if not quality_sessions:
