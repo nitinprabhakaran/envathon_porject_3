@@ -222,8 +222,7 @@ class SessionManager:
                 "project_name": "project_name",
                 "merge_request_id": "merge_request_id",
                 "pipeline_url": "pipeline_url",
-                "project_key": "project_id",  # For SonarQube
-                "analyzed_at": "last_activity",
+                "project_key": "project_id",
             }
             
             for key, value in metadata.items():
@@ -395,7 +394,7 @@ class SessionManager:
                 """,
                 project_id
             )
-            
+
             if row:
                 result = dict(row)
                 # Parse JSON fields
@@ -406,5 +405,5 @@ class SessionManager:
                         except:
                             result[field] = [] if field.endswith('history') or field.endswith('fixes') or field == 'tools_called' else {}
                 return result
-            
+
             return None
