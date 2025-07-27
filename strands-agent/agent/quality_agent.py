@@ -36,16 +36,22 @@ Workflow:
 1. Use get_issues_with_context to get all issues (this uses SonarQube key)
 2. Group issues by file
 3. Use get_file_content for each file (pass the GitLab project_id from context)
-4. Fix all issues
-5. Call create_merge_request with complete fix data (pass the GitLab project_id from context)
+4. Fix all issues in the code
+5. Call create_merge_request with the fixed code
 
-When ready to create MR, call create_merge_request with:
+When calling create_merge_request:
 - title: "Fix X SonarQube issues"
 - description: Detailed list of fixes
-- changes: Dictionary mapping file paths to fixed content
+- changes: Dictionary where keys are file paths (e.g., "analytics/processor.py") and values are the COMPLETE fixed file content as strings
 - source_branch: "quality-fixes-[timestamp]"
 - target_branch: "main"
 - project_id: The GitLab project ID from session context
+
+Example of changes format:
+{
+    "analytics/processor.py": "import pandas as pd\\nimport numpy as np\\n# ... rest of the fixed file content",
+    "analytics/utils.py": "# Fixed utility functions\\n# ... complete file content"
+}
 """
 
 class QualityAnalysisAgent:
@@ -80,7 +86,8 @@ class QualityAnalysisAgent:
                 create_merge_request,
                 get_project_quality_status,
                 analyze_quality_gate
-            ]
+            ],
+            max_retries=2  # Limit retries to prevent loops
         )
     
     async def analyze_quality_issues(
