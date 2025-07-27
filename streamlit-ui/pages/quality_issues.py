@@ -124,10 +124,14 @@ with col2:
                                     "Create a merge request with all the quality fixes we discussed"
                                 )
                             )
+                            response_content = response.get("response", "")
+                            if isinstance(response_content, dict):
+                                response_content = response_content.get("message", str(response_content))
+                            
                             # Add response to messages
-                            st.session_state.quality_messages[session_id].append({
+                            st.session_state.pipeline_messages[session_id].append({
                                 "role": "assistant",
-                                "content": response["response"],
+                                "content": response_content,
                                 "timestamp": datetime.utcnow().isoformat()
                             })
                             st.rerun()
@@ -157,10 +161,14 @@ with col2:
                             st.session_state.api_client.send_message(session_id, prompt)
                         )
                         
-                        # Add assistant response
-                        st.session_state.quality_messages[session_id].append({
+                        response_content = response.get("response", "")
+                        if isinstance(response_content, dict):
+                            response_content = response_content.get("message", str(response_content))
+                            
+                        # Add response to messages
+                        st.session_state.pipeline_messages[session_id].append({
                             "role": "assistant",
-                            "content": response["response"],
+                            "content": response_content,
                             "timestamp": datetime.utcnow().isoformat()
                         })
                         

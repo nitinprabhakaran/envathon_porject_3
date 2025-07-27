@@ -106,7 +106,10 @@ with col2:
                         continue
                     
                     with st.chat_message(msg["role"]):
-                        st.markdown(msg["content"])
+                        content = msg.get("content", "")
+                        if isinstance(content, dict):
+                            content = content.get("message", str(content))
+                        st.markdown(content)
             
             # Check if MR was created
             has_mr = any("merge_request" in msg.get("content", "").lower() and "created" in msg.get("content", "").lower() 
@@ -126,10 +129,14 @@ with col2:
                                     "Create a merge request with all the fixes we discussed"
                                 )
                             )
+                            response_content = response.get("response", "")
+                            if isinstance(response_content, dict):
+                                response_content = response_content.get("message", str(response_content))
+                            
                             # Add response to messages
                             st.session_state.pipeline_messages[session_id].append({
                                 "role": "assistant",
-                                "content": response["response"],
+                                "content": response_content,
                                 "timestamp": datetime.utcnow().isoformat()
                             })
                             st.rerun()
@@ -159,10 +166,14 @@ with col2:
                             st.session_state.api_client.send_message(session_id, prompt)
                         )
                         
-                        # Add assistant response
+                        response_content = response.get("response", "")
+                        if isinstance(response_content, dict):
+                            response_content = response_content.get("message", str(response_content))
+                            
+                        # Add response to messages
                         st.session_state.pipeline_messages[session_id].append({
                             "role": "assistant",
-                            "content": response["response"],
+                            "content": response_content,
                             "timestamp": datetime.utcnow().isoformat()
                         })
                         
