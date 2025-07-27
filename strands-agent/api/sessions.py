@@ -81,10 +81,19 @@ async def send_message(session_id: str, request: MessageRequest):
             )
         
         # Add agent response
-        await session_manager.add_message(session_id, "assistant", response)
+        if hasattr(response, 'message'):
+            response_text = response.message
+        elif hasattr(response, 'content'):
+            response_text = response.content
+        elif isinstance(response, str):
+            response_text = response
+        else:
+            response_text = str(response)
+
+        await session_manager.add_message(session_id, "assistant", response_text)
         
         log.info(f"Generated response for session {session_id}")
-        return {"response": response}
+        return {"response": response_text}
         
     except HTTPException:
         raise

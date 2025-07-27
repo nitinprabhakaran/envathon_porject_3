@@ -127,8 +127,13 @@ Important:
         
         result = await self.agent.invoke_async(prompt)
         log.info(f"Quality analysis complete for session {session_id}")
-        log.debug(f"AgentResult attributes: {[attr for attr in dir(result) if not attr.startswith('_')]}")
-        return str(result)
+        # Extract response text
+        if hasattr(result, 'message'):
+            return result.message
+        elif hasattr(result, 'content'):
+            return result.content
+        else:
+            return str(result)
     
     async def handle_user_message(
         self,
@@ -141,10 +146,23 @@ Important:
         log.info(f"Handling user message for quality session {session_id}")
         
         # Add conversation context
-        self.agent.conversation_history = [
-            {"role": msg["role"], "content": msg["content"]}
-            for msg in conversation_history
-        ]
+        messages = []
+    
+        # Include system messages as context in the first user message
+        system_context = []
+        for msg in conversation_history:
+            if msg["role"] == "system":
+                system_context.append(msg["content"])
+            elif msg["role"] in ["user", "assistant"]:
+                messages.append({"role": msg["role"], "content": msg["content"]})
+        
+        # If there's system context, prepend it to the first message
+        if system_context and messages:
+            context_text = "\n".join(system_context)
+            messages[0]["content"] = f"Context: {context_text}\n\n{messages[0]['content']}"
+        
+        # Set conversation history
+        self.agent.conversation_history = messages
         
         # Check if user wants to create MR
         if "create" in message.lower() and ("mr" in message.lower() or "merge request" in message.lower()):
@@ -162,6 +180,12 @@ Use the create_merge_request tool with the exact file changes we discussed."""
         else:
             prompt = message
         
-        response = await self.agent.invoke_async(prompt)
+        result = await self.agent.invoke_async(prompt)
         log.debug(f"Generated response for session {session_id}")
-        return response.content
+        # Extract response text
+        if hasattr(result, 'message'):
+            return result.message
+        elif hasattr(result, 'content'):
+            return result.content
+        else:
+            return str(result)
