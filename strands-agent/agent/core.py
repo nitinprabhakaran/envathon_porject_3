@@ -79,7 +79,8 @@ class CICDFailureAgent:
             analyze_pipeline_logs,
             extract_error_signature,
             search_similar_errors,
-            get_session_context
+            get_session_context,
+            create_merge_request
         ]
     
     def _get_extended_tools(self) -> List:
@@ -104,7 +105,6 @@ class CICDFailureAgent:
             get_file_content,
             get_recent_commits,
             add_pipeline_comment,
-            create_merge_request,
             get_relevant_code_context,
             request_additional_context,
             get_shared_pipeline_context,
@@ -153,24 +153,13 @@ class CICDFailureAgent:
         }
         
         # Optimized prompt for minimal tool usage
-        prompt = f"""QUICK ANALYSIS - Use only essential tools:
+        prompt = f"""Analyze this pipeline failure:
 
 Pipeline #{failure_context['pipeline_id']} failed in {failure_context['failed_stage']} stage
 Job: {failure_context['job_name']}
 Project: {failure_context['project_name']} (ID: {webhook_data['project']['id']})
 
-EXECUTE IN ORDER (3-4 tools max):
-1. get_pipeline_jobs(pipeline_id="{failure_context['pipeline_id']}", project_id="{webhook_data['project']['id']}")
-2. get_job_logs(job_id="<failed_job_id>", project_id="{webhook_data['project']['id']}")
-3. search_similar_errors(error_signature="<extracted_signature>")
-
-Generate ONE solution card with:
-- Root cause
-- Specific fix with confidence score (calculate based on error pattern match, clarity of issue, and historical success rate)
-- Code changes
-- Action buttons: "Apply Fix", "Create MR"
-
-Skip: quality checks, file content, comments, storing fixes"""
+Use tools to investigate and provide a solution."""
         
         try:
             # Use streaming for better UX
@@ -179,54 +168,40 @@ Skip: quality checks, file content, comments, storing fixes"""
                 if "data" in event:
                     response_text += event["data"]
             
-            # Extract cards
-            cards = self._extract_cards_from_response(response_text)
-            
-            # Log performance
-            duration = (datetime.utcnow() - start_time).total_seconds()
-            logger.info(f"Analysis completed in {duration:.2f}s with {len(cards)} cards")
-            
             # Store response
             await self.session_manager.update_conversation(
                 session_id,
                 {
                     "role": "assistant",
                     "content": response_text,
-                    "cards": cards,
                     "timestamp": datetime.utcnow().isoformat()
                 }
             )
             
+            duration = (datetime.utcnow() - start_time).total_seconds()
+            logger.info(f"Analysis completed in {duration:.2f}s")
+            
             return {
                 "session_id": session_id,
                 "analysis": response_text,
-                "cards": cards,
                 "duration_seconds": duration
             }
             
         except Exception as e:
             logger.error(f"Analysis failed: {e}", exc_info=True)
-            error_card = {
-                "type": "error",
-                "title": "Analysis Failed",
-                "content": str(e),
-                "actions": [{"label": "Retry", "action": "retry_analysis"}]
-            }
             
             await self.session_manager.update_conversation(
                 session_id,
                 {
                     "role": "assistant",
                     "content": f"Error: {str(e)}",
-                    "cards": [error_card],
                     "timestamp": datetime.utcnow().isoformat()
                 }
             )
             
             return {
                 "session_id": session_id,
-                "error": str(e),
-                "cards": [error_card]
+                "error": str(e)
             }
     
     async def continue_conversation(
@@ -234,7 +209,7 @@ Skip: quality checks, file content, comments, storing fixes"""
         session_id: str,
         user_message: str
     ) -> Dict[str, Any]:
-        """Optimized conversation continuation"""
+        """Continue conversation"""
         session = await self.session_manager.get_session(session_id)
         if not session:
             raise ValueError("Session not found")
@@ -262,75 +237,27 @@ Skip: quality checks, file content, comments, storing fixes"""
         self.agent.session_state = {
             "session_id": session_id,
             "project_id": str(session["project_id"]),
-            "pipeline_id": str(session["pipeline_id"])
+            "pipeline_id": str(session.get("pipeline_id", ""))
         }
         
-        # Check for redundant questions
-        lower_message = user_message.lower()
-        redundant_patterns = ["what was the fix", "analyse the fix", "show me the fix"]
-        
-        if any(pattern in lower_message for pattern in redundant_patterns):
-            # Check if solution already provided
-            conv_history = session.get("conversation_history", [])
-            has_solution = any(
-                msg.get("cards", [{}])[0].get("type") == "solution" 
-                for msg in conv_history 
-                if msg.get("role") == "assistant" and msg.get("cards")
-            )
-            
-            if has_solution:
-                response_text = "The fix is already provided above. Ready to create a merge request?"
-                cards = [{
-                    "type": "solution",
-                    "title": "Ready to Apply",
-                    "confidence": 95,
-                    "content": "Maven build stage solution is ready.",
-                    "actions": [
-                        {"label": "Create MR", "action": "create_mr", "data": {}},
-                        {"label": "View Fix Above", "action": "scroll_up"}
-                    ]
-                }]
-                
-                await self.session_manager.update_conversation(
-                    session_id,
-                    {
-                        "role": "assistant",
-                        "content": response_text,
-                        "cards": cards,
-                        "timestamp": datetime.utcnow().isoformat()
-                    }
-                )
-                
-                return {
-                    "session_id": session_id,
-                    "response": response_text,
-                    "cards": cards
-                }
-        
         # Generate response
-        prompt = f"{user_message}\n\nContext: Session {session_id}, Project {session['project_id']}\nUse minimal tools. Always include confidence score in solution cards."
-        
         response_text = ""
-        async for event in self.agent.stream_async(prompt):
+        async for event in self.agent.stream_async(user_message):
             if "data" in event:
                 response_text += event["data"]
-        
-        cards = self._extract_cards_from_response(response_text)
         
         await self.session_manager.update_conversation(
             session_id,
             {
                 "role": "assistant",
                 "content": response_text,
-                "cards": cards,
                 "timestamp": datetime.utcnow().isoformat()
             }
         )
         
         return {
             "session_id": session_id,
-            "response": response_text,
-            "cards": cards
+            "response": response_text
         }
     
     def _extract_failed_stage(self, webhook_data: Dict[str, Any]) -> str:
@@ -348,33 +275,3 @@ Skip: quality checks, file content, comments, storing fixes"""
             if build.get("status") == "failed":
                 return build.get("name", "unknown")
         return "unknown"
-    
-    def _extract_cards_from_response(self, content: str) -> List[Dict[str, Any]]:
-        """Extract UI cards from agent response"""
-        cards = []
-        
-        # Look for JSON card blocks with better regex
-        card_pattern = r'```json:card\s*\n(.*?)\n```'
-        matches = re.findall(card_pattern, content, re.DOTALL | re.MULTILINE)
-        
-        for match in matches:
-            try:
-                # Clean up the JSON string
-                json_str = match.strip()
-                card = json.loads(json_str)
-                cards.append(card)
-            except json.JSONDecodeError as e:
-                logger.warning(f"Failed to parse card JSON: {e}")
-                logger.debug(f"JSON content: {match}")
-        
-        # Create default if no cards
-        if not cards:
-            cards.append({
-                "type": "analysis",
-                "title": "Pipeline Analysis",
-                "content": content,
-                "confidence": 70,  # Default confidence
-                "actions": []
-            })
-        
-        return cards

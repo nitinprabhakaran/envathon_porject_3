@@ -4,28 +4,20 @@ from pydantic import BaseModel
 from loguru import logger
 import json
 from datetime import datetime
-import asyncio
 
 from agent.core import CICDFailureAgent
+from agent.quality_agent import QualityAnalysisAgent
 from db.session_manager import SessionManager
-from tools.gitlab_tools import create_merge_request
 
 api_router = APIRouter()
 
 # Initialize
 agent = CICDFailureAgent()
+quality_agent = QualityAnalysisAgent()
 session_manager = SessionManager()
 
 class MessageRequest(BaseModel):
     message: str
-
-class ApplyFixRequest(BaseModel):
-    fix_id: str
-    fix_data: Dict[str, Any]
-
-class CreateMRRequest(BaseModel):
-    fix_id: str
-    fix_data: Dict[str, Any]
 
 def serialize_session(session: Dict[str, Any]) -> Dict[str, Any]:
     """Properly serialize session data for API response"""
@@ -81,63 +73,10 @@ async def get_active_sessions():
         serialized_sessions = [serialize_session(session) for session in sessions]
         logger.info(f"Returning {len(serialized_sessions)} active sessions")
         
-        # Return just the list for compatibility
         return serialized_sessions
     except Exception as e:
         logger.error(f"Failed to get active sessions: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
-
-@api_router.get("/sessions/all")
-async def get_all_sessions():
-    """Get ALL sessions for debugging"""
-    try:
-        async with session_manager._get_connection() as conn:
-            rows = await conn.fetch("SELECT * FROM sessions ORDER BY created_at DESC LIMIT 10")
-            all_sessions = []
-            for row in rows:
-                session = dict(row)
-                all_sessions.append({
-                    "id": str(session.get("id")),
-                    "status": session.get("status"),
-                    "created_at": str(session.get("created_at")),
-                    "expires_at": str(session.get("expires_at")),
-                    "project_id": session.get("project_id"),
-                    "pipeline_id": session.get("pipeline_id")
-                })
-            return {
-                "total": len(all_sessions),
-                "sessions": all_sessions
-            }
-    except Exception as e:
-        logger.error(f"Failed to get all sessions: {e}")
-        return {"error": str(e)}
-
-@api_router.get("/debug/check-session/{session_id}")
-async def debug_check_session(session_id: str):
-    """Debug endpoint to check session details"""
-    try:
-        async with session_manager._get_connection() as conn:
-            # Get raw session data
-            row = await conn.fetchrow(
-                "SELECT * FROM sessions WHERE id = $1",
-                session_id
-            )
-            if row:
-                session_data = dict(row)
-                return {
-                    "found": True,
-                    "id": str(session_data.get("id")),
-                    "status": session_data.get("status"),
-                    "created_at": str(session_data.get("created_at")),
-                    "expires_at": str(session_data.get("expires_at")),
-                    "project_id": session_data.get("project_id"),
-                    "pipeline_id": session_data.get("pipeline_id"),
-                    "conversation_length": len(json.loads(session_data.get("conversation_history", "[]")))
-                }
-            else:
-                return {"found": False, "session_id": session_id}
-    except Exception as e:
-        return {"error": str(e)}
 
 @api_router.get("/sessions/{session_id}")
 async def get_session(session_id: str):
@@ -164,116 +103,8 @@ async def send_message(session_id: str, request: MessageRequest):
         if not session:
             raise HTTPException(status_code=404, detail="Session not found")
         
-        response = await agent.continue_conversation(
-            session_id=session_id,
-            user_message=request.message
-        )
-        return response
-    except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e))
-    except Exception as e:
-        logger.error(f"Failed to process message: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-@api_router.post("/sessions/{session_id}/apply-fix")
-async def apply_fix(session_id: str, request: ApplyFixRequest):
-    """Apply a suggested fix"""
-    logger.info(f"Apply fix request received: session={session_id}, fix_id={request.fix_id}")
-    try:
-        session = await session_manager.get_session(session_id)
-        if not session:
-            raise HTTPException(status_code=404, detail="Session not found")
-        
-        await session_manager.add_applied_fix(
-            session_id,
-            {
-                "fix_id": request.fix_id,
-                "fix_data": request.fix_data,
-                "status": "applying",
-                "applied_at": datetime.utcnow().isoformat()
-            }
-        )
-        logger.info(f"Fix applied successfully: {request.fix_id}")
-        
-        return {
-            "status": "success",
-            "fix_id": request.fix_id,
-            "message": "Fix application initiated",
-            "progress": {
-                "status": "in_progress",
-                "steps": [
-                    {"name": "Analyzing changes", "status": "done"},
-                    {"name": "Applying to repository", "status": "in_progress"},
-                    {"name": "Running validation", "status": "pending"}
-                ]
-            }
-        }
-    except Exception as e:
-        logger.error(f"Failed to apply fix: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-@api_router.post("/sessions/{session_id}/create-mr")
-async def create_merge_request_endpoint(session_id: str, request: CreateMRRequest):
-    """Create a merge request from LLM-generated fix"""
-    logger.info(f"Create MR request received: session={session_id}")
-    try:
-        session = await session_manager.get_session(session_id)
-        if not session:
-            raise HTTPException(status_code=404, detail="Session not found")
-        
-        # Get project ID from session
-        project_id = session.get("project_id")
-        
-        # Extract fix data from request (generated by LLM)
-        fix_data = request.fix_data
-        
-        result = await create_merge_request(
-            title=fix_data.get("title"),
-            description=fix_data.get("description"),
-            changes=fix_data.get("changes"),
-            source_branch=fix_data.get("source_branch", f"fix/{session_id[:8]}"),
-            target_branch=fix_data.get("target_branch", "main"),
-            project_id=str(project_id)
-        )
-        
-        if "error" in result:
-            raise HTTPException(status_code=500, detail=result["error"])
-        
-        await session_manager.add_applied_fix(
-            session_id,
-            {
-                "fix_id": request.fix_id,
-                "type": "merge_request",
-                "mr_id": result.get("id"),
-                "mr_url": result.get("web_url"),
-                "created_at": datetime.utcnow().isoformat()
-            }
-        )
-        
-        return {
-            "status": "success",
-            "merge_request": result,
-            "message": "Merge request created successfully"
-        }
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Failed to create MR: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
-
-@api_router.post("/sessions/{session_id}/message")
-async def send_message(session_id: str, request: MessageRequest):
-    """Send a message to the agent for a specific session"""
-    try:
-        session = await session_manager.get_session(session_id)
-        if not session:
-            raise HTTPException(status_code=404, detail="Session not found")
-        
         # Route to appropriate agent based on session type
         if session.get("session_type") == "quality":
-            from agent.quality_agent import QualityAnalysisAgent
-            quality_agent = QualityAnalysisAgent()
             response = await quality_agent.continue_conversation(
                 session_id=session_id,
                 user_message=request.message

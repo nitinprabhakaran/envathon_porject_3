@@ -24,24 +24,26 @@ from tools.quality_tools import (
     get_issues_with_context,
     create_quality_batch_mr
 )
-from tools.gitlab_tools import get_file_content
+from tools.gitlab_tools import get_file_content, create_merge_request
 
 QUALITY_SYSTEM_PROMPT = """You are an expert code quality analyst.
 
-## Optimized Workflow
-1. Call get_issues_with_context ONCE to get all issues
+Analyze SonarQube quality gate failures and provide fixes.
+
+Workflow:
+1. Use get_issues_with_context to get all issues
 2. Group issues by file
-3. Call get_file_content ONCE per file
-4. Generate ALL fixes in memory
-5. Call create_quality_batch_mr ONCE with all changes
+3. Use get_file_content for each file
+4. Fix all issues
+5. Call create_merge_request with complete fix data
 
-## Rules
-- Minimize tool calls for speed
-- Fix issues based on their descriptions
-- Maintain code functionality
-- Create descriptive commit messages
-
-Generate quality summary card first, then proceed with fixes."""
+When ready to create MR, call create_merge_request with:
+- title: "Fix X SonarQube issues"
+- description: Detailed list of fixes
+- changes: Dictionary mapping file paths to fixed content
+- source_branch: "quality-fixes-[timestamp]"
+- target_branch: "main"
+"""
 
 class QualityAnalysisAgent:
     def __init__(self):
@@ -70,13 +72,11 @@ class QualityAnalysisAgent:
             model=model,
             system_prompt=QUALITY_SYSTEM_PROMPT,
             tools=[
+                get_issues_with_context,
+                get_file_content,
+                create_merge_request,
                 get_project_quality_status,
-                get_all_project_issues,
-                get_issue_details,
-                analyze_quality_gate,
-                categorize_issues,
-                suggest_batch_fixes,
-                create_quality_mr
+                analyze_quality_gate
             ]
         )
     
@@ -90,37 +90,28 @@ class QualityAnalysisAgent:
         
         # Extract project info
         project = webhook_data.get("project", {})
-        project_key = project.get("key", "")
+        sonarqube_key = webhook_data.get("_sonarqube_key", project.get("key", ""))
+        gitlab_project_id = webhook_data.get("_gitlab_project_id", "")
         quality_gate = webhook_data.get("qualityGate", {})
         
-        # Set agent context
+        # Set agent context with both IDs
         self.agent.session_state = {
             "session_id": session_id,
-            "project_key": project_key,
+            "project_id": gitlab_project_id,  # For GitLab API calls
+            "sonarqube_key": sonarqube_key,  # For SonarQube API calls
             "session_type": "quality"
         }
         
-        prompt = f"""Analyze quality gate failure for project {project_key}:
+        prompt = f"""Quality gate failed for project {sonarqube_key}.
 
-Quality Gate: {quality_gate.get('name')}
-Status: {quality_gate.get('status')}
-Failed Conditions: {len([c for c in quality_gate.get('conditions', []) if c.get('status') == 'ERROR'])}
-
-Steps:
-1. Use get_all_project_issues to retrieve all issues
-2. Use categorize_issues to group by type
-3. Use suggest_batch_fixes for common patterns
-4. Generate quality dashboard card
-5. Generate issue category cards
-6. Suggest batch fix options"""
+Use get_issues_with_context(project_key="{sonarqube_key}") to get all issues.
+Then get file content and fix all issues.
+Create a merge request with all fixes."""
 
         response_text = ""
         async for event in self.agent.stream_async(prompt):
             if "data" in event:
                 response_text += event["data"]
-        
-        # Extract cards
-        cards = self._extract_cards(response_text)
         
         # Store response
         await self.session_manager.update_conversation(
@@ -128,15 +119,13 @@ Steps:
             {
                 "role": "assistant",
                 "content": response_text,
-                "cards": cards,
                 "timestamp": datetime.utcnow().isoformat()
             }
         )
         
         return {
             "session_id": session_id,
-            "analysis": response_text,
-            "cards": cards
+            "analysis": response_text
         }
     
     async def continue_conversation(
@@ -160,9 +149,11 @@ Steps:
         )
         
         # Set context
+        webhook_data = session.get("webhook_data", {})
         self.agent.session_state = {
             "session_id": session_id,
-            "project_key": session.get("project_id"),
+            "project_id": session.get("project_id"),
+            "sonarqube_key": webhook_data.get("_sonarqube_key", ""),
             "session_type": "quality"
         }
         
@@ -171,37 +162,16 @@ Steps:
             if "data" in event:
                 response_text += event["data"]
         
-        cards = self._extract_cards(response_text)
-        
         await self.session_manager.update_conversation(
             session_id,
             {
                 "role": "assistant",
                 "content": response_text,
-                "cards": cards,
                 "timestamp": datetime.utcnow().isoformat()
             }
         )
         
         return {
             "session_id": session_id,
-            "response": response_text,
-            "cards": cards
+            "response": response_text
         }
-    
-    def _extract_cards(self, content: str) -> List[Dict[str, Any]]:
-        """Extract JSON cards from response"""
-        import re
-        cards = []
-        
-        card_pattern = r'```json:card\s*(.*?)\s*```'
-        matches = re.findall(card_pattern, content, re.DOTALL)
-        
-        for match in matches:
-            try:
-                card = json.loads(match)
-                cards.append(card)
-            except json.JSONDecodeError:
-                logger.warning(f"Failed to parse card JSON: {match[:50]}...")
-        
-        return cards
