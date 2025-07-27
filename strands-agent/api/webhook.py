@@ -83,6 +83,26 @@ async def handle_gitlab_webhook(
     if data.get("object_attributes", {}).get("status") != "failed":
         return {"status": "ignored", "reason": "Not a failure event"}
     
+    # Check if this is a SonarQube-related failure
+    failed_jobs = [build for build in data.get("builds", []) if build.get("status") == "failed"]
+    is_sonar_failure = any(
+        "sonar" in build.get("name", "").lower() or 
+        "quality" in build.get("stage", "").lower()
+        for build in failed_jobs
+    )
+    
+    if is_sonar_failure:
+        # Check if we already have an active quality session for this project
+        project_id = str(data["project"]["id"])
+        existing_quality_session = await session_manager.check_existing_quality_session(project_id)
+        if existing_quality_session:
+            return {
+                "status": "redirected", 
+                "reason": "SonarQube failure already tracked in quality session",
+                "session_id": existing_quality_session["id"],
+                "ui_url": f"http://localhost:8501/?session={existing_quality_session['id']}&tab=quality"
+            }
+    
     # Extract key information
     project_id = str(data["project"]["id"])
     pipeline_id = str(data["object_attributes"]["id"])

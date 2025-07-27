@@ -181,156 +181,6 @@ def calculate_duration(start_time: datetime) -> str:
     minutes = (duration.seconds % 3600) // 60
     return f"{hours}h {minutes}m"
 
-# Header
-col1, col2, col3 = st.columns([3, 2, 1])
-with col1:
-    st.title("🔧 CI/CD Failure Assistant")
-with col2:
-    st.empty()
-with col3:
-    if st.button("🔄 Refresh", key="refresh_btn"):
-        st.cache_data.clear()
-        st.rerun()
-
-# Check for session_id and tab parameter in URL
-query_params = st.query_params
-if "session" in query_params:
-    session_id = query_params["session"]
-    if session_id != st.session_state.selected_session_id:
-        asyncio.run(load_session(session_id))
-    
-    # Check for tab parameter
-    if "tab" in query_params and query_params["tab"] == "quality":
-        st.session_state.active_tab = "quality"
-
-# Auto-load sessions on startup or refresh
-now = time.time()
-if not st.session_state.sessions_data or (st.session_state.last_refresh and now - st.session_state.last_refresh > 30):
-    with st.spinner("Loading sessions..."):
-        st.session_state.sessions_data = fetch_sessions_cached()
-        st.session_state.last_refresh = now
-
-# Load selected session if any
-if st.session_state.selected_session_id and st.session_state.selected_session_id not in st.session_state.messages:
-    asyncio.run(load_session(st.session_state.selected_session_id))
-
-# Main tabs
-tab1, tab2 = st.tabs(["🚀 Pipeline Failures", "📊 Quality Issues"])
-
-# Pipeline Failures Tab
-with tab1:
-    # Main layout
-    sidebar_col, main_col, details_col = st.columns([2, 5, 2])
-    
-    # Filter sessions by type
-    pipeline_sessions = [s for s in st.session_state.sessions_data if s.get("session_type", "pipeline") == "pipeline"]
-    
-    # Left Sidebar - Pipeline List
-    with sidebar_col:
-        st.subheader("📋 Pipeline Failures")
-        
-        if st.button("🔄 Refresh", key="refresh_pipeline_btn", use_container_width=True):
-            st.cache_data.clear()
-            st.rerun()
-        
-        st.divider()
-        
-        # Display pipeline sessions
-        for idx, session in enumerate(pipeline_sessions):
-            session_id = session.get('id')
-            if not session_id:
-                continue
-            
-            project_name = session.get('project_name', 'Unknown')
-            pipeline_id = session.get('pipeline_id', 'Unknown')
-            status_icon = "🔴" if session.get("status") == "active" else "✅"
-            
-            button_key = f"pipeline_{session_id}_{idx}"
-            button_label = f"{status_icon} {project_name}#{pipeline_id}"
-            
-            is_active = st.session_state.selected_session_id == session_id
-            
-            if st.button(
-                button_label, 
-                key=button_key, 
-                use_container_width=True,
-                type="primary" if is_active else "secondary"
-            ):
-                st.session_state.selected_session_id = session_id
-                st.rerun()
-    
-    # Main Content - Active Conversation
-    with main_col:
-        active_session = st.session_state.pipeline_tabs.get_active()
-        
-        if active_session and active_session.get("session_type", "pipeline") == "pipeline":
-            render_pipeline_conversation(active_session)
-        else:
-            st.info("👈 Select a pipeline failure from the left sidebar")
-    
-    # Right Sidebar - Context Panel
-    with details_col:
-        if active_session and active_session.get("session_type", "pipeline") == "pipeline":
-            render_pipeline_details(active_session)
-
-# Quality Issues Tab
-with tab2:
-    # Main layout
-    sidebar_col, main_col, details_col = st.columns([2, 5, 2])
-    
-    # Filter sessions by type
-    quality_sessions = [s for s in st.session_state.sessions_data if s.get("session_type") == "quality"]
-    
-    # Left Sidebar - Quality Sessions
-    with sidebar_col:
-        st.subheader("📊 Quality Sessions")
-        
-        if st.button("🔄 Refresh", key="refresh_quality_btn", use_container_width=True):
-            st.cache_data.clear()
-            st.rerun()
-        
-        st.divider()
-        
-        # Display quality sessions
-        for idx, session in enumerate(quality_sessions):
-            session_id = session.get('id')
-            if not session_id:
-                continue
-            
-            project_name = session.get('project_name', 'Unknown')
-            gate_status = session.get('quality_gate_status', 'ERROR')
-            total_issues = session.get('total_issues', 0)
-            
-            status_icon = "🚨" if gate_status == "ERROR" else "⚠️"
-            
-            button_key = f"quality_{session_id}_{idx}"
-            button_label = f"{status_icon} {project_name} ({total_issues} issues)"
-            
-            is_active = st.session_state.selected_session_id == session_id
-            
-            if st.button(
-                button_label, 
-                key=button_key, 
-                use_container_width=True,
-                type="primary" if is_active else "secondary"
-            ):
-                st.session_state.selected_session_id = session_id
-                st.session_state.active_tab = "quality"
-                st.rerun()
-    
-    # Main Content - Quality Dashboard or Conversation
-    with main_col:
-        active_session = st.session_state.pipeline_tabs.get_active()
-        
-        if active_session and active_session.get("session_type") == "quality":
-            render_quality_conversation(active_session)
-        else:
-            st.info("👈 Select a quality session from the left sidebar")
-    
-    # Right Sidebar - Quality Details
-    with details_col:
-        if active_session and active_session.get("session_type") == "quality":
-            render_quality_details(active_session)
 
 def render_pipeline_conversation(active_session):
     """Render pipeline failure conversation"""
@@ -534,6 +384,157 @@ def render_applied_fixes(active_session):
                 st.success(f"✓ Fix applied")
     else:
         st.text("No fixes applied yet")
+
+# Header
+col1, col2, col3 = st.columns([3, 2, 1])
+with col1:
+    st.title("🔧 CI/CD Failure Assistant")
+with col2:
+    st.empty()
+with col3:
+    if st.button("🔄 Refresh", key="refresh_btn"):
+        st.cache_data.clear()
+        st.rerun()
+
+# Check for session_id and tab parameter in URL
+query_params = st.query_params
+if "session" in query_params:
+    session_id = query_params["session"]
+    if session_id != st.session_state.selected_session_id:
+        asyncio.run(load_session(session_id))
+    
+    # Check for tab parameter
+    if "tab" in query_params and query_params["tab"] == "quality":
+        st.session_state.active_tab = "quality"
+
+# Auto-load sessions on startup or refresh
+now = time.time()
+if not st.session_state.sessions_data or (st.session_state.last_refresh and now - st.session_state.last_refresh > 30):
+    with st.spinner("Loading sessions..."):
+        st.session_state.sessions_data = fetch_sessions_cached()
+        st.session_state.last_refresh = now
+
+# Load selected session if any
+if st.session_state.selected_session_id and st.session_state.selected_session_id not in st.session_state.messages:
+    asyncio.run(load_session(st.session_state.selected_session_id))
+
+# Main tabs
+tab1, tab2 = st.tabs(["🚀 Pipeline Failures", "📊 Quality Issues"])
+
+# Pipeline Failures Tab
+with tab1:
+    # Main layout
+    sidebar_col, main_col, details_col = st.columns([2, 5, 2])
+    
+    # Filter sessions by type
+    pipeline_sessions = [s for s in st.session_state.sessions_data if s.get("session_type", "pipeline") == "pipeline"]
+    
+    # Left Sidebar - Pipeline List
+    with sidebar_col:
+        st.subheader("📋 Pipeline Failures")
+        
+        if st.button("🔄 Refresh", key="refresh_pipeline_btn", use_container_width=True):
+            st.cache_data.clear()
+            st.rerun()
+        
+        st.divider()
+        
+        # Display pipeline sessions
+        for idx, session in enumerate(pipeline_sessions):
+            session_id = session.get('id')
+            if not session_id:
+                continue
+            
+            project_name = session.get('project_name', 'Unknown')
+            pipeline_id = session.get('pipeline_id', 'Unknown')
+            status_icon = "🔴" if session.get("status") == "active" else "✅"
+            
+            button_key = f"pipeline_{session_id}_{idx}"
+            button_label = f"{status_icon} {project_name}#{pipeline_id}"
+            
+            is_active = st.session_state.selected_session_id == session_id
+            
+            if st.button(
+                button_label, 
+                key=button_key, 
+                use_container_width=True,
+                type="primary" if is_active else "secondary"
+            ):
+                st.session_state.selected_session_id = session_id
+                st.rerun()
+    
+    # Main Content - Active Conversation
+    with main_col:
+        active_session = st.session_state.pipeline_tabs.get_active()
+        
+        if active_session and active_session.get("session_type", "pipeline") == "pipeline":
+            render_pipeline_conversation(active_session)
+        else:
+            st.info("👈 Select a pipeline failure from the left sidebar")
+    
+    # Right Sidebar - Context Panel
+    with details_col:
+        if active_session and active_session.get("session_type", "pipeline") == "pipeline":
+            render_pipeline_details(active_session)
+
+# Quality Issues Tab
+with tab2:
+    # Main layout
+    sidebar_col, main_col, details_col = st.columns([2, 5, 2])
+    
+    # Filter sessions by type
+    quality_sessions = [s for s in st.session_state.sessions_data if s.get("session_type") == "quality"]
+    
+    # Left Sidebar - Quality Sessions
+    with sidebar_col:
+        st.subheader("📊 Quality Sessions")
+        
+        if st.button("🔄 Refresh", key="refresh_quality_btn", use_container_width=True):
+            st.cache_data.clear()
+            st.rerun()
+        
+        st.divider()
+        
+        # Display quality sessions
+        for idx, session in enumerate(quality_sessions):
+            session_id = session.get('id')
+            if not session_id:
+                continue
+            
+            project_name = session.get('project_name', 'Unknown')
+            gate_status = session.get('quality_gate_status', 'ERROR')
+            total_issues = session.get('total_issues', 0)
+            
+            status_icon = "🚨" if gate_status == "ERROR" else "⚠️"
+            
+            button_key = f"quality_{session_id}_{idx}"
+            button_label = f"{status_icon} {project_name} ({total_issues} issues)"
+            
+            is_active = st.session_state.selected_session_id == session_id
+            
+            if st.button(
+                button_label, 
+                key=button_key, 
+                use_container_width=True,
+                type="primary" if is_active else "secondary"
+            ):
+                st.session_state.selected_session_id = session_id
+                st.session_state.active_tab = "quality"
+                st.rerun()
+    
+    # Main Content - Quality Dashboard or Conversation
+    with main_col:
+        active_session = st.session_state.pipeline_tabs.get_active()
+        
+        if active_session and active_session.get("session_type") == "quality":
+            render_quality_conversation(active_session)
+        else:
+            st.info("👈 Select a quality session from the left sidebar")
+    
+    # Right Sidebar - Quality Details
+    with details_col:
+        if active_session and active_session.get("session_type") == "quality":
+            render_quality_details(active_session)
 
 if __name__ == "__main__":
     pass
