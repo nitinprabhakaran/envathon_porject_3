@@ -571,6 +571,8 @@ Quality Issues Dashboard:
 
 ---
 
+## An Important Point to nte is that all logics are to besuch that a decision is taken by LLM, including whihc tools to call, the confidence score should also come from LLM and no where else, no logic is to be harcoded in any manner
+
 **Document Version**: 2.0  
 **Last Updated**: 2025-01-27  
 **Changes**: Added SonarQube quality gate failure analysis feature
