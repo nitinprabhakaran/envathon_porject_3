@@ -12,15 +12,15 @@ from db.session_manager import SessionManager
 from tools.sonarqube_tools import (
     get_project_quality_status,
     get_code_quality_issues,
-    get_security_vulnerabilities,
-    get_all_project_issues,
-    get_issue_details
+    get_security_vulnerabilities
 )
 from tools.quality_tools import (
     analyze_quality_gate,
     categorize_issues,
     suggest_batch_fixes,
-    create_quality_mr
+    create_quality_mr,
+    get_all_project_issues,
+    get_issue_details
 )
 
 QUALITY_SYSTEM_PROMPT = """You are an expert code quality analyst specialized in SonarQube analysis.

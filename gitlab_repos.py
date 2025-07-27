@@ -1,707 +1,1211 @@
 #!/usr/bin/env python3
+"""
+CI/CD Environment Setup Script
+Creates GitLab projects with various failure scenarios and SonarQube quality gates
+"""
 
 import gitlab
 import requests
-import getpass
+import json
 import time
+import getpass
 import sys
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
+from datetime import datetime
 
-# --- SCRIPT CONFIGURATION ---
+# Configuration
+GROUP_NAME = "envathon"
+QUALITY_GATE_NAME = "envathon-gate"
+AGENT_WEBHOOK_URL = "http://strands-agent:8000/webhook"
 
-GITLAB_GROUP_NAME = "envathon"
-SONARQUBE_QUALITY_GATE_NAME = "envathon-gate"
-# Use the Docker service name for container-to-container communication
-WEBHOOK_TARGET_BASE_URL = "http://strands-agent:8000/webhook"
+# Color codes for output
+class Colors:
+    BLUE = '\033[94m'
+    GREEN = '\033[92m'
+    YELLOW = '\033[93m'
+    RED = '\033[91m'
+    END = '\033[0m'
 
-# Define the projects to be created
-# Using triple single quotes ''' for file content to avoid conflicts with double quotes inside the code.
+def info(msg: str):
+    print(f"{Colors.BLUE}[INFO]{Colors.END} {msg}")
+
+def success(msg: str):
+    print(f"{Colors.GREEN}[SUCCESS]{Colors.END} {msg}")
+
+def warning(msg: str):
+    print(f"{Colors.YELLOW}[WARNING]{Colors.END} {msg}")
+
+def error(msg: str):
+    print(f"{Colors.RED}[ERROR]{Colors.END} {msg}")
+    sys.exit(1)
+
+# Project definitions with various failure scenarios
 PROJECTS = {
-    "java-project": {
-        "language": "Java",
+    # 1. Missing build artifacts scenario
+    "payment-service": {
+        "description": "Java microservice with missing build step",
+        "failure_type": "build_artifact_missing",
         "files": {
-            "src/main/java/com/envathon/Calculator.java": '''
-package com.envathon;
+            "src/main/java/com/envathon/payment/PaymentService.java": """
+package com.envathon.payment;
 
-/**
- * A simple calculator with intentional complexities for SonarQube analysis.
- */
-public class Calculator {
+import java.math.BigDecimal;
+import java.util.UUID;
 
-    /**
-     * Adds two numbers.
-     * @param a First number.
-     * @param b Second number.
-     * @return The sum.
-     */
-    public int add(int a, int b) {
-        return a + b;
-    }
-
-    /**
-     * Subtracts two numbers.
-     * @param a First number.
-     * @param b Second number.
-     * @return The difference.
-     */
-    public int subtract(int a, int b) {
-        return a - b;
-    }
-
-    /**
-     * Divides two numbers. Contains a potential bug (division by zero).
-     * @param a Numerator.
-     * @param b Denominator.
-     * @return The result of the division.
-     */
-    public double divide(int a, int b) {
-        // This will be flagged by SonarQube
-        if (b == 0) {
-            System.out.println("Warning: Division by zero.");
-            // Returning a sentinel value is better than throwing an exception in some contexts,
-            // but can be a code smell.
-            return Double.NaN;
+public class PaymentService {
+    
+    public PaymentResult processPayment(String customerId, BigDecimal amount) {
+        // Security issue: logging sensitive data
+        System.out.println("Processing payment for customer: " + customerId + " amount: " + amount);
+        
+        // Bug: no null check
+        if (amount.compareTo(BigDecimal.ZERO) <= 0) {
+            throw new IllegalArgumentException("Invalid amount");
         }
-        return (double) a / b;
+        
+        // Code smell: magic number
+        if (amount.compareTo(new BigDecimal(10000)) > 0) {
+            return new PaymentResult(false, "Amount exceeds limit");
+        }
+        
+        String transactionId = UUID.randomUUID().toString();
+        // Vulnerability: weak random for sensitive operation
+        boolean success = Math.random() > 0.1;
+        
+        return new PaymentResult(success, transactionId);
     }
-
-    /**
-     * A complex method with high cyclomatic complexity for analysis.
-     */
-    public void complexMethod(int value) {
-        if (value > 0) {
-            if (value % 2 == 0) {
-                System.out.println("Positive and Even");
-            } else {
-                System.out.println("Positive and Odd");
-            }
-        } else if (value < 0) {
-            System.out.println("Negative");
-        } else {
-            for (int i = 0; i < 5; i++) {
-                // This loop adds cognitive complexity
-                System.out.println("Value is zero, looping: " + i);
-            }
+    
+    class PaymentResult {
+        private boolean success;
+        private String transactionId;
+        
+        public PaymentResult(boolean success, String transactionId) {
+            this.success = success;
+            this.transactionId = transactionId;
         }
     }
 }
-''',
-            "pom.xml": '''
+""",
+            "pom.xml": """<?xml version="1.0" encoding="UTF-8"?>
 <project xmlns="http://maven.apache.org/POM/4.0.0"
          xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
-         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 
+         http://maven.apache.org/xsd/maven-4.0.0.xsd">
     <modelVersion>4.0.0</modelVersion>
+    
     <groupId>com.envathon</groupId>
-    <artifactId>java-project</artifactId>
+    <artifactId>payment-service</artifactId>
     <version>1.0.0</version>
+    <packaging>jar</packaging>
+    
+    <properties>
+        <maven.compiler.source>11</maven.compiler.source>
+        <maven.compiler.target>11</maven.compiler.target>
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+    </properties>
+    
+    <dependencies>
+        <dependency>
+            <groupId>junit</groupId>
+            <artifactId>junit</artifactId>
+            <version>4.13.2</version>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+</project>
+""",
+            "Dockerfile": """FROM openjdk:11-jre-slim
+WORKDIR /app
+# This will fail - no Maven build step to create the JAR
+COPY target/payment-service-1.0.0.jar app.jar
+EXPOSE 8080
+CMD ["java", "-jar", "app.jar"]
+""",
+            ".gitlab-ci.yml": """include:
+  - project: 'envathon/shared-pipelines'
+    ref: main
+    file: '/templates/java-service.yml'
+
+stages:
+  - build
+  - test
+  - quality
+  - package
+
+# Intentionally missing Maven build stage
+docker-build:
+  extends: .docker-build
+  stage: package
+"""
+        }
+    },
+    
+    # 2. Dependency conflict scenario
+    "user-service": {
+        "description": "Python service with conflicting dependencies",
+        "failure_type": "dependency_conflict",
+        "files": {
+            "app/main.py": """
+import asyncio
+import redis
+from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel
+from typing import Optional
+import logging
+
+# Configuration issue: hardcoded values
+REDIS_HOST = "localhost"
+REDIS_PORT = 6379
+
+app = FastAPI()
+logger = logging.getLogger(__name__)
+
+class User(BaseModel):
+    id: int
+    name: str
+    email: str
+    password: str  # Security issue: plain text password
+
+class UserService:
+    def __init__(self):
+        # Bug: no error handling for connection
+        self.redis_client = redis.Redis(host=REDIS_HOST, port=REDIS_PORT)
+        
+    async def get_user(self, user_id: int) -> Optional[User]:
+        # Performance issue: synchronous call in async function
+        user_data = self.redis_client.get(f"user:{user_id}")
+        if not user_data:
+            return None
+        
+        # Bug: no error handling for JSON parsing
+        return User(**json.loads(user_data))
+    
+    def save_user(self, user: User):
+        # Security issue: storing password in plain text
+        user_data = user.dict()
+        self.redis_client.set(f"user:{user.id}", json.dumps(user_data))
+        
+        # Code smell: duplicate code
+        logger.info(f"User saved: {user.id}")
+        print(f"User saved: {user.id}")
+
+# Initialization issue: service created at module level
+user_service = UserService()
+
+@app.get("/users/{user_id}")
+async def get_user(user_id: int):
+    user = await user_service.get_user(user_id)
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    return user
+
+@app.post("/users")
+def create_user(user: User):
+    # Async/sync mismatch
+    user_service.save_user(user)
+    return {"status": "created"}
+""",
+            "requirements.txt": """# Conflicting versions that will cause issues
+fastapi==0.68.0
+pydantic==2.5.0  # Incompatible with fastapi 0.68.0
+redis==3.5.3
+uvicorn==0.15.0
+asyncio==3.4.3  # This is built-in, shouldn't be in requirements
+requests==2.26.0
+aioredis==1.3.1  # Conflicts with redis
+""",
+            "tests/test_user.py": """
+import pytest
+from app.main import User, UserService
+
+def test_user_creation():
+    # Test without mocking Redis - will fail in CI
+    service = UserService()
+    user = User(id=1, name="Test", email="test@example.com", password="secret")
+    service.save_user(user)
+    
+    # No assertion - bad test practice
+    
+def test_invalid_user():
+    # Test will pass but doesn't test anything meaningful
+    assert True
+""",
+            "Dockerfile": """FROM python:3.9-slim
+WORKDIR /app
+COPY requirements.txt .
+# This will fail due to dependency conflicts
+RUN pip install --no-cache-dir -r requirements.txt
+COPY . .
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+""",
+            ".gitlab-ci.yml": """include:
+  - project: 'envathon/shared-pipelines'
+    ref: main
+    file: '/templates/python-service.yml'
+
+stages:
+  - dependencies
+  - test
+  - quality
+  - build
+
+install-deps:
+  stage: dependencies
+  extends: .python-deps
+  script:
+    - pip install -r requirements.txt  # Will fail
+"""
+        }
+    },
+    
+    # 3. Test failure scenario
+    "inventory-service": {
+        "description": "Node.js service with failing tests",
+        "failure_type": "test_failure",
+        "files": {
+            "src/inventory.js": """
+const express = require('express');
+const app = express();
+
+// Global state - bad practice
+let inventory = {};
+
+class InventoryManager {
+    constructor() {
+        // Memory leak: never cleared
+        this.cache = new Map();
+        this.listeners = [];
+    }
+    
+    addItem(itemId, quantity) {
+        // Bug: no validation
+        inventory[itemId] = (inventory[itemId] || 0) + quantity;
+        
+        // Performance issue: O(n) notification
+        this.listeners.forEach(listener => {
+            listener(itemId, inventory[itemId]);
+        });
+        
+        // Memory leak: unbounded cache
+        this.cache.set(Date.now(), { itemId, quantity });
+    }
+    
+    removeItem(itemId, quantity) {
+        // Bug: can go negative
+        inventory[itemId] = (inventory[itemId] || 0) - quantity;
+        
+        // Code smell: duplicate notification logic
+        this.listeners.forEach(listener => {
+            listener(itemId, inventory[itemId]);
+        });
+    }
+    
+    getStock(itemId) {
+        // Inconsistent return types
+        return inventory[itemId] || "Out of stock";
+    }
+}
+
+const manager = new InventoryManager();
+
+app.post('/inventory/:id/add', (req, res) => {
+    const { id } = req.params;
+    const { quantity } = req.body;
+    
+    // Security: no input validation
+    manager.addItem(id, quantity);
+    
+    // Security: exposing internal state
+    res.json({ success: true, inventory });
+});
+
+app.get('/inventory/:id', (req, res) => {
+    const stock = manager.getStock(req.params.id);
+    res.json({ stock });
+});
+
+// Hardcoded port
+app.listen(3000);
+
+module.exports = { InventoryManager, app };
+""",
+            "tests/inventory.test.js": """
+const { InventoryManager } = require('../src/inventory');
+
+describe('InventoryManager', () => {
+    let manager;
+    
+    beforeEach(() => {
+        manager = new InventoryManager();
+    });
+    
+    test('should add items to inventory', () => {
+        manager.addItem('item1', 10);
+        // This will fail - getStock returns "Out of stock" string for missing items
+        expect(manager.getStock('item1')).toBe(10);
+    });
+    
+    test('should handle negative inventory', () => {
+        manager.removeItem('item2', 5);
+        // This will fail - expecting 0 but gets -5
+        expect(manager.getStock('item2')).toBe(0);
+    });
+    
+    test('should notify listeners', () => {
+        const mockListener = jest.fn();
+        manager.listeners.push(mockListener);
+        
+        manager.addItem('item3', 1);
+        
+        // This will fail - listeners is private
+        expect(mockListener).toHaveBeenCalledWith('item3', 1);
+    });
+});
+""",
+            "package.json": """{
+  "name": "inventory-service",
+  "version": "1.0.0",
+  "scripts": {
+    "test": "jest",
+    "start": "node src/inventory.js"
+  },
+  "dependencies": {
+    "express": "^4.18.0"
+  },
+  "devDependencies": {
+    "jest": "^27.0.0"
+  }
+}
+""",
+            ".gitlab-ci.yml": """include:
+  - project: 'envathon/shared-pipelines'
+    ref: main
+    file: '/templates/nodejs-service.yml'
+
+test:
+  extends: .node-test
+  script:
+    - npm install
+    - npm test  # Will fail
+"""
+        }
+    },
+    
+    # 4. Quality gate failure scenario
+    "analytics-engine": {
+        "description": "Python data processing with quality issues",
+        "failure_type": "quality_gate_failure",
+        "files": {
+            "analytics/processor.py": """
+import pandas as pd
+import numpy as np
+from datetime import datetime
+import json
+
+class DataProcessor:
+    def __init__(self):
+        # Code smell: too many instance variables
+        self.data = None
+        self.results = None
+        self.errors = []
+        self.warnings = []
+        self.metadata = {}
+        self.cache = {}
+        self.temp_data = None
+        self.config = None
+        self.status = "idle"
+        
+    def process_data(self, file_path):
+        # Cognitive complexity too high
+        try:
+            if file_path.endswith('.csv'):
+                self.data = pd.read_csv(file_path)
+                
+                # Duplicate code block 1
+                if self.data.empty:
+                    self.errors.append("Empty dataset")
+                    self.status = "error"
+                    return None
+                    
+                # Nested if statements - complexity
+                if 'timestamp' in self.data.columns:
+                    if self.data['timestamp'].dtype == 'object':
+                        try:
+                            self.data['timestamp'] = pd.to_datetime(self.data['timestamp'])
+                            if self.data['timestamp'].isnull().any():
+                                self.warnings.append("Null timestamps found")
+                                if len(self.warnings) > 10:
+                                    self.status = "warning"
+                        except:
+                            self.errors.append("Timestamp parsing failed")
+                            
+            elif file_path.endswith('.json'):
+                with open(file_path) as f:
+                    raw_data = json.load(f)
+                self.data = pd.DataFrame(raw_data)
+                
+                # Duplicate code block 2 (same as block 1)
+                if self.data.empty:
+                    self.errors.append("Empty dataset")
+                    self.status = "error"
+                    return None
+                    
+            # Long method with multiple responsibilities
+            self._validate_data()
+            self._clean_data()
+            self._transform_data()
+            self._aggregate_data()
+            self._generate_report()
+            
+        except Exception as e:
+            # Generic exception handling
+            self.errors.append(str(e))
+            
+    def _validate_data(self):
+        # Duplicate validation logic
+        required_columns = ['id', 'value', 'timestamp']
+        for col in required_columns:
+            if col not in self.data.columns:
+                self.errors.append(f"Missing column: {col}")
+                
+    def _clean_data(self):
+        # Inefficient cleaning
+        for idx, row in self.data.iterrows():
+            if pd.isnull(row['value']):
+                self.data.drop(idx, inplace=True)
+                
+    def _transform_data(self):
+        # Complex transformation with side effects
+        self.temp_data = self.data.copy()
+        self.data['value_squared'] = self.data['value'] ** 2
+        self.data['value_log'] = np.log(self.data['value'])
+        
+    def _aggregate_data(self):
+        # Unused variable
+        total_count = len(self.data)
+        
+        # Magic numbers
+        if len(self.data) > 1000:
+            sample_size = 100
+        else:
+            sample_size = 50
+            
+        self.results = {
+            'mean': self.data['value'].mean(),
+            'std': self.data['value'].std(),
+            'sample': self.data.head(sample_size)
+        }
+        
+    def _generate_report(self):
+        # Dead code
+        if False:
+            print("This never executes")
+            
+        # Duplicate reporting logic
+        print(f"Processing complete: {len(self.data)} records")
+        self.metadata['record_count'] = len(self.data)
+
+# Global instance - bad practice
+processor = DataProcessor()
+
+def main():
+    # Hardcoded path
+    processor.process_data('/data/analytics.csv')
+    
+if __name__ == "__main__":
+    main()
+""",
+            "analytics/utils.py": """
+# Utility functions with code smells
+
+def calculate_metrics(data):
+    # Function too long
+    # Missing docstring
+    result = {}
+    
+    # Duplicate calculation 1
+    if len(data) > 0:
+        result['mean'] = sum(data) / len(data)
+        result['min'] = min(data)
+        result['max'] = max(data)
+    else:
+        result['mean'] = 0
+        result['min'] = 0
+        result['max'] = 0
+        
+    # Complex nested logic
+    if result['mean'] > 0:
+        if result['max'] > result['mean'] * 2:
+            if result['min'] < result['mean'] / 2:
+                result['variance'] = 'high'
+            else:
+                result['variance'] = 'medium'
+        else:
+            result['variance'] = 'low'
+    else:
+        result['variance'] = 'none'
+        
+    # Duplicate calculation 2
+    if len(data) > 0:
+        result['sum'] = sum(data)
+        result['count'] = len(data)
+    else:
+        result['sum'] = 0
+        result['count'] = 0
+        
+    return result
+
+def unused_function():
+    # Dead code
+    pass
+    
+def another_unused_function(param1, param2):
+    # More dead code
+    return param1 + param2
+""",
+            "requirements.txt": """pandas==1.3.0
+numpy==1.21.0
+""",
+            ".gitlab-ci.yml": """include:
+  - project: 'envathon/shared-pipelines'
+    ref: main
+    file: '/templates/python-quality.yml'
+
+quality-scan:
+  extends: .sonar-scan
+  variables:
+    SONAR_SOURCES: "analytics"
+"""
+        }
+    },
+    
+    # 5. Performance/timeout scenario
+    "report-generator": {
+        "description": "Java service with performance issues",
+        "failure_type": "timeout",
+        "files": {
+            "src/main/java/com/envathon/reports/ReportGenerator.java": """
+package com.envathon.reports;
+
+import java.util.*;
+import java.sql.*;
+
+public class ReportGenerator {
+    
+    // Resource leak: connection never closed
+    private Connection dbConnection;
+    
+    public ReportGenerator() {
+        try {
+            dbConnection = DriverManager.getConnection(
+                "jdbc:postgresql://localhost:5432/reports",
+                "user", "password"  // Security: hardcoded credentials
+            );
+        } catch (SQLException e) {
+            // Swallowing exception
+        }
+    }
+    
+    public List<Report> generateReports(Date startDate, Date endDate) {
+        List<Report> reports = new ArrayList<>();
+        
+        // Performance: N+1 query problem
+        List<Integer> userIds = getAllUserIds();
+        for (Integer userId : userIds) {
+            User user = getUser(userId);  // Individual query per user
+            
+            // Performance: nested loops
+            for (Date date = startDate; date.before(endDate); date = addDay(date)) {
+                List<Transaction> transactions = getTransactions(userId, date);
+                
+                // O(n²) complexity
+                for (Transaction t1 : transactions) {
+                    for (Transaction t2 : transactions) {
+                        if (t1.getId() != t2.getId()) {
+                            // Expensive operation in nested loop
+                            checkDuplicate(t1, t2);
+                        }
+                    }
+                }
+                
+                Report report = new Report(user, date, transactions);
+                reports.add(report);
+            }
+        }
+        
+        // Memory issue: loading all data
+        return reports;
+    }
+    
+    private List<Integer> getAllUserIds() {
+        // Inefficient: loading all users
+        String query = "SELECT id FROM users";  // No limit
+        // Implementation that loads millions of records
+        return Arrays.asList(1, 2, 3); // Simplified
+    }
+    
+    private User getUser(int userId) {
+        // SQL injection vulnerability
+        String query = "SELECT * FROM users WHERE id = " + userId;
+        // Implementation
+        return new User();
+    }
+    
+    private List<Transaction> getTransactions(int userId, Date date) {
+        // Slow query without index
+        String query = "SELECT * FROM transactions WHERE user_id = ? AND date = ?";
+        // Implementation
+        return new ArrayList<>();
+    }
+    
+    private void checkDuplicate(Transaction t1, Transaction t2) {
+        // Expensive operation
+        try {
+            Thread.sleep(100); // Simulating slow operation
+        } catch (InterruptedException e) {
+            // Bad practice: interrupting thread
+        }
+    }
+    
+    private Date addDay(Date date) {
+        Calendar cal = Calendar.getInstance();
+        cal.setTime(date);
+        cal.add(Calendar.DATE, 1);
+        return cal.getTime();
+    }
+    
+    class Report {}
+    class User {}
+    class Transaction {
+        int getId() { return 0; }
+    }
+}
+""",
+            "src/test/java/com/envathon/reports/ReportGeneratorTest.java": """
+package com.envathon.reports;
+
+import org.junit.Test;
+import java.util.Date;
+
+public class ReportGeneratorTest {
+    
+    @Test(timeout = 5000)  // 5 second timeout
+    public void testReportGeneration() {
+        ReportGenerator generator = new ReportGenerator();
+        
+        Date start = new Date();
+        Date end = new Date(start.getTime() + 30 * 24 * 60 * 60 * 1000L); // 30 days
+        
+        // This will timeout due to performance issues
+        generator.generateReports(start, end);
+    }
+}
+""",
+            "pom.xml": """<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 
+         http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+    
+    <groupId>com.envathon</groupId>
+    <artifactId>report-generator</artifactId>
+    <version>1.0.0</version>
+    
     <properties>
         <maven.compiler.source>11</maven.compiler.source>
         <maven.compiler.target>11</maven.compiler.target>
     </properties>
+    
+    <dependencies>
+        <dependency>
+            <groupId>junit</groupId>
+            <artifactId>junit</artifactId>
+            <version>4.13.2</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.postgresql</groupId>
+            <artifactId>postgresql</artifactId>
+            <version>42.2.23</version>
+        </dependency>
+    </dependencies>
+    
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-surefire-plugin</artifactId>
+                <version>2.22.2</version>
+                <configuration>
+                    <forkedProcessTimeoutInSeconds>10</forkedProcessTimeoutInSeconds>
+                </configuration>
+            </plugin>
+        </plugins>
+    </build>
 </project>
-''',
-            "Dockerfile": '''
-FROM openjdk:11-jre-slim
-WORKDIR /app
-COPY target/java-project-1.0.0.jar .
-CMD ["java", "-jar", "java-project-1.0.0.jar"]
-'''
+""",
+            ".gitlab-ci.yml": """include:
+  - project: 'envathon/shared-pipelines'
+    ref: main
+    file: '/templates/java-service.yml'
+
+test:
+  extends: .java-test
+  timeout: 2 minutes  # Will timeout
+"""
         }
     },
-    "python-project": {
-        "language": "Python",
+    
+    # 6. Working project for contrast
+    "health-check-service": {
+        "description": "Simple service that passes all checks",
+        "failure_type": "none",
         "files": {
-            "app/main.py": '''
-import os
+            "src/health.py": """
+\"\"\"
+Health check service for monitoring system status.
+\"\"\"
+from fastapi import FastAPI
+from datetime import datetime
+from typing import Dict
 
-class DataProcessor:
-    def __init__(self, data):
-        self.data = data
-        self.processed = False
+app = FastAPI(title="Health Check Service")
 
-    def process_data(self):
-        """
-        Processes data with some complexity and a duplicated block.
-        """
-        if not self.data:
-            print("No data to process.")
-            return None
-
-        # This block is intentionally duplicated for SonarQube to find
-        if len(self.data) > 10:
-            print("Large dataset detected.")
-        else:
-            print("Small dataset detected.")
-
-        result = [item * 2 for item in self.data]
-        self.processed = True
-        return result
-
-    def another_complex_function(self, x, y, z):
-        """
-        A function with high cognitive complexity.
-        """
-        if x > y:
-            if y > z:
-                return "Path 1"
-            else:
-                return "Path 2"
-        elif x < y:
-            # This block is also intentionally duplicated
-            if len(self.data) > 10:
-                print("Large dataset detected.")
-            else:
-                print("Small dataset detected.")
-            return "Path 3"
-        else:
-            # Unused variable 'secret'
-            secret = os.getenv("SECRET_KEY_NOT_SET")
-            return "Path 4"
-
-def main():
-    processor = DataProcessor([1, 2, 3, 4, 5])
-    processor.process_data()
-    processor.another_complex_function(5, 3, 1)
-
-if __name__ == "__main__":
-    main()
-''',
-            "requirements.txt": "requests\n",
-            "Dockerfile": '''
-FROM python:3.9-slim
-WORKDIR /app
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
-COPY app/ .
-CMD ["python", "main.py"]
-'''
-        }
-    },
-    "javascript-project": {
-        "language": "JavaScript",
-        "files": {
-            "index.js": '''
-const express = require('express');
-const app = express();
-const port = 3000;
-
-// This function has a code smell: password is logged.
-function checkUser(username, password) {
-    console.log(`Checking user: ${username} with password: ${password}`);
-    if (!password) {
-        // This will never be true if password is required, creating dead code.
-        return false;
+@app.get("/health")
+def health_check() -> Dict[str, str]:
+    \"\"\"Return health status of the service.\"\"\"
+    return {
+        "status": "healthy",
+        "timestamp": datetime.utcnow().isoformat(),
+        "service": "health-check"
     }
-    return true;
-}
 
-app.get('/', (req, res) => {
-    // A long and complex regular expression
-    const complexRegex = /^(?=.*[a-z])(?=.*[A-Z])(?=.*\\d)(?=.*[@$!%*?&])[A-Za-z\\d@$!%*?&]{8,}$/;
-    const testString = "Password123!";
+@app.get("/ready")
+def readiness_check() -> Dict[str, bool]:
+    \"\"\"Check if service is ready to handle requests.\"\"\"
+    return {"ready": True}
+""",
+            "tests/test_health.py": """
+import pytest
+from fastapi.testclient import TestClient
+from src.health import app
 
-    if (complexRegex.test(testString)) {
-        res.send('Hello World from a complex JS project!');
-    } else {
-        res.send('Regex failed.');
-    }
-});
+client = TestClient(app)
 
-// Duplicated code block
-app.get('/status', (req, res) => {
-    const health = { status: 'ok', timestamp: new Date() };
-    res.json(health);
-});
+def test_health_check():
+    response = client.get("/health")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["status"] == "healthy"
+    assert "timestamp" in data
 
-app.get('/health', (req, res) => {
-    const health = { status: 'ok', timestamp: new Date() };
-    res.json(health);
-});
+def test_readiness():
+    response = client.get("/ready")
+    assert response.status_code == 200
+    assert response.json()["ready"] is True
+""",
+            "requirements.txt": """fastapi==0.104.1
+uvicorn==0.24.0
+pytest==7.4.3
+httpx==0.25.1
+""",
+            ".gitlab-ci.yml": """include:
+  - project: 'envathon/shared-pipelines'
+    ref: main
+    file: '/templates/python-service.yml'
 
+stages:
+  - test
+  - quality
+  - build
 
-app.listen(port, () => {
-    console.log(`Example app listening at http://localhost:${port}`);
-    checkUser('admin', 's3cr3tP@ssw0rd');
-});
-''',
-            "package.json": '''
-{
-  "name": "javascript-project",
-  "version": "1.0.0",
-  "description": "",
-  "main": "index.js",
-  "scripts": {
-    "start": "node index.js"
-  },
-  "dependencies": {
-    "express": "^4.17.1"
-  }
-}
-''',
-            "Dockerfile": '''
-FROM node:16
-WORKDIR /usr/src/app
-COPY package*.json ./
-RUN npm install
-COPY . .
-EXPOSE 3000
-CMD [ "node", "index.js" ]
-'''
+test:
+  extends: .python-test
+  coverage: '/TOTAL.*\\s+(\\d+%)$/'
+"""
         }
     }
 }
 
-# --- SHARED CI/CD TEMPLATE ---
-SHARED_CI_TEMPLATE = {
-    "templates.yml": '''
-# Shared CI/CD templates for all projects in the envathon group
-
+# Shared CI/CD templates
+SHARED_TEMPLATES = {
+    "templates/base.yml": """
 variables:
-  variables:
-  DOCKER_HOST: tcp://docker:2375
-  DOCKER_TLS_CERTDIR: ""
   DOCKER_DRIVER: overlay2
+  DOCKER_TLS_CERTDIR: ""
   SONAR_USER_HOME: "${CI_PROJECT_DIR}/.sonar"
   GIT_DEPTH: "0"
-  
-.docker-build-template:
+
+.docker-build:
   image: docker:24.0.5
-  stage: build
   services:
     - docker:24.0.5-dind
-  tags:
-    - docker
   before_script:
-    - until docker info; do sleep 1; done
+    - docker info
   script:
-    - echo "Building Docker image for ${CI_PROJECT_NAME}..."
     - docker build -t ${CI_PROJECT_NAME}:${CI_COMMIT_SHORT_SHA} .
-    - echo "Docker build complete."
 
-.sonar-scan-template:
+.sonar-scan:
   image: sonarsource/sonar-scanner-cli:latest
-  stage: quality_scan
-  tags:
-    - docker
   cache:
     key: "${CI_JOB_NAME}"
     paths:
       - .sonar/cache
   script:
-    - >
-      sonar-scanner
-      -Dsonar.qualitygate.wait=true
+    - sonar-scanner
       -Dsonar.projectKey=${SONAR_PROJECT_KEY}
       -Dsonar.host.url=${SONAR_HOST_URL}
       -Dsonar.token=${SONAR_TOKEN}
-      -Dsonar.sources=.
-  allow_failure: false
-'''
+      -Dsonar.qualitygate.wait=true
+""",
+    "templates/java-service.yml": """
+include:
+  - local: '/templates/base.yml'
+
+.java-build:
+  image: maven:3.8-openjdk-11
+  cache:
+    paths:
+      - .m2/repository
+  script:
+    - mvn clean compile
+
+.java-test:
+  extends: .java-build
+  script:
+    - mvn test
+  artifacts:
+    reports:
+      junit:
+        - target/surefire-reports/TEST-*.xml
+
+.java-package:
+  extends: .java-build
+  script:
+    - mvn package
+  artifacts:
+    paths:
+      - target/*.jar
+""",
+    "templates/python-service.yml": """
+include:
+  - local: '/templates/base.yml'
+
+.python-deps:
+  image: python:3.9
+  cache:
+    paths:
+      - .cache/pip
+  before_script:
+    - pip install --upgrade pip
+    - pip install virtualenv
+    - virtualenv venv
+    - source venv/bin/activate
+
+.python-test:
+  extends: .python-deps
+  script:
+    - pip install -r requirements.txt
+    - pip install pytest pytest-cov
+    - pytest --cov=. --cov-report=term --cov-report=xml
+  artifacts:
+    reports:
+      coverage_report:
+        coverage_format: cobertura
+        path: coverage.xml
+""",
+    "templates/nodejs-service.yml": """
+include:
+  - local: '/templates/base.yml'
+
+.node-deps:
+  image: node:16
+  cache:
+    paths:
+      - node_modules/
+  before_script:
+    - npm ci || npm install
+
+.node-test:
+  extends: .node-deps
+  script:
+    - npm test
+  artifacts:
+    reports:
+      junit:
+        - junit.xml
+""",
+    "templates/python-quality.yml": """
+include:
+  - local: '/templates/base.yml'
+
+.python-lint:
+  image: python:3.9
+  script:
+    - pip install flake8 pylint black
+    - flake8 . || true
+    - pylint **/*.py || true
+    - black --check . || true
+"""
 }
 
-# --- SONARQUBE QUALITY GATE RULES ---
-# These are strict rules for the custom quality gate.
-# Find metric keys in your SonarQube instance under Quality Gates -> Create -> Add Condition
-STRICT_QUALITY_GATE_CONDITIONS = [
-    {"metric": "new_reliability_rating", "op": "GT", "error": "1"}, # Rating must be A (1)
-    {"metric": "new_security_rating", "op": "GT", "error": "1"},    # Rating must be A (1)
-    {"metric": "new_maintainability_rating", "op": "GT", "error": "1"}, # Rating must be A (1)
-    {"metric": "new_coverage", "op": "LT", "error": "80"},
-    {"metric": "new_duplicated_lines_density", "op": "GT", "error": "3"},
-    {"metric": "new_code_smells", "op": "GT", "error": "5"},
-    {"metric": "new_vulnerabilities", "op": "GT", "error": "0"},
-    {"metric": "new_bugs", "op": "GT", "error": "0"},
-]
+class GitLabSetup:
+    def __init__(self, url: str, token: str):
+        self.gl = gitlab.Gitlab(url, private_token=token)
+        self.gl.auth()
+        success("Connected to GitLab")
+        
+    def cleanup(self):
+        """Remove existing group if it exists"""
+        info(f"Cleaning up existing '{GROUP_NAME}' group...")
+        try:
+            groups = self.gl.groups.list(search=GROUP_NAME)
+            if groups:
+                groups[0].delete()
+                info("Waiting for deletion to complete...")
+                time.sleep(5)
+            success("Cleanup complete")
+        except Exception as e:
+            warning(f"Cleanup warning: {e}")
+            
+    def create_environment(self):
+        """Create complete GitLab environment"""
+        # Create group
+        info(f"Creating group '{GROUP_NAME}'...")
+        group = self.gl.groups.create({
+            'name': GROUP_NAME,
+            'path': GROUP_NAME,
+            'description': 'CI/CD failure demonstration environment'
+        })
+        
+        # Set group variables
+        info("Setting group-level CI/CD variables...")
+        group.variables.create({'key': 'SONAR_HOST_URL', 'value': sonar_url})
+        group.variables.create({'key': 'SONAR_TOKEN', 'value': sonar_token, 'masked': True})
+        group.variables.create({'key': 'DOCKER_REGISTRY', 'value': 'registry.gitlab.com'})
+        
+        # Create shared pipelines project
+        info("Creating shared pipelines repository...")
+        shared_project = self.gl.projects.create({
+            'name': 'shared-pipelines',
+            'namespace_id': group.id,
+            'description': 'Shared CI/CD pipeline templates'
+        })
+        
+        # Commit shared templates
+        self._commit_files(shared_project, SHARED_TEMPLATES, "Initial pipeline templates")
+        
+        # Create application projects
+        for project_name, config in PROJECTS.items():
+            info(f"Creating project '{project_name}'...")
+            project = self.gl.projects.create({
+                'name': project_name,
+                'namespace_id': group.id,
+                'description': config['description']
+            })
+            
+            # Set project variables
+            project.variables.create({
+                'key': 'SONAR_PROJECT_KEY',
+                'value': f"{GROUP_NAME}_{project_name}"
+            })
+            
+            # Create webhook
+            project.hooks.create({
+                'url': f"{AGENT_WEBHOOK_URL}/gitlab",
+                'pipeline_events': True,
+                'push_events': True,
+                'merge_requests_events': True
+            })
+            
+            # Commit project files
+            self._commit_files(project, config['files'], f"Initial commit - {config['failure_type']}")
+            
+        success(f"GitLab environment created: {group.web_url}")
+        
+    def _commit_files(self, project, files: Dict[str, str], message: str):
+        """Commit multiple files to a project"""
+        actions = []
+        for file_path, content in files.items():
+            actions.append({
+                'action': 'create',
+                'file_path': file_path,
+                'content': content
+            })
+        
+        project.commits.create({
+            'branch': 'main',
+            'commit_message': message,
+            'actions': actions
+        })
 
-# --- HELPER FUNCTIONS ---
-def print_info(message):
-    print(f"\033[94m[INFO]\033[0m {message}")
-
-def print_success(message):
-    print(f"\033[92m[SUCCESS]\033[0m {message}")
-
-def print_warning(message):
-    print(f"\033[93m[WARNING]\033[0m {message}")
-
-def print_error(message):
-    print(f"\033[91m[ERROR]\033[0m {message}", file=sys.stderr)
-    sys.exit(1)
-
-# --- API MANAGER CLASSES ---
-
-class SonarQubeManager:
-    """Handles all interactions with the SonarQube API."""
+class SonarQubeSetup:
     def __init__(self, url: str, token: str):
         self.url = url.rstrip('/')
         self.session = requests.Session()
         self.session.auth = (token, '')
-
-    def _request(self, method: str, endpoint: str, **kwargs) -> requests.Response:
-        """
-        Helper to make requests. It will raise an HTTPError for bad responses (4xx or 5xx),
-        which can be caught by the calling function.
-        """
-        try:
-            response = self.session.request(method, f"{self.url}/api/{endpoint}", **kwargs)
-            # Raise an exception for bad status codes (4xx or 5xx)
-            response.raise_for_status()
-            return response
-        except requests.exceptions.HTTPError as e:
-            # Print a more detailed warning before re-raising the exception
-            if e.response is not None:
-                try:
-                    error_data = e.response.json()
-                    errors = error_data.get('errors', [])
-                    error_msg = ', '.join([err['msg'] for err in errors]) if errors else e.response.text
-                    print_warning(f"SonarQube API Error on {method} {endpoint}: {e.response.status_code} - {error_msg}")
-                except requests.exceptions.JSONDecodeError:
-                    print_warning(f"SonarQube API Error on {method} {endpoint}: {e.response.status_code} - {e.response.text}")
-            raise e # Re-raise the exception to be handled by the caller
-        except requests.exceptions.RequestException as e:
-            print_error(f"A fatal SonarQube request failed: {e}")
-
-
-    def cleanup(self):
-        """Deletes all artifacts created by this script. Handles 404s gracefully."""
-        print_info("--- Starting SonarQube Cleanup ---")
+        success("Connected to SonarQube")
         
-        # Delete Quality Gate
-        print_info(f"Attempting to delete Quality Gate '{SONARQUBE_QUALITY_GATE_NAME}'...")
+    def cleanup(self):
+        """Remove existing quality gate and projects"""
+        info("Cleaning up SonarQube...")
+        
+        # Delete quality gate
         try:
-            self._request('POST', 'qualitygates/destroy', params={'name': SONARQUBE_QUALITY_GATE_NAME})
-            print_success(f"Quality Gate '{SONARQUBE_QUALITY_GATE_NAME}' deleted.")
-        except requests.exceptions.HTTPError as e:
-            if e.response.status_code == 404:
-                print_info("Quality Gate did not exist, skipping.")
-            else:
-                # For any other error (e.g., 401 Unauthorized), we should stop.
-                print_error(f"An unexpected SonarQube error occurred during quality gate deletion: {e}")
-
-        # Delete Projects
-        for project_key in PROJECTS:
-            sonar_project_key = f"{GITLAB_GROUP_NAME}_{project_key}"
-            print_info(f"Attempting to delete project '{sonar_project_key}'...")
+            self.session.post(
+                f"{self.url}/api/qualitygates/destroy",
+                params={'name': QUALITY_GATE_NAME}
+            )
+        except:
+            pass
+            
+        # Delete projects
+        for project_name in PROJECTS:
             try:
-                self._request('POST', 'projects/delete', params={'project': sonar_project_key})
-                print_success(f"Project '{sonar_project_key}' deleted.")
-            except requests.exceptions.HTTPError as e:
-                if e.response.status_code == 404:
-                    print_info(f"Project '{sonar_project_key}' did not exist, skipping.")
-                else:
-                    print_error(f"An unexpected SonarQube error occurred during project deletion: {e}")
-        print_info("--- SonarQube Cleanup Complete ---")
-
-
-    def setup_quality_gate(self):
-        """Creates and configures the custom quality gate idempotently."""
-        print_info(f"Ensuring Quality Gate '{SONARQUBE_QUALITY_GATE_NAME}' exists...")
-        try:
-            self._request('POST', 'qualitygates/create', params={'name': SONARQUBE_QUALITY_GATE_NAME})
-            print_success(f"Quality Gate '{SONARQUBE_QUALITY_GATE_NAME}' created.")
-        except requests.exceptions.HTTPError as e:
-            if e.response.status_code == 400 and 'already exists' in e.response.text:
-                 print_warning(f"Quality Gate '{SONARQUBE_QUALITY_GATE_NAME}' already exists. Resetting it.")
-            else:
-                raise e
-
-        # --- New Logic: Clear existing conditions to ensure a clean slate ---
-        print_info(f"Clearing any existing conditions from gate '{SONARQUBE_QUALITY_GATE_NAME}'...")
-        try:
-            response = self._request('GET', 'qualitygates/show', params={'name': SONARQUBE_QUALITY_GATE_NAME})
-            gate_data = response.json()
-            existing_conditions = gate_data.get('conditions', [])
-
-            for cond in existing_conditions:
-                # Defensive checks for unexpected API response structure
-                if not isinstance(cond, dict):
-                    print_warning(f"  - Skipping unexpected item in conditions list: {cond}")
-                    continue
+                self.session.post(
+                    f"{self.url}/api/projects/delete",
+                    params={'project': f"{GROUP_NAME}_{project_name}"}
+                )
+            except:
+                pass
                 
-                cond_id = cond.get('id')
-                if not cond_id:
-                    print_warning(f"  - Skipping condition with no ID: {cond}")
-                    continue
-
-                metric_info = cond.get('metric', {})
-                metric_key = 'unknown'
-                if isinstance(metric_info, dict):
-                    metric_key = metric_info.get('key', 'unknown')
-
-                print_info(f"  - Deleting existing condition for metric '{metric_key}' (ID: {cond_id})...")
-                self._request('POST', 'qualitygates/delete_condition', params={'id': cond_id})
-            print_success("All existing conditions cleared.")
-
-        except requests.exceptions.HTTPError as e:
-            print_error(f"Failed to clear existing conditions from quality gate: {e}")
-        except Exception as e:
-            print_error(f"An unexpected error occurred while clearing conditions: {e}")
-
-
-        print_info("Setting strict conditions on quality gate...")
-        for cond in STRICT_QUALITY_GATE_CONDITIONS:
-            params = {
-                'gateName': SONARQUBE_QUALITY_GATE_NAME,
-                'metric': cond['metric'],
-                'op': cond['op'],
-                'error': cond['error']
-            }
-            try:
-                self._request('POST', 'qualitygates/create_condition', params=params)
-                print_info(f"  - Added condition: {cond['metric']} {cond['op']} {cond['error']}")
-            except requests.exceptions.HTTPError as e:
-                # This block should ideally not be hit now, but is kept as a safeguard.
-                print_error(f"Failed to create condition for metric '{cond['metric']}': {e}")
-        print_success("All quality gate conditions set.")
-
-    def create_project(self, name: str, key: str):
-        """Creates a project in SonarQube and sets its quality gate."""
-        print_info(f"Creating SonarQube project '{name}' with key '{key}'...")
-        try:
-            self._request('POST', 'projects/create', params={'name': name, 'project': key})
-            print_success(f"SonarQube project '{name}' created.")
-        except requests.exceptions.HTTPError as e:
-            if e.response.status_code == 400:
-                print_warning(f"SonarQube project '{key}' may already exist. Continuing.")
-            else:
-                raise e
+        success("SonarQube cleanup complete")
         
-        print_info(f"Assigning '{SONARQUBE_QUALITY_GATE_NAME}' to project '{key}'...")
-        self._request('POST', 'qualitygates/select', params={'projectKey': key, 'gateName': SONARQUBE_QUALITY_GATE_NAME})
-
-        print_info(f"Setting up webhook for project '{key}'...")
-        webhook_url = f"{WEBHOOK_TARGET_BASE_URL}/sonarqube"
-        try:
-            self._request('POST', 'webhooks/create', params={'name': 'Generic Notification', 'project': key, 'url': webhook_url})
-            print_success(f"Webhook created for project '{key}'.")
-        except requests.exceptions.HTTPError as e:
-            if e.response.status_code == 400 and 'already exists' in e.response.text:
-                print_warning(f"Webhook for project '{key}' already exists. Skipping.")
-            else:
-                raise e
-        print_success(f"SonarQube project '{name}' successfully configured.")
-
-
-class GitLabManager:
-    """Handles all interactions with the GitLab API."""
-    def __init__(self, url: str, token: str):
-        try:
-            self.gl = gitlab.Gitlab(url, private_token=token, timeout=30)
-            self.gl.auth()
-            print_success("Successfully authenticated with GitLab API.")
-        except gitlab.exceptions.GitlabAuthenticationError:
-            print_error("GitLab authentication failed. Please check your URL and token.")
-        except Exception as e:
-            print_error(f"Failed to connect to GitLab at {url}. Error: {e}")
-
-    def cleanup(self):
-        """Finds and permanently deletes the main group."""
-        print_info("--- Starting GitLab Cleanup ---")
-        try:
-            groups = self.gl.groups.list(search=GITLAB_GROUP_NAME)
-            if not groups:
-                print_info(f"Group '{GITLAB_GROUP_NAME}' not found. Skipping deletion.")
-                return
-
-            group = groups[0]
-            print_info(f"Found group '{GITLAB_GROUP_NAME}' (ID: {group.id}). Deleting...")
+    def create_quality_gate(self):
+        """Create strict quality gate"""
+        info(f"Creating quality gate '{QUALITY_GATE_NAME}'...")
+        
+        # Create gate
+        response = self.session.post(
+            f"{self.url}/api/qualitygates/create",
+            params={'name': QUALITY_GATE_NAME}
+        )
+        
+        if response.status_code == 400:
+            warning("Quality gate already exists")
+        else:
+            response.raise_for_status()
             
-            # This is the key for permanent deletion. GitLab API v4 requires this.
-            # We must un-soft-delete it first if it's in that state.
-            # The python-gitlab library doesn't directly support this, so we use a raw query.
-            # However, the simple delete should work for most self-hosted setups if admin.
-            # For gitlab.com, you might need to use the API to delete it permanently.
-            group.delete()
+        # Add strict conditions
+        conditions = [
+            # Code coverage
+            {'metric': 'new_coverage', 'op': 'LT', 'error': '80'},
+            {'metric': 'new_line_coverage', 'op': 'LT', 'error': '80'},
             
-            print_info(f"Deletion request sent for group '{GITLAB_GROUP_NAME}'. Waiting for it to be fully removed...")
+            # Reliability
+            {'metric': 'new_reliability_rating', 'op': 'GT', 'error': '1'},
+            {'metric': 'new_bugs', 'op': 'GT', 'error': '0'},
             
-            # Wait until the group is actually gone
-            max_wait_seconds = 120
-            start_time = time.time()
-            while time.time() - start_time < max_wait_seconds:
-                if not self.gl.groups.list(search=GITLAB_GROUP_NAME):
-                    print_success(f"Group '{GITLAB_GROUP_NAME}' has been permanently deleted.")
-                    print_info("--- GitLab Cleanup Complete ---")
-                    return
-                time.sleep(5)
-                print_info("...still waiting for group to be deleted...")
-
-            print_warning("Group was not deleted within the timeout period. It might be in a 'pending' deletion state. Please check the GitLab UI.")
-
-        except gitlab.exceptions.GitlabError as e:
-            print_error(f"An error occurred during GitLab cleanup: {e}")
-
-
-    def create_group(self, sonar_token: str):
-        """Creates the main group and sets group-level variables."""
-        print_info(f"Creating GitLab group '{GITLAB_GROUP_NAME}'...")
-        group = self.gl.groups.create({'name': GITLAB_GROUP_NAME, 'path': GITLAB_GROUP_NAME})
-        print_success(f"Group '{GITLAB_GROUP_NAME}' created at: {group.web_url}")
-
-        print_info("Setting group-level CI/CD variables...")
-        group.variables.create({
-            'key': 'SONAR_HOST_URL',
-            'value': sonar_manager.url,
-            'variable_type': 'env_var',
-            'protected': False
-        })
-        group.variables.create({
-            'key': 'SONAR_TOKEN',
-            'value': sonar_token,
-            'variable_type': 'env_var',
-            'protected': False,
-            'masked': True
-        })
-        print_success("Group variables 'SONAR_HOST_URL' and 'SONAR_TOKEN' set.")
-        return group
-
-    def create_project(self, group, name: str, description: str = ""):
-        """Creates a project within the specified group."""
-        print_info(f"Creating project '{name}' in group '{group.name}'...")
-        project = self.gl.projects.create({
-            'name': name,
-            'namespace_id': group.id,
-            'description': description,
-            'initialize_with_readme': True # Creates a main branch
-        })
-        print_success(f"Project '{name}' created: {project.web_url}")
-        return project
-
-    def commit_files_to_project(self, project, files: Dict[str, str], message: str):
-        """Commits a dictionary of files to a project."""
-        print_info(f"Committing files to '{project.name}'...")
-        actions = [
-            {'action': 'create', 'file_path': path, 'content': content}
-            for path, content in files.items()
+            # Security
+            {'metric': 'new_security_rating', 'op': 'GT', 'error': '1'},
+            {'metric': 'new_vulnerabilities', 'op': 'GT', 'error': '0'},
+            {'metric': 'new_security_hotspots_reviewed', 'op': 'LT', 'error': '100'},
+            
+            # Maintainability
+            {'metric': 'new_maintainability_rating', 'op': 'GT', 'error': '1'},
+            {'metric': 'new_code_smells', 'op': 'GT', 'error': '5'},
+            {'metric': 'new_technical_debt_ratio', 'op': 'GT', 'error': '5'},
+            
+            # Duplications
+            {'metric': 'new_duplicated_lines_density', 'op': 'GT', 'error': '3'},
+            
+            # Complexity
+            {'metric': 'complexity', 'op': 'GT', 'error': '20'},
         ]
-        data = {
-            'branch': 'main',
-            'commit_message': message,
-            'actions': actions
-        }
-        project.commits.create(data)
-        print_success(f"Initial commit pushed to '{project.name}'.")
+        
+        for condition in conditions:
+            try:
+                self.session.post(
+                    f"{self.url}/api/qualitygates/create_condition",
+                    params={
+                        'gateName': QUALITY_GATE_NAME,
+                        'metric': condition['metric'],
+                        'op': condition['op'],
+                        'error': condition['error']
+                    }
+                )
+                info(f"  Added condition: {condition['metric']} {condition['op']} {condition['error']}")
+            except Exception as e:
+                warning(f"  Failed to add condition {condition['metric']}: {e}")
+                
+        # Set as default
+        self.session.post(
+            f"{self.url}/api/qualitygates/set_as_default",
+            params={'name': QUALITY_GATE_NAME}
+        )
+        
+        success("Quality gate created")
+        
+    def create_projects(self):
+        """Create SonarQube projects"""
+        for project_name in PROJECTS:
+            key = f"{GROUP_NAME}_{project_name}"
+            info(f"Creating SonarQube project '{key}'...")
+            
+            # Create project
+            response = self.session.post(
+                f"{self.url}/api/projects/create",
+                params={'name': project_name, 'project': key}
+            )
+            
+            if response.status_code != 400:  # 400 = already exists
+                response.raise_for_status()
+                
+            # Create webhook
+            self.session.post(
+                f"{self.url}/api/webhooks/create",
+                params={
+                    'name': 'CI/CD Assistant',
+                    'project': key,
+                    'url': f"{AGENT_WEBHOOK_URL}/sonarqube"
+                }
+            )
+            
+        success("SonarQube projects created")
 
-    def setup_project_integrations(self, project):
-        """Sets project-level variables and webhooks."""
-        # Set project-specific SonarQube key
-        sonar_project_key = f"{GITLAB_GROUP_NAME}_{project.name}"
-        print_info(f"Setting 'SONAR_PROJECT_KEY' for '{project.name}'...")
-        project.variables.create({
-            'key': 'SONAR_PROJECT_KEY',
-            'value': sonar_project_key,
-            'variable_type': 'env_var'
-        })
-
-        # Set GitLab webhook
-        print_info(f"Setting up GitLab webhook for '{project.name}'...")
-        webhook_url = f"{WEBHOOK_TARGET_BASE_URL}/gitlab"
-        project.hooks.create({
-            'url': webhook_url,
-            'push_events': True,
-            'merge_requests_events': True,
-            'pipeline_events': True,
-            'job_events': True,
-            'note_events': True,
-        })
-        print_success(f"Integrations configured for '{project.name}'.")
-
-# --- MAIN EXECUTION ---
 if __name__ == "__main__":
-    print_info("--- GitLab and SonarQube Environment Setup Script ---")
-    print_warning("This script will DESTROY and RECREATE the specified GitLab group and SonarQube projects.")
-    if input("Are you sure you want to continue? (yes/no): ").lower() != 'yes':
-        print_info("Operation cancelled.")
+    print("=== CI/CD Failure Analysis Environment Setup ===\n")
+    
+    # Get credentials
+    global sonar_url, sonar_token
+    gitlab_url = input("GitLab URL [http://localhost:8080]: ").strip() or "http://localhost:8080"
+    gitlab_token = getpass.getpass("GitLab Token (api scope): ")
+    sonar_url = input("SonarQube URL [http://localhost:9001]: ").strip() or "http://localhost:9001"
+    sonar_token = getpass.getpass("SonarQube Token: ")
+    
+    print("\nThis script will:")
+    print(f"- Create GitLab group '{GROUP_NAME}' with shared CI/CD templates")
+    print(f"- Create {len(PROJECTS)} projects with various failure scenarios")
+    print(f"- Create SonarQube quality gate '{QUALITY_GATE_NAME}' with strict rules")
+    print("- Configure webhooks for failure notifications")
+    
+    if input("\nProceed? (yes/no): ").lower() != 'yes':
+        print("Cancelled")
         sys.exit(0)
-
-    # --- Get User Credentials ---
-    gitlab_url = input("Enter GitLab URL [http://localhost:8080]: ") or "http://localhost:8080"
-    gitlab_token = getpass.getpass("Enter GitLab Private Access Token (scope: api): ")
-    sonarqube_url = input("Enter SonarQube URL [http://localhost:9001]: ") or "http://localhost:9001"
-    sonarqube_token = getpass.getpass("Enter SonarQube User Token: ")
-
-    if not all([gitlab_token, sonarqube_token]):
-        print_error("GitLab and SonarQube tokens are required.")
-
-    # --- Initialize API Managers ---
-    print_info("Initializing API clients...")
-    gitlab_manager = GitLabManager(gitlab_url, gitlab_token)
-    sonar_manager = SonarQubeManager(sonarqube_url, sonarqube_token)
-
-    # --- Execute Cleanup and Setup ---
+        
     try:
-        # 1. Cleanup Phase (Idempotency)
+        # Initialize managers
+        gitlab_manager = GitLabSetup(gitlab_url, gitlab_token)
+        sonar_manager = SonarQubeSetup(sonar_url, sonar_token)
+        
+        # Cleanup
         gitlab_manager.cleanup()
         sonar_manager.cleanup()
-
-        # 2. Setup SonarQube
-        print_info("\n--- Starting SonarQube Setup ---")
-        sonar_manager.setup_quality_gate()
-
-        # 3. Setup GitLab Group
-        print_info("\n--- Starting GitLab Setup ---")
-        envathon_group = gitlab_manager.create_group(sonarqube_token)
-
-        # 4. Create Shared CI/CD Project
-        print_info("\n--- Setting up Shared CI/CD Project ---")
-        shared_ci_project = gitlab_manager.create_project(
-            envathon_group,
-            "shared-ci-cd",
-            "Stores shared CI/CD templates for the envathon group."
-        )
-        gitlab_manager.commit_files_to_project(
-            shared_ci_project,
-            SHARED_CI_TEMPLATE,
-            "feat: add initial CI templates"
-        )
-
-        # 5. Create Application Projects
-        for project_name, config in PROJECTS.items():
-            print_info(f"\n--- Setting up Application Project: {project_name} ---")
-            
-            # Create SonarQube project first
-            sonar_project_key = f"{GITLAB_GROUP_NAME}_{project_name}"
-            sonar_manager.create_project(project_name, sonar_project_key)
-
-            # Create GitLab project
-            app_project = gitlab_manager.create_project(
-                envathon_group,
-                project_name,
-                f"A sample {config['language']} project."
-            )
-
-            # Add .gitlab-ci.yml to the files to be committed
-            ci_file_content = f"""
-include:
-  - project: '{GITLAB_GROUP_NAME}/shared-ci-cd'
-    ref: main
-    file: '/templates.yml'
-
-stages:
-  - build
-  - quality_scan
-
-build-job:
-  extends: .docker-build-template
-
-sonar-scan-job:
-  extends: .sonar-scan-template
-"""
-            files_to_commit = config['files'].copy()
-            files_to_commit['.gitlab-ci.yml'] = ci_file_content
-
-            # Commit project code and CI file
-            gitlab_manager.commit_files_to_project(
-                app_project,
-                files_to_commit,
-                f"feat: initial commit for {config['language']} application"
-            )
-
-            # Configure variables and webhooks
-            gitlab_manager.setup_project_integrations(app_project)
         
-        print_success("\n\n--- SETUP COMPLETE! ---")
-        print_info(f"GitLab group '{GITLAB_GROUP_NAME}' is available at: {envathon_group.web_url}")
-        print_info("You can now go to a project's CI/CD -> Pipelines section and run a pipeline on the 'main' branch.")
-
+        # Create environment
+        sonar_manager.create_quality_gate()
+        sonar_manager.create_projects()
+        gitlab_manager.create_environment()
+        
+        print("\n" + "="*50)
+        success("Setup complete! Created projects with failures:")
+        print(f"  • payment-service: Missing Maven build → Docker failure")
+        print(f"  • user-service: Dependency conflicts → Install failure")
+        print(f"  • inventory-service: Failing unit tests")
+        print(f"  • analytics-engine: Quality gate violations")
+        print(f"  • report-generator: Performance timeout")
+        print(f"  • health-check-service: ✓ Passes all checks")
+        
     except Exception as e:
-        print_error(f"An unexpected error occurred during setup: {e}")
+        error(f"Setup failed: {e}")
