@@ -154,24 +154,22 @@ Remember: Do NOT create a merge request. Only analyze and propose solutions."""
 
         self.agent.conversation_manager.clear()
         
-        # Add conversation context
-        messages = []
-    
-        # Include system messages as context in the first user message
-        system_context = []
+        # Clear any existing conversation
+        self.agent.conversation_manager.clear()
+        
+        # Add all messages including system context
         for msg in conversation_history:
-            if msg["role"] == "system":
-                system_context.append(msg["content"])
-            elif msg["role"] in ["user", "assistant"]:
-                messages.append({"role": msg["role"], "content": msg["content"]})
-        
-        # If there's system context, prepend it to the first message
-        if system_context and messages:
-            context_text = "\n".join(system_context)
-            messages[0]["content"] = f"Context: {context_text}\n\n{messages[0]['content']}"
-        
-        # Set conversation history
-        self.agent.conversation_history = messages
+            if msg["role"] in ["user", "assistant"]:
+                self.agent.conversation_manager.add_message(
+                    role=msg["role"],
+                    content=msg["content"]
+                )
+            elif msg["role"] == "system":
+                # Add system messages as assistant context
+                self.agent.conversation_manager.add_message(
+                    role="assistant",
+                    content=f"[System Context: {msg['content']}]"
+                )
         
         # Check if user wants to create MR
         if "create" in message.lower() and ("mr" in message.lower() or "merge request" in message.lower()):
