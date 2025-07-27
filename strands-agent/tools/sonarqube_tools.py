@@ -23,59 +23,41 @@ async def get_sonar_client():
         timeout=30.0
     )
 
-async def get_sonar_project_key(project_id: Optional[str] = None) -> str:
-    """Get SonarQube project key from GitLab project ID"""
-    if not project_id:
-        # Try to get from context
-        try:
-            from strands import Agent
-            current_agent = getattr(Agent, '_current_instance', None)
-            if current_agent and hasattr(current_agent, 'session_state'):
-                project_id = current_agent.session_state.get("project_id")
-        except:
-            project_id = "default"
-    
-    # If project_id already looks like a SonarQube key, return it
-    if project_id and project_id.startswith("envathon_"):
-        return project_id
-    
-    # Get project details from GitLab to get the project name
-    from .gitlab_tools import get_gitlab_client
-    async with await get_gitlab_client() as client:
-        try:
-            response = await client.get(f"/projects/{project_id}")
-            response.raise_for_status()
-            project_data = response.json()
-            project_name = project_data.get("name", project_id)
-            
-            # Return SonarQube project key format
-            return f"envathon_{project_name}"
-        except Exception as e:
-            logger.warning(f"Failed to get project name from GitLab: {e}")
-            # If it's already a project name, just add prefix
-            if not str(project_id).isdigit():
-                return f"envathon_{project_id}"
-            # Fallback to project ID
-            return f"envathon_project_{project_id}"
-
 @tool
 async def get_project_quality_status(project_id: Optional[str] = None) -> Dict[str, Any]:
     """Get overall quality status from SonarQube
     
     Args:
-        project_id: GitLab project ID (will be converted to SonarQube key)
+        project_id: SonarQube project key (same as project name)
     
     Returns:
         Project quality status including quality gate, metrics, and ratings
     """
-    project_key = await get_sonar_project_key(project_id)
+    # Get from context if not provided
+    if not project_id:
+        try:
+            import inspect
+            frame = inspect.currentframe()
+            while frame:
+                frame_locals = frame.f_locals
+                if 'self' in frame_locals:
+                    agent = frame_locals['self']
+                    if hasattr(agent, 'session_state'):
+                        project_id = agent.session_state.get("sonarqube_key")
+                        break
+                frame = frame.f_back
+        except:
+            pass
+    
+    if not project_id:
+        return {"error": "Project ID not found"}
     
     async with await get_sonar_client() as client:
         try:
             # Get project status
             response = await client.get(
                 "/qualitygates/project_status",
-                params={"projectKey": project_key}
+                params={"projectKey": project_id}
             )
             response.raise_for_status()
             status_data = response.json()
@@ -84,7 +66,7 @@ async def get_project_quality_status(project_id: Optional[str] = None) -> Dict[s
             metrics_response = await client.get(
                 "/measures/component",
                 params={
-                    "component": project_key,
+                    "component": project_id,
                     "metricKeys": "bugs,vulnerabilities,code_smells,coverage,duplicated_lines_density,reliability_rating,security_rating,maintainability_rating"
                 }
             )
@@ -92,14 +74,14 @@ async def get_project_quality_status(project_id: Optional[str] = None) -> Dict[s
             metrics_data = metrics_response.json()
             
             return {
-                "project_key": project_key,
+                "project_key": project_id,
                 "quality_gate": status_data.get("projectStatus", {}),
                 "metrics": metrics_data.get("component", {}).get("measures", [])
             }
             
         except Exception as e:
             logger.error(f"Failed to get project quality status: {e}")
-            return {"error": str(e), "project_key": project_key}
+            return {"error": str(e), "project_key": project_id}
 
 @tool
 async def get_code_quality_issues(
@@ -112,17 +94,34 @@ async def get_code_quality_issues(
     Args:
         severity: Filter by severity (BLOCKER, CRITICAL, MAJOR, MINOR, INFO)
         issue_type: Filter by type (BUG, VULNERABILITY, CODE_SMELL)
-        project_id: GitLab project ID (will be converted to SonarQube key)
+        project_id: SonarQube project key
     
     Returns:
         List of code quality issues with details
     """
-    project_key = await get_sonar_project_key(project_id)
+    # Get from context if not provided
+    if not project_id:
+        try:
+            import inspect
+            frame = inspect.currentframe()
+            while frame:
+                frame_locals = frame.f_locals
+                if 'self' in frame_locals:
+                    agent = frame_locals['self']
+                    if hasattr(agent, 'session_state'):
+                        project_id = agent.session_state.get("sonarqube_key")
+                        break
+                frame = frame.f_back
+        except:
+            pass
+    
+    if not project_id:
+        return []
     
     async with await get_sonar_client() as client:
         try:
             params = {
-                "componentKeys": project_key,
+                "componentKeys": project_id,
                 "ps": 50,  # Page size
                 "resolved": "false"
             }
@@ -157,14 +156,14 @@ async def get_code_quality_issues(
             
         except Exception as e:
             logger.error(f"Failed to get code quality issues: {e}")
-            return [{"error": str(e)}]
+            return []
 
 @tool
 async def get_security_vulnerabilities(project_id: Optional[str] = None) -> List[Dict[str, Any]]:
     """Get security vulnerabilities from SonarQube
     
     Args:
-        project_id: GitLab project ID (will be converted to SonarQube key)
+        project_id: SonarQube project key
     
     Returns:
         List of security vulnerabilities with severity and details
@@ -176,13 +175,29 @@ async def get_security_vulnerabilities(project_id: Optional[str] = None) -> List
     )
     
     # Get security hotspots as well
-    project_key = await get_sonar_project_key(project_id)
+    if not project_id:
+        try:
+            import inspect
+            frame = inspect.currentframe()
+            while frame:
+                frame_locals = frame.f_locals
+                if 'self' in frame_locals:
+                    agent = frame_locals['self']
+                    if hasattr(agent, 'session_state'):
+                        project_id = agent.session_state.get("sonarqube_key")
+                        break
+                frame = frame.f_back
+        except:
+            pass
+    
+    if not project_id:
+        return vulnerabilities
     
     async with await get_sonar_client() as client:
         try:
             response = await client.get(
                 "/hotspots/search",
-                params={"projectKey": project_key}
+                params={"projectKey": project_id}
             )
             response.raise_for_status()
             
@@ -206,7 +221,7 @@ async def get_security_vulnerabilities(project_id: Optional[str] = None) -> List
             
         except Exception as e:
             logger.error(f"Failed to get security hotspots: {e}")
-            return vulnerabilities  # Return what we have even if hotspots fail
+            return vulnerabilities
 
 @tool
 async def get_quality_gate_details(project_key: str) -> Dict[str, Any]:
@@ -255,10 +270,16 @@ async def get_issues_with_context(
     if not project_key:
         # Get from context
         try:
-            from strands import Agent
-            current_agent = getattr(Agent, '_current_instance', None)
-            if current_agent and hasattr(current_agent, 'session_state'):
-                project_key = current_agent.session_state.get("sonarqube_key")
+            import inspect
+            frame = inspect.currentframe()
+            while frame:
+                frame_locals = frame.f_locals
+                if 'self' in frame_locals:
+                    agent = frame_locals['self']
+                    if hasattr(agent, 'session_state'):
+                        project_key = agent.session_state.get("sonarqube_key")
+                        break
+                frame = frame.f_back
         except:
             pass
     
@@ -269,8 +290,6 @@ async def get_issues_with_context(
     if not await check_project_exists(project_key):
         logger.warning(f"Project {project_key} not found in SonarQube")
         return []
-    
-    from .sonarqube_tools import get_sonar_client
     
     async with await get_sonar_client() as client:
         try:

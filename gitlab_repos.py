@@ -1096,10 +1096,10 @@ class GitLabSetup:
                 'description': config['description']
             })
             
-            # Set project variables
+            # Set project variables with just project name as SonarQube key
             project.variables.create({
                 'key': 'SONAR_PROJECT_KEY',
-                'value': f"{GROUP_NAME}_{project_name}"
+                'value': project_name  # Changed: no group prefix
             })
             
             # Create webhook
@@ -1151,12 +1151,12 @@ class SonarQubeSetup:
         except:
             pass
             
-        # Delete projects
+        # Delete projects - using just project names
         for project_name in PROJECTS:
             try:
                 self.session.post(
                     f"{self.url}/api/projects/delete",
-                    params={'project': f"{GROUP_NAME}_{project_name}"}
+                    params={'project': project_name}  # Changed: no group prefix
                 )
             except:
                 pass
@@ -1231,13 +1231,15 @@ class SonarQubeSetup:
     def create_projects(self):
         """Create SonarQube projects"""
         for project_name in PROJECTS:
-            key = f"{GROUP_NAME}_{project_name}"
-            info(f"Creating SonarQube project '{key}'...")
+            info(f"Creating SonarQube project '{project_name}'...")
             
-            # Create project
+            # Create project with just the project name as key
             response = self.session.post(
                 f"{self.url}/api/projects/create",
-                params={'name': project_name, 'project': key}
+                params={
+                    'name': project_name, 
+                    'project': project_name  # Changed: no group prefix
+                }
             )
             
             if response.status_code != 400:  # 400 = already exists
@@ -1248,8 +1250,18 @@ class SonarQubeSetup:
                 f"{self.url}/api/webhooks/create",
                 params={
                     'name': 'CI/CD Assistant',
-                    'project': key,
+                    'project': project_name,  # Changed: no group prefix
                     'url': f"{AGENT_WEBHOOK_URL}/sonarqube"
+                }
+            )
+            
+            # Set GitLab SCM link for integration
+            self.session.post(
+                f"{self.url}/api/settings/set",
+                params={
+                    'component': project_name,
+                    'key': 'sonar.links.scm',
+                    'value': f"{gitlab_url}/envathon/{project_name}"
                 }
             )
             
@@ -1270,6 +1282,7 @@ if __name__ == "__main__":
     print(f"- Create {len(PROJECTS)} projects with various failure scenarios")
     print(f"- Create SonarQube quality gate '{QUALITY_GATE_NAME}' with strict rules")
     print("- Configure webhooks for failure notifications")
+    print("\nNOTE: SonarQube project keys will be just the project names (no group prefix)")
     
     if input("\nProceed? (yes/no): ").lower() != 'yes':
         print("Cancelled")
@@ -1297,6 +1310,7 @@ if __name__ == "__main__":
         print(f"  • analytics-engine: Quality gate violations")
         print(f"  • report-generator: Performance timeout")
         print(f"  • health-check-service: ✓ Passes all checks")
+        print("\nSonarQube project keys are just the project names (no envathon_ prefix)")
         
     except Exception as e:
         error(f"Setup failed: {e}")

@@ -4,16 +4,44 @@ import json
 import uuid
 from datetime import datetime
 from loguru import logger
-from utils.project_cache import project_cache
+import httpx
+import os
+
 from agent.quality_agent import QualityAnalysisAgent
 from db.session_manager import SessionManager
-from tools.gitlab_tools import get_project_by_name
 
 sonarqube_router = APIRouter()
 
 # Initialize
 quality_agent = QualityAnalysisAgent()
 session_manager = SessionManager()
+
+async def get_gitlab_project_id(project_name: str) -> Optional[str]:
+    """Get GitLab project ID from project name"""
+    gitlab_url = os.getenv("GITLAB_URL", "http://gitlab:80")
+    gitlab_token = os.getenv("GITLAB_TOKEN", "")
+    
+    headers = {"PRIVATE-TOKEN": gitlab_token} if gitlab_token else {}
+    
+    async with httpx.AsyncClient() as client:
+        try:
+            # Search for project
+            response = await client.get(
+                f"{gitlab_url}/api/v4/projects",
+                params={"search": project_name},
+                headers=headers
+            )
+            
+            if response.status_code == 200:
+                projects = response.json()
+                # Find in envathon group
+                for project in projects:
+                    if project.get("path_with_namespace") == f"envathon/{project_name}":
+                        return str(project["id"])
+        except Exception as e:
+            logger.error(f"Failed to get GitLab project ID: {e}")
+    
+    return None
 
 @sonarqube_router.post("/sonarqube")
 async def handle_sonarqube_webhook(request: Request):
@@ -36,18 +64,12 @@ async def handle_sonarqube_webhook(request: Request):
     sonarqube_key = project.get("key", "")
     project_name = project.get("name", "Unknown")
     
-    # Extract actual project name from SonarQube key
-    if sonarqube_key.startswith("envathon_"):
-        gitlab_project_name = sonarqube_key[9:]
-    else:
-        gitlab_project_name = project_name
+    # Since SonarQube key = project name now, use it directly
+    gitlab_project_id = await get_gitlab_project_id(sonarqube_key)
     
-    # Look up GitLab project ID dynamically
-    gitlab_project = await get_project_by_name(gitlab_project_name)
-    gitlab_project_id = await project_cache.get_or_fetch(gitlab_project_name)
     if not gitlab_project_id:
-        logger.error(f"Could not find GitLab project for {gitlab_project_name}")
-        raise HTTPException(status_code=404, detail=f"GitLab project not found: {gitlab_project_name}")
+        logger.error(f"Could not find GitLab project for SonarQube project {sonarqube_key}")
+        raise HTTPException(status_code=404, detail=f"GitLab project not found for {project_name}")
     
     # Create session
     session_id = str(uuid.uuid4())

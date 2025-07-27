@@ -30,12 +30,14 @@ QUALITY_SYSTEM_PROMPT = """You are an expert code quality analyst.
 
 Analyze SonarQube quality gate failures and provide fixes.
 
+IMPORTANT: When calling tools that need project_id, use the GitLab project ID from the session context, NOT the SonarQube key.
+
 Workflow:
-1. Use get_issues_with_context to get all issues
+1. Use get_issues_with_context to get all issues (this uses SonarQube key)
 2. Group issues by file
-3. Use get_file_content for each file
+3. Use get_file_content for each file (pass the GitLab project_id from context)
 4. Fix all issues
-5. Call create_merge_request with complete fix data
+5. Call create_merge_request with complete fix data (pass the GitLab project_id from context)
 
 When ready to create MR, call create_merge_request with:
 - title: "Fix X SonarQube issues"
@@ -43,6 +45,7 @@ When ready to create MR, call create_merge_request with:
 - changes: Dictionary mapping file paths to fixed content
 - source_branch: "quality-fixes-[timestamp]"
 - target_branch: "main"
+- project_id: The GitLab project ID from session context
 """
 
 class QualityAnalysisAgent:
@@ -104,9 +107,15 @@ class QualityAnalysisAgent:
         
         prompt = f"""Quality gate failed for project {sonarqube_key}.
 
-Use get_issues_with_context(project_key="{sonarqube_key}") to get all issues.
-Then get file content and fix all issues.
-Create a merge request with all fixes."""
+GitLab project ID: {gitlab_project_id}
+SonarQube key: {sonarqube_key}
+
+1. Use get_issues_with_context(project_key="{sonarqube_key}") to get all issues
+2. For each file with issues, use get_file_content(file_path="path/to/file.py", ref="HEAD", project_id="{gitlab_project_id}")
+3. Fix all issues in the files
+4. Create a merge request using create_merge_request(..., project_id="{gitlab_project_id}")
+
+Remember to use project_id="{gitlab_project_id}" for GitLab API calls."""
 
         response_text = ""
         async for event in self.agent.stream_async(prompt):
