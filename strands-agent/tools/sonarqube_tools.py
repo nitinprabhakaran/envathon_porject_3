@@ -35,6 +35,10 @@ async def get_sonar_project_key(project_id: Optional[str] = None) -> str:
         except:
             project_id = "default"
     
+    # If project_id already looks like a SonarQube key, return it
+    if project_id and project_id.startswith("envathon_"):
+        return project_id
+    
     # Get project details from GitLab to get the project name
     from .gitlab_tools import get_gitlab_client
     async with await get_gitlab_client() as client:
@@ -48,6 +52,9 @@ async def get_sonar_project_key(project_id: Optional[str] = None) -> str:
             return f"envathon_{project_name}"
         except Exception as e:
             logger.warning(f"Failed to get project name from GitLab: {e}")
+            # If it's already a project name, just add prefix
+            if not str(project_id).isdigit():
+                return f"envathon_{project_id}"
             # Fallback to project ID
             return f"envathon_project_{project_id}"
 

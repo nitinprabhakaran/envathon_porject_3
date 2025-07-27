@@ -20,8 +20,11 @@ from tools.quality_tools import (
     suggest_batch_fixes,
     create_quality_mr,
     get_all_project_issues,
-    get_issue_details
+    get_issue_details,
+    get_issues_with_context,
+    create_quality_batch_mr
 )
+from tools.gitlab_tools import get_file_content
 
 QUALITY_SYSTEM_PROMPT = """You are an expert code quality analyst specialized in SonarQube analysis.
 

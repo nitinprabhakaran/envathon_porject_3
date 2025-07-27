@@ -37,7 +37,13 @@ async def handle_sonarqube_webhook(request: Request):
     
     # Extract project_id from key (format: envathon_project-name)
     # This is a simplified approach - adjust based on your project structure
-    project_id = project_key.split("_")[-1] if "_" in project_key else project_key
+    if project_key.startswith("envathon_"):
+        project_name_from_key = project_key[9:]  # Remove "envathon_" prefix
+    else:
+        project_name_from_key = project_name
+    
+    # For now, use the project name as the ID (in production, you'd look this up)
+    project_id = project_name_from_key
     
     # Create session
     session_id = str(uuid.uuid4())
