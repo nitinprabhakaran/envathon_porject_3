@@ -166,7 +166,7 @@ EXECUTE IN ORDER (3-4 tools max):
 
 Generate ONE solution card with:
 - Root cause
-- Specific fix (95% confidence for missing JAR errors)
+- Specific fix with confidence score (calculate based on error pattern match, clarity of issue, and historical success rate)
 - Code changes
 - Action buttons: "Apply Fix", "Create MR"
 
@@ -201,7 +201,6 @@ Skip: quality checks, file content, comments, storing fixes"""
                 "session_id": session_id,
                 "analysis": response_text,
                 "cards": cards,
-                "confidence": self._extract_confidence(response_text),
                 "duration_seconds": duration
             }
             
@@ -309,7 +308,7 @@ Skip: quality checks, file content, comments, storing fixes"""
                 }
         
         # Generate response
-        prompt = f"{user_message}\n\nContext: Session {session_id}, Project {session['project_id']}\nUse minimal tools."
+        prompt = f"{user_message}\n\nContext: Session {session_id}, Project {session['project_id']}\nUse minimal tools. Always include confidence score in solution cards."
         
         response_text = ""
         async for event in self.agent.stream_async(prompt):
@@ -354,19 +353,19 @@ Skip: quality checks, file content, comments, storing fixes"""
         """Extract UI cards from agent response"""
         cards = []
         
-        # Look for JSON card blocks
-        card_pattern = r'```json:card\s*(.*?)\s*```'
-        matches = re.findall(card_pattern, content, re.DOTALL)
+        # Look for JSON card blocks with better regex
+        card_pattern = r'```json:card\s*\n(.*?)\n```'
+        matches = re.findall(card_pattern, content, re.DOTALL | re.MULTILINE)
         
         for match in matches:
             try:
-                card = json.loads(match)
-                # Ensure confidence is set
-                if "confidence" not in card and card.get("type") == "solution":
-                    card["confidence"] = 95
+                # Clean up the JSON string
+                json_str = match.strip()
+                card = json.loads(json_str)
                 cards.append(card)
-            except json.JSONDecodeError:
-                logger.warning(f"Failed to parse card JSON: {match[:50]}...")
+            except json.JSONDecodeError as e:
+                logger.warning(f"Failed to parse card JSON: {e}")
+                logger.debug(f"JSON content: {match}")
         
         # Create default if no cards
         if not cards:
@@ -374,14 +373,8 @@ Skip: quality checks, file content, comments, storing fixes"""
                 "type": "analysis",
                 "title": "Pipeline Analysis",
                 "content": content,
-                "confidence": 70,
+                "confidence": 70,  # Default confidence
                 "actions": []
             })
         
         return cards
-    
-    def _extract_confidence(self, response: str) -> float:
-        """Extract confidence score from response"""
-        confidence_pattern = r'confidence[:\s]+(\d+)%'
-        match = re.search(confidence_pattern, response, re.IGNORECASE)
-        return float(match.group(1)) / 100.0 if match else 0.7

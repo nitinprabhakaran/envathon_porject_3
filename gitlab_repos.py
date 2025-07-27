@@ -129,13 +129,19 @@ CMD ["java", "-jar", "app.jar"]
 stages:
   - build
   - test
-  - quality
   - package
+
+# Run SonarQube scan in parallel with build
+sonar-analysis:
+  extends: .sonar-scan
+  stage: build
+  variables:
+    SONAR_JAVA_BINARIES: "target/classes"
 
 # Intentionally missing Maven build stage
 docker-build:
   extends: .docker-build
-  stage: package
+  stage: build
 """
         }
     },
@@ -244,13 +250,18 @@ CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
     file: '/templates/python-service.yml'
 
 stages:
-  - dependencies
-  - test
-  - quality
   - build
+  - test
+
+# Run SonarQube scan in parallel with dependency installation
+sonar-analysis:
+  extends: .sonar-scan
+  stage: build
+  variables:
+    SONAR_PYTHON_VERSION: "3.9"
 
 install-deps:
-  stage: dependencies
+  stage: build
   extends: .python-deps
   script:
     - pip install -r requirements.txt  # Will fail
@@ -325,9 +336,9 @@ app.get('/inventory/:id', (req, res) => {
 });
 
 // Hardcoded port
-app.listen(3000);
+const server = app.listen(3000);
 
-module.exports = { InventoryManager, app };
+module.exports = { InventoryManager, app, server };
 """,
             "tests/inventory.test.js": """
 const { InventoryManager } = require('../src/inventory');
@@ -366,7 +377,7 @@ describe('InventoryManager', () => {
   "name": "inventory-service",
   "version": "1.0.0",
   "scripts": {
-    "test": "jest",
+    "test": "jest --forceExit --detectOpenHandles",
     "start": "node src/inventory.js"
   },
   "dependencies": {
@@ -382,8 +393,18 @@ describe('InventoryManager', () => {
     ref: main
     file: '/templates/nodejs-service.yml'
 
+stages:
+  - build
+  - test
+
+# Run SonarQube scan in parallel with tests
+sonar-analysis:
+  extends: .sonar-scan
+  stage: build
+
 test:
   extends: .node-test
+  stage: test
   script:
     - npm install
     - npm test  # Will fail
@@ -569,12 +590,27 @@ numpy==1.21.0
             ".gitlab-ci.yml": """include:
   - project: 'envathon/shared-pipelines'
     ref: main
-    file: '/templates/python-quality.yml'
+    file: '/templates/python-service.yml'
 
-quality-scan:
+stages:
+  - build
+  - test
+
+# Run SonarQube scan immediately
+sonar-analysis:
   extends: .sonar-scan
+  stage: build
   variables:
     SONAR_SOURCES: "analytics"
+    SONAR_PYTHON_VERSION: "3.9"
+
+# Run tests in parallel
+test:
+  extends: .python-test
+  stage: build
+  script:
+    - pip install -r requirements.txt
+    - python -m pytest --version 2>/dev/null || echo "No tests"
 """
         }
     },
@@ -750,9 +786,29 @@ public class ReportGeneratorTest {
     ref: main
     file: '/templates/java-service.yml'
 
+stages:
+  - build
+  - test
+
+# Run SonarQube scan in parallel with tests
+sonar-analysis:
+  extends: .sonar-scan
+  stage: build
+  variables:
+    SONAR_JAVA_BINARIES: "target/classes"
+    SONAR_JAVA_SOURCE: "11"
+
+# Maven build first
+build:
+  extends: .java-build
+  stage: build
+
 test:
   extends: .java-test
+  stage: test
   timeout: 2 minutes  # Will timeout
+  dependencies:
+    - build
 """
         }
     },
@@ -816,12 +872,17 @@ httpx==0.25.1
     file: '/templates/python-service.yml'
 
 stages:
-  - test
-  - quality
   - build
+  - test
+
+# Run SonarQube scan in parallel with tests
+sonar-analysis:
+  extends: .sonar-scan
+  stage: build
 
 test:
   extends: .python-test
+  stage: build
   coverage: '/TOTAL.*\\s+(\\d+%)$/'
 """
         }
@@ -837,8 +898,14 @@ variables:
   SONAR_USER_HOME: "${CI_PROJECT_DIR}/.sonar"
   GIT_DEPTH: "0"
 
+stages:
+  - build
+  - test
+  - deploy
+
 .docker-build:
   image: docker:24.0.5
+  stage: build
   services:
     - docker:24.0.5-dind
   before_script:
@@ -848,16 +915,22 @@ variables:
 
 .sonar-scan:
   image: sonarsource/sonar-scanner-cli:latest
+  stage: build  # Run in parallel with build
   cache:
     key: "${CI_JOB_NAME}"
     paths:
       - .sonar/cache
   script:
-    - sonar-scanner
-      -Dsonar.projectKey=${SONAR_PROJECT_KEY}
-      -Dsonar.host.url=${SONAR_HOST_URL}
-      -Dsonar.token=${SONAR_TOKEN}
-      -Dsonar.qualitygate.wait=true
+    - |
+      sonar-scanner \
+        -Dsonar.projectKey=${SONAR_PROJECT_KEY} \
+        -Dsonar.host.url=${SONAR_HOST_URL} \
+        -Dsonar.token=${SONAR_TOKEN} \
+        -Dsonar.sources=. \
+        -Dsonar.projectName=${CI_PROJECT_NAME} \
+        -Dsonar.projectVersion=${CI_COMMIT_SHORT_SHA} \
+        -Dsonar.qualitygate.wait=true
+  allow_failure: false  # Fail pipeline if quality gate fails
 """,
     "templates/java-service.yml": """
 include:
@@ -865,6 +938,7 @@ include:
 
 .java-build:
   image: maven:3.8-openjdk-11
+  stage: build
   cache:
     paths:
       - .m2/repository
@@ -887,6 +961,15 @@ include:
   artifacts:
     paths:
       - target/*.jar
+
+# Java-specific SonarQube configuration
+.java-sonar:
+  extends: .sonar-scan
+  variables:
+    SONAR_JAVA_BINARIES: "target/classes"
+    SONAR_JAVA_LIBRARIES: ".m2/repository/**/*.jar"
+    SONAR_JAVA_TEST_BINARIES: "target/test-classes"
+    SONAR_JUNIT_REPORT_PATHS: "target/surefire-reports"
 """,
     "templates/python-service.yml": """
 include:
@@ -894,6 +977,7 @@ include:
 
 .python-deps:
   image: python:3.9
+  stage: build
   cache:
     paths:
       - .cache/pip
@@ -914,6 +998,13 @@ include:
       coverage_report:
         coverage_format: cobertura
         path: coverage.xml
+
+# Python-specific SonarQube configuration
+.python-sonar:
+  extends: .sonar-scan
+  variables:
+    SONAR_PYTHON_COVERAGE_REPORTPATHS: "coverage.xml"
+    SONAR_PYTHON_XUNIT_REPORTPATH: "test-results/*.xml"
 """,
     "templates/nodejs-service.yml": """
 include:

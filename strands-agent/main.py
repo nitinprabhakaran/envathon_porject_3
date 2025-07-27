@@ -8,8 +8,6 @@ from api.webhook import webhook_router
 from api.sonarqube_webhook import sonarqube_router
 from api.routes import api_router
 
-from api.webhook import webhook_router
-from api.routes import api_router
 from db.models import init_db
 from vector.qdrant_client import init_vector_db
 
@@ -60,6 +58,7 @@ app.add_middleware(
 
 # Include routers
 app.include_router(webhook_router, prefix="/webhook", tags=["webhooks"])
+app.include_router(sonarqube_router, prefix="/webhook", tags=["webhooks"])
 app.include_router(api_router, prefix="/api", tags=["api"])
 
 @app.get("/")
