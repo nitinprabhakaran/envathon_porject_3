@@ -83,7 +83,22 @@ async def send_message(session_id: str, request: MessageRequest):
         
         # Extract response text from agent result
         response_text = ""
-        if isinstance(response, str):
+        
+        # Handle the specific format returned by the agent
+        if isinstance(response, dict):
+            if "content" in response:
+                content = response["content"]
+                if isinstance(content, list):
+                    for item in content:
+                        if isinstance(item, dict) and "text" in item:
+                            response_text += item["text"]
+                elif isinstance(content, str):
+                    response_text = content
+            elif "message" in response:
+                response_text = response["message"]
+            else:
+                response_text = str(response)
+        elif isinstance(response, str):
             response_text = response
         elif hasattr(response, 'message'):
             response_text = response.message
