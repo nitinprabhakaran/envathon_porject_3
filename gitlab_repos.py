@@ -593,7 +593,7 @@ variables:
         "language": "nodejs",
         "failure_types": ["quality", "security"],
         "files": {
-            "src/app.js": """
+            "src/app.js": r"""
 const express = require('express');
 const mongoose = require('mongoose');
 const bodyParser = require('body-parser');
@@ -613,7 +613,7 @@ app.post('/api/inventory/search', (req, res) => {
     const { query } = req.body;
     
     // NoSQL injection vulnerability
-    Inventory.find({ $where: \`this.name == '\${query}'\` }, (err, items) => {
+    Inventory.find({ $where: `this.name == '${query}'` }, (err, items) => {
         if (err) {
             console.error(err);  // Information disclosure
             return res.status(500).json({ error: err.message });
@@ -662,8 +662,8 @@ app.post('/api/inventory/add', async (req, res) => {
         await item.save();
         
         // Duplicate logging logic
-        console.log(\`Item added: \${name}\`);
-        fs.appendFileSync('inventory.log', \`[\${new Date()}] Item added: \${name}\\n\`);
+        console.log(`Item added: ${name}`);
+        fs.appendFileSync('inventory.log', `[${new Date()}] Item added: ${name}\n`);
         
         res.json({ success: true });
     } catch (error) {
@@ -684,8 +684,8 @@ app.post('/api/inventory/update', async (req, res) => {
         await item.save();
         
         // Duplicate logging logic (same as above)
-        console.log(\`Item updated: \${name}\`);
-        fs.appendFileSync('inventory.log', \`[\${new Date()}] Item updated: \${name}\\n\`);
+        console.log(`Item updated: ${name}`);
+        fs.appendFileSync('inventory.log', `[${new Date()}] Item updated: ${name}\n`);
         
         res.json({ success: true });
     } catch (error) {
@@ -746,7 +746,7 @@ app.use((err, req, res, next) => {
 // Server configuration
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-    console.log(\`Server running on port \${PORT}\`);
+    console.log(`Server running on port ${PORT}`);
 });
 
 module.exports = app;
@@ -906,7 +906,7 @@ variables:
         "language": "go",
         "failure_types": ["security", "image-scan"],
         "files": {
-            "main.go": """package main
+            "main.go": r"""package main
 
 import (
     "database/sql"
@@ -930,10 +930,10 @@ const (
 )
 
 type Notification struct {
-    ID      int    \`json:"id"\`
-    UserID  string \`json:"user_id"\`
-    Message string \`json:"message"\`
-    Type    string \`json:"type"\`
+    ID      int    `json:"id"`
+    UserID  string `json:"user_id"`
+    Message string `json:"message"`
+    Type    string `json:"type"`
 }
 
 var db *sql.DB
@@ -1147,7 +1147,7 @@ variables:
         "language": "javascript",
         "failure_types": ["build", "quality"],
         "files": {
-            "src/App.js": """import React, { useState, useEffect } from 'react';
+            "src/App.js": r"""import React, { useState, useEffect } from 'react';
 import axios from 'axios';
 import './App.css';
 
@@ -1167,7 +1167,7 @@ function App() {
   
   // Security: Storing sensitive data in localStorage
   const fetchUserData = async () => {
-    const response = await axios.get(\`\${API_URL}/user\`);
+    const response = await axios.get(`${API_URL}/user`);
     localStorage.setItem('user_token', response.data.token);
     localStorage.setItem('user_password', response.data.password); // Very bad!
     setUser(response.data);
@@ -1175,7 +1175,7 @@ function App() {
   
   // Performance: Fetching all data without pagination
   const fetchAllData = async () => {
-    const response = await axios.get(\`\${API_URL}/all-data\`);
+    const response = await axios.get(`${API_URL}/all-data`);
     setData(response.data); // Could be huge
   };
   
@@ -1237,7 +1237,7 @@ function UserCardWithAvatar({ user }) {
 
 export default App;
 """,
-            "src/utils/auth.js": """// Authentication utilities with security issues
+            "src/utils/auth.js": r"""// Authentication utilities with security issues
 
 export const login = async (username, password) => {
   // Client-side validation only (security issue)
@@ -1265,7 +1265,7 @@ export const saveToken = (token) => {
   localStorage.setItem('auth_token', token);
   
   // Also storing in cookie without secure flags
-  document.cookie = \`token=\${token}\`;
+  document.cookie = `token=${token}`;
 };
 
 // No token expiration check
@@ -1932,7 +1932,7 @@ cleanup:
   needs: ["deploy"]
 """,
 
-    "templates/golang-complete.yml": """
+    "templates/golang-complete.yml": r"""
 include:
   - local: '/templates/base.yml'
 

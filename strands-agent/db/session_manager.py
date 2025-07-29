@@ -34,6 +34,9 @@ class SessionManager:
         metadata: Dict[str, Any]
     ) -> Dict[str, Any]:
         """Create new session"""
+        # Calculate expiration based on config
+        expires_at = datetime.utcnow() + timedelta(minutes=settings.session_timeout_minutes)
+        
         async with self.get_connection() as conn:
             session = await conn.fetchrow(
                 """
@@ -41,8 +44,8 @@ class SessionManager:
                     id, session_type, project_id, status,
                     project_name, branch, pipeline_id, 
                     pipeline_url, job_name, failed_stage,
-                    quality_gate_status, webhook_data
-                ) VALUES ($1, $2, $3, 'active', $4, $5, $6, $7, $8, $9, $10, $11)
+                    quality_gate_status, webhook_data, expires_at
+                ) VALUES ($1, $2, $3, 'active', $4, $5, $6, $7, $8, $9, $10, $11, $12)
                 RETURNING *
                 """,
                 session_id, session_type, project_id,
@@ -53,9 +56,10 @@ class SessionManager:
                 metadata.get("job_name"),
                 metadata.get("failed_stage"),
                 metadata.get("quality_gate_status"),
-                json.dumps(metadata.get("webhook_data", {}))
+                json.dumps(metadata.get("webhook_data", {})),
+                expires_at  # Set expires_at based on config
             )
-            log.info(f"Created {session_type} session {session_id}")
+            log.info(f"Created {session_type} session {session_id} with {settings.session_timeout_minutes} minute timeout")
             return dict(session)
     
     async def get_session(self, session_id: str) -> Optional[Dict[str, Any]]:

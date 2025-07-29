@@ -1,13 +1,13 @@
 -- Create sessions table with all fields including quality metrics
 CREATE TABLE IF NOT EXISTS sessions (
     id UUID PRIMARY KEY,
-    session_type VARCHAR(20) NOT NULL, -- 'pipeline' or 'quality'
+    session_type VARCHAR(20) NOT NULL,
     project_id VARCHAR(255) NOT NULL,
     project_name VARCHAR(255),
-    status VARCHAR(20) DEFAULT 'active', -- 'active', 'resolved', 'expired'
+    status VARCHAR(20) DEFAULT 'active',
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     last_activity TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    expires_at TIMESTAMP DEFAULT (CURRENT_TIMESTAMP + INTERVAL '4 hours'),
+    expires_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     
     -- Pipeline specific fields
     pipeline_id VARCHAR(255),

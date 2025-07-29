@@ -219,7 +219,7 @@ services:
       - GITLAB_TOKEN=${GITLAB_TOKEN}
       - SONAR_HOST_URL=http://sonarqube:9000
       - SONAR_TOKEN=${SONAR_TOKEN}
-      - SESSION_TIMEOUT_HOURS=4
+      - SESSION_TIMEOUT_MINUTES=${SESSION_TIMEOUT_MINUTES:-180}
       - LOG_LEVEL=INFO
     ports:
       - "8000:8000"

@@ -31,6 +31,18 @@ async def handle_gitlab_webhook(request: Request):
         if data.get("object_attributes", {}).get("status") != "failed":
             return {"status": "ignored", "reason": "Not a failure event"}
         
+        # Check if this is a SonarQube quality gate failure
+        failed_jobs = [job for job in data.get("builds", []) if job.get("status") == "failed"]
+        if failed_jobs:
+            # Check if the only failed job is sonarqube-check
+            sonar_jobs = [job for job in failed_jobs if "sonar" in job.get("name", "").lower()]
+            if len(failed_jobs) == len(sonar_jobs) and len(sonar_jobs) > 0:
+                log.info("Pipeline failed due to SonarQube quality gate - ignoring GitLab webhook")
+                return {
+                    "status": "ignored", 
+                    "reason": "SonarQube quality gate failure - will be handled by SonarQube webhook"
+                }
+
         # Extract metadata
         project = data.get("project", {})
         pipeline = data.get("object_attributes", {})
