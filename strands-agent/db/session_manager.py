@@ -1,11 +1,13 @@
 """Session management for persistent conversations"""
 import asyncpg
 import json
+import hashlib
 from typing import Dict, Any, Optional, List
 from datetime import datetime, timedelta
 from contextlib import asynccontextmanager
 from utils.logger import log
 from config import settings
+from db.models import SessionContext
 
 class SessionManager:
     def __init__(self):
@@ -66,14 +68,38 @@ class SessionManager:
             if session:
                 result = dict(session)
                 # Parse JSON fields
-                for field in ['conversation_history', 'webhook_data']:
+                for field in ['conversation_history', 'webhook_data', 'fixes_applied']:
                     if field in result and isinstance(result[field], str):
                         try:
                             result[field] = json.loads(result[field])
                         except:
-                            result[field] = [] if field == 'conversation_history' else {}
+                            result[field] = [] if field in ['conversation_history', 'fixes_applied'] else {}
                 return result
             return None
+    
+    async def get_session_context(self, session_id: str) -> Optional[SessionContext]:
+        """Get complete session context for agent"""
+        session = await self.get_session(session_id)
+        if not session:
+            return None
+        
+        return SessionContext(
+            session_id=session_id,
+            session_type=session['session_type'],
+            project_id=session['project_id'],
+            project_name=session.get('project_name'),
+            pipeline_id=session.get('pipeline_id'),
+            pipeline_url=session.get('pipeline_url'),
+            branch=session.get('branch'),
+            commit_sha=session.get('commit_sha'),
+            failed_stage=session.get('failed_stage'),
+            job_name=session.get('job_name'),
+            sonarqube_key=session.get('webhook_data', {}).get('project', {}).get('key'),
+            quality_gate_status=session.get('quality_gate_status'),
+            gitlab_project_id=session.get('project_id'),  # For quality sessions
+            created_at=session.get('created_at'),
+            webhook_data=session.get('webhook_data', {})
+        )
     
     async def get_active_sessions(self) -> List[Dict[str, Any]]:
         """Get all active sessions"""
@@ -90,12 +116,12 @@ class SessionManager:
             for session in sessions:
                 result = dict(session)
                 # Parse JSON fields
-                for field in ['conversation_history', 'webhook_data']:
+                for field in ['conversation_history', 'webhook_data', 'fixes_applied']:
                     if field in result and isinstance(result[field], str):
                         try:
                             result[field] = json.loads(result[field])
                         except:
-                            result[field] = [] if field == 'conversation_history' else {}
+                            result[field] = [] if field in ['conversation_history', 'fixes_applied'] else {}
                 results.append(result)
             log.debug(f"Found {len(results)} active sessions")
             return results
@@ -156,6 +182,97 @@ class SessionManager:
                 """
                 await conn.execute(query, *params)
                 log.debug(f"Updated metadata for session {session_id}")
+    
+    async def update_quality_metrics(self, session_id: str, metrics: Dict[str, Any]):
+        """Update quality metrics for a session"""
+        async with self.get_connection() as conn:
+            await conn.execute(
+                """
+                UPDATE sessions 
+                SET total_issues = $2,
+                    critical_issues = $3,
+                    major_issues = $4,
+                    bug_count = $5,
+                    vulnerability_count = $6,
+                    code_smell_count = $7,
+                    coverage = $8,
+                    duplicated_lines_density = $9,
+                    reliability_rating = $10,
+                    security_rating = $11,
+                    maintainability_rating = $12,
+                    webhook_data = webhook_data || $13::jsonb,
+                    last_activity = CURRENT_TIMESTAMP
+                WHERE id = $1
+                """,
+                session_id,
+                metrics.get("total_issues", 0),
+                metrics.get("critical_issues", 0),
+                metrics.get("major_issues", 0),
+                metrics.get("bug_count", 0),
+                metrics.get("vulnerability_count", 0),
+                metrics.get("code_smell_count", 0),
+                metrics.get("coverage"),
+                metrics.get("duplicated_lines_density"),
+                metrics.get("reliability_rating"),
+                metrics.get("security_rating"),
+                metrics.get("maintainability_rating"),
+                json.dumps({"quality_metrics": metrics})
+            )
+            log.info(f"Updated quality metrics for session {session_id}")
+    
+    async def store_fix_result(self, session_id: str, mr_url: str, mr_id: str, files_changed: Dict[str, str]):
+        """Store successful fix information"""
+        async with self.get_connection() as conn:
+            # Update session with MR info
+            await conn.execute(
+                """
+                UPDATE sessions 
+                SET merge_request_url = $2, 
+                    merge_request_id = $3,
+                    fixes_applied = $4::jsonb
+                WHERE id = $1
+                """,
+                session_id, mr_url, mr_id, json.dumps(files_changed)
+            )
+            
+            # Store in historical fixes
+            session = await self.get_session(session_id)
+            error_signature = session.get('error_signature', '')
+            
+            if error_signature:
+                await conn.execute(
+                    """
+                    INSERT INTO historical_fixes 
+                    (session_id, error_signature_hash, fix_description, fix_type, success_confirmed, project_context)
+                    VALUES ($1, $2, $3, $4, $5, $6)
+                    """,
+                    session_id, 
+                    hashlib.sha256(error_signature.encode()).hexdigest(),
+                    f"MR: {mr_url}",
+                    session['session_type'],
+                    False,  # Will be updated when pipeline passes
+                    json.dumps({'files': list(files_changed.keys())})
+                )
+
+    async def get_similar_fixes(self, error_signature: str, limit: int = 5) -> List[Dict[str, Any]]:
+        """Get similar historical fixes"""
+        async with self.get_connection() as conn:
+            signature_hash = hashlib.sha256(error_signature.encode()).hexdigest()
+            
+            fixes = await conn.fetch(
+                """
+                SELECT h.*, s.project_name, s.created_at as fix_date
+                FROM historical_fixes h
+                JOIN sessions s ON h.session_id = s.id
+                WHERE h.error_signature_hash = $1
+                AND h.success_confirmed = true
+                ORDER BY h.applied_at DESC
+                LIMIT $2
+                """,
+                signature_hash, limit
+            )
+            
+            return [dict(fix) for fix in fixes]
     
     async def mark_session_resolved(self, session_id: str):
         """Mark session as resolved"""

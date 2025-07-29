@@ -104,7 +104,7 @@ async def handle_sonarqube_webhook(request: Request):
         
         # Map SonarQube project to GitLab
         # In production, you'd have a mapping table or naming convention
-        # For now, assume SonarQube key matches GitLab project name
+        # For demo, use the project key as-is
         gitlab_project_id = await get_gitlab_project_id(project.get("key"))
         
         if not gitlab_project_id:
@@ -188,6 +188,42 @@ async def analyze_quality_issues(session_id: str, project_key: str, gitlab_proje
     """Background task to analyze quality issues"""
     try:
         log.info(f"Starting quality analysis for session {session_id}")
+        
+        # First, fetch actual metrics from SonarQube
+        from tools.sonarqube import get_project_issues, get_project_metrics
+        
+        # Get issue counts by type
+        bugs = await get_project_issues(project_key, types="BUG", limit=500)
+        vulnerabilities = await get_project_issues(project_key, types="VULNERABILITY", limit=500)
+        code_smells = await get_project_issues(project_key, types="CODE_SMELL", limit=500)
+        
+        # Get project metrics
+        metrics = await get_project_metrics(project_key)
+        
+        # Calculate counts
+        total_issues = len(bugs) + len(vulnerabilities) + len(code_smells)
+        critical_count = sum(1 for b in bugs if b.get("severity") in ["CRITICAL", "BLOCKER"])
+        critical_count += sum(1 for v in vulnerabilities if v.get("severity") in ["CRITICAL", "BLOCKER"])
+        major_count = sum(1 for b in bugs if b.get("severity") == "MAJOR")
+        major_count += sum(1 for v in vulnerabilities if v.get("severity") == "MAJOR")
+        
+        # Update session with quality metrics
+        await session_manager.update_quality_metrics(
+            session_id,
+            {
+                "total_issues": total_issues,
+                "bug_count": len(bugs),
+                "vulnerability_count": len(vulnerabilities),
+                "code_smell_count": len(code_smells),
+                "critical_issues": critical_count,
+                "major_issues": major_count,
+                "coverage": metrics.get("coverage", "0"),
+                "duplicated_lines_density": metrics.get("duplicated_lines_density", "0"),
+                "reliability_rating": metrics.get("reliability_rating", "E"),
+                "security_rating": metrics.get("security_rating", "E"),
+                "maintainability_rating": metrics.get("maintainability_rating", "E")
+            }
+        )
         
         # Run analysis
         analysis = await quality_agent.analyze_quality_issues(

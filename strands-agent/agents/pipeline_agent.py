@@ -7,6 +7,7 @@ from strands.models.bedrock import BedrockModel
 from strands.models.anthropic import AnthropicModel
 from utils.logger import log
 from config import settings
+from db.models import SessionContext
 from tools.gitlab import (
     get_pipeline_jobs,
     get_job_logs,
@@ -53,7 +54,8 @@ Use this exact format for your responses:
 - Base confidence on clarity of error and certainty of fix
 - If you need more information, ask specific questions
 - Show actual code/config changes, not just descriptions
-- Branch names should be: gitlab_agent_fix_[timestamp]"""
+- Branch names should be: fix/pipeline_[job_name]_[timestamp]
+- When creating MR, ALWAYS include the full MR URL in your response"""
 
 class PipelineAgent:
     def __init__(self):
@@ -146,37 +148,60 @@ Remember: Do NOT create a merge request. Only analyze and propose solutions."""
         session_id: str,
         message: str,
         conversation_history: List[Dict[str, Any]],
-        context: Dict[str, Any]
+        context: SessionContext
     ) -> str:
-        """Handle user message in conversation"""
-        log.info(f"Handling user message for session {session_id}")
+        """Handle user message with full context"""
+        log.info(f"Handling message for pipeline session {session_id}")
         
-        # Prepare context from conversation history
-        context_text = ""
-        for msg in conversation_history:
-            if msg["role"] == "system":
-                context_text += f"{msg['content']}\n"
-            elif msg["role"] == "assistant" and msg["content"]:
-                context_text += f"Previous analysis:\n{msg['content']}\n"
+        # Check for MR creation request
+        is_mr_request = "create" in message.lower() and ("mr" in message.lower() or "merge request" in message.lower())
         
-        # Build final prompt with context
-        if "create" in message.lower() and ("mr" in message.lower() or "merge request" in message.lower()):
+        # Build context prompt
+        context_prompt = f"""
+Session Context:
+- Project: {context.project_name} (ID: {context.project_id})
+- Pipeline: #{context.pipeline_id}
+- Branch: {context.branch}
+- Failed Job: {context.job_name} in stage {context.failed_stage}
+- Pipeline URL: {context.pipeline_url}
+"""
+        
+        # Add conversation summary (last analysis)
+        if conversation_history:
+            for msg in reversed(conversation_history):
+                if msg["role"] == "assistant" and "Proposed Solution" in msg.get("content", ""):
+                    context_prompt += f"\n\nPrevious Analysis:\n{msg['content']}"
+                    break
+        
+        # Prepare final prompt
+        if is_mr_request:
             timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
-            branch_name = f"gitlab_agent_fix_{timestamp}"
+            branch_name = f"fix/pipeline_{context.job_name}_{timestamp}".replace(" ", "_").lower()
             
-            final_prompt = f"""{context_text}
+            final_prompt = f"""{context_prompt}
 
 The user wants to create a merge request with the fixes.
 
-Project ID: {context['project_id']}
-Branch Name: {branch_name}
+CRITICAL INSTRUCTIONS:
+1. Use the create_merge_request tool with the exact file changes from the previous analysis
+2. After creating the MR, you MUST include the complete MR URL in your response
+3. Format your response to clearly show:
+   - What files were changed
+   - The branch name created
+   - **The full merge request URL** (e.g., https://gitlab.example.com/group/project/-/merge_requests/123)
 
-Based on the previous analysis, create a merge request with the necessary fixes.
-Use the create_merge_request tool with the exact file changes discussed."""
+Use these parameters:
+- Project ID: {context.project_id}
+- Source Branch: {branch_name}
+- Target Branch: {context.branch or 'main'}
+- Title: Fix {context.failed_stage} failure in {context.job_name}
+- Description: Automated fix for pipeline failure #{context.pipeline_id}
+
+Create the merge request now."""
         else:
-            final_prompt = f"{context_text}\n{message}" if context_text else message
+            final_prompt = f"{context_prompt}\n\nUser Question: {message}"
         
-        # Create fresh agent and invoke
+        # Create agent with tools
         agent = Agent(
             model=self.model,
             system_prompt=PIPELINE_SYSTEM_PROMPT,
@@ -187,4 +212,4 @@ Use the create_merge_request tool with the exact file changes discussed."""
         log.debug(f"Generated response for session {session_id}")
         
         # Return the message directly
-        return result.message
+        return result.message if hasattr(result, 'message') else str(result)

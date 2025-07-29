@@ -7,6 +7,7 @@ from strands.models.bedrock import BedrockModel
 from strands.models.anthropic import AnthropicModel
 from utils.logger import log
 from config import settings
+from db.models import SessionContext
 from tools.sonarqube import (
     get_project_quality_gate_status,
     get_project_issues,
@@ -23,10 +24,7 @@ from tools.gitlab import (
 QUALITY_SYSTEM_PROMPT = """You are an expert code quality analyst specialized in SonarQube quality gate failures.
 
 ## Your Role
-Analyze quality issues and provide actionable fixes. Every analysis must include:
-1. A summary of quality issues by category
-2. Specific fixes for each issue
-3. Confidence score for proposed fixes
+Analyze quality issues and provide actionable fixes. When analyzing, always fetch the actual metrics first.
 
 ## Analysis Format
 Use this exact format for your responses:
@@ -34,12 +32,25 @@ Use this exact format for your responses:
 ### 🔍 Quality Analysis
 **Confidence**: [0-100]%
 **Quality Gate Status**: [ERROR/WARN/OK]
-**Total Issues**: [count]
 
-### 📊 Issue Breakdown
+### 📊 Current Metrics
+- **Total Issues**: [count]
+- **Coverage**: [percentage]%
+- **Duplicated Lines**: [percentage]%
+
+### 📋 Issue Breakdown
 - 🐛 **Bugs**: [count] issues
-- 🔒 **Vulnerabilities**: [count] issues  
+  - Critical/Blocker: [count]
+  - Major: [count]
+- 🔒 **Vulnerabilities**: [count] issues
+  - Critical/Blocker: [count]
+  - Major: [count]
 - 💩 **Code Smells**: [count] issues
+
+### 📈 Quality Ratings
+- **Reliability**: [A-E]
+- **Security**: [A-E]
+- **Maintainability**: [A-E]
 
 ### 📋 Detailed Findings
 [List top issues by severity with file locations]
@@ -58,10 +69,13 @@ Use this exact format for your responses:
 - [ ] Create MR: [Yes/No - only if you have all fixes ready]
 
 ## Important Guidelines
+- Always use get_project_metrics() and get_project_issues() tools first
+- Show actual numbers, not placeholders
 - NEVER create a merge request without explicit user permission
 - Prioritize security vulnerabilities and bugs over code smells
 - Show complete fixed code, not just descriptions
-- Branch names should be: sonarqube_agent_fix_[timestamp]
+- Branch names should be: fix/sonarqube_[timestamp]
+- When creating MR, ALWAYS include the full MR URL in your response
 - Group similar issues together for batch fixing"""
 
 class QualityAgent:
@@ -114,12 +128,15 @@ SonarQube Project Key: {project_key}
 GitLab Project ID: {gitlab_project_id}
 Quality Gate Status: {webhook_data.get('qualityGate', {}).get('status', 'ERROR')}
 
+Failed Conditions:
+{webhook_data.get('qualityGate', {}).get('conditions', [])}
+
 Use the available tools to:
-1. Get the quality gate status and failed conditions
-2. Get all project issues (bugs, vulnerabilities, code smells)
-3. For each issue type, get the file content from GitLab
+1. Get the project metrics using get_project_metrics()
+2. Get all project issues using get_project_issues() - separate calls for BUG, VULNERABILITY, CODE_SMELL
+3. For the top issues, get the file content from GitLab
 4. Analyze the issues and provide fixes
-5. Present findings in the specified format
+5. Present findings in the specified format with ACTUAL metrics
 
 Important: 
 - Use project_key="{project_key}" for SonarQube API calls
@@ -146,35 +163,58 @@ Important:
         session_id: str,
         message: str,
         conversation_history: List[Dict[str, Any]],
-        context: Dict[str, Any]
+        context: SessionContext
     ) -> str:
         """Handle user message in conversation"""
         log.info(f"Handling user message for quality session {session_id}")
         
-        # Prepare context from conversation history
-        context_text = ""
-        for msg in conversation_history:
-            if msg["role"] == "system":
-                context_text += f"{msg['content']}\n"
-            elif msg["role"] == "assistant" and msg["content"]:
-                context_text += f"Previous analysis:\n{msg['content']}\n"
+        # Check for MR creation request
+        is_mr_request = "create" in message.lower() and ("mr" in message.lower() or "merge request" in message.lower())
         
-        # Build final prompt with context
-        if "create" in message.lower() and ("mr" in message.lower() or "merge request" in message.lower()):
+        # Build context prompt
+        context_prompt = f"""
+Session Context:
+- Project: {context.project_name}
+- SonarQube Key: {context.sonarqube_key}
+- GitLab Project ID: {context.gitlab_project_id}
+- Quality Gate Status: {context.quality_gate_status}
+"""
+        
+        # Add conversation summary (last analysis)
+        if conversation_history:
+            for msg in reversed(conversation_history):
+                if msg["role"] == "assistant" and "Proposed Fixes" in msg.get("content", ""):
+                    context_prompt += f"\n\nPrevious Analysis:\n{msg['content']}"
+                    break
+        
+        # Prepare final prompt
+        if is_mr_request:
             timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
-            branch_name = f"sonarqube_agent_fix_{timestamp}"
+            branch_name = f"fix/sonarqube_{timestamp}"
             
-            final_prompt = f"""{context_text}
+            final_prompt = f"""{context_prompt}
 
 The user wants to create a merge request with the quality fixes.
 
-GitLab Project ID: {context['gitlab_project_id']}
-Branch Name: {branch_name}
+CRITICAL INSTRUCTIONS:
+1. Use the create_merge_request tool with all the file changes from the previous analysis
+2. After creating the MR, you MUST include the complete MR URL in your response
+3. Format your response to clearly show:
+   - How many issues were fixed
+   - What files were changed
+   - The branch name created
+   - **The full merge request URL** (e.g., https://gitlab.example.com/group/project/-/merge_requests/123)
 
-Based on the previous analysis, create a merge request with all the fixes for the quality issues.
-Use the create_merge_request tool with the exact file changes discussed."""
+Use these parameters:
+- GitLab Project ID: {context.gitlab_project_id}
+- Source Branch: {branch_name}
+- Target Branch: main
+- Title: Fix SonarQube quality gate failures
+- Description: Automated fixes for bugs, vulnerabilities, and code smells
+
+Create the merge request now with all the fixes."""
         else:
-            final_prompt = f"{context_text}\n{message}" if context_text else message
+            final_prompt = f"{context_prompt}\n\nUser Question: {message}"
         
         # Create fresh agent and invoke
         agent = Agent(
@@ -187,4 +227,4 @@ Use the create_merge_request tool with the exact file changes discussed."""
         log.debug(f"Generated response for session {session_id}")
         
         # Return the message directly
-        return result.message
+        return result.message if hasattr(result, 'message') else str(result)
