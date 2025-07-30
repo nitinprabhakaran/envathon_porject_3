@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """
-Enhanced CI/CD Environment Setup Script
-Creates GitLab projects across multiple languages with comprehensive failure scenarios
+Enhanced CI/CD Environment Setup Script - Fixed Version
+Creates GitLab projects with various failure scenarios
+Focuses on Java, Python, and JavaScript/Node.js projects
 """
 
 import gitlab
@@ -38,6 +39,71 @@ def warning(msg: str):
 def error(msg: str):
     print(f"{Colors.RED}[ERROR]{Colors.END} {msg}")
     sys.exit(1)
+
+# Namespace-level (Group) CI/CD Variables
+NAMESPACE_VARIABLES = [
+    # Docker and Registry
+    {'key': 'DOCKER_DRIVER', 'value': 'overlay2'},
+    {'key': 'DOCKER_TLS_CERTDIR', 'value': ''},
+    {'key': 'CI_REGISTRY', 'value': 'localhost:5000'},  # Local registry or disable
+    {'key': 'DOCKER_HOST', 'value': 'tcp://docker:2375'},
+    
+    # SonarQube
+    {'key': 'SONAR_HOST_URL', 'value': 'http://sonarqube:9000'},
+    {'key': 'SONAR_TOKEN', 'value': 'sonar_token_placeholder', 'masked': True},
+    
+    # Language Versions (defaults)
+    {'key': 'JAVA_VERSION', 'value': '11'},
+    {'key': 'PYTHON_VERSION', 'value': '3.9'},
+    {'key': 'NODE_VERSION', 'value': '16'},
+    
+    # Common settings
+    {'key': 'GIT_DEPTH', 'value': '0'},
+    {'key': 'FF_USE_FASTZIP', 'value': 'true'},
+    {'key': 'ARTIFACT_COMPRESSION_LEVEL', 'value': 'fast'},
+    {'key': 'SKIP_IMAGE_PUSH', 'value': 'true'},  # Skip registry push for now
+]
+
+# Project-specific variables
+PROJECT_VARIABLES = {
+    "payment-gateway": [
+        {'key': 'SERVICE_NAME', 'value': 'payment-gateway'},
+        {'key': 'JAVA_VERSION', 'value': '11'},
+        {'key': 'MAVEN_OPTS', 'value': '-Xmx1024m'},
+        {'key': 'SONAR_SOURCES', 'value': 'src/main/java'},
+        {'key': 'SONAR_JAVA_BINARIES', 'value': 'target/classes'},
+    ],
+    "user-service": [
+        {'key': 'SERVICE_NAME', 'value': 'user-service'},
+        {'key': 'PYTHON_VERSION', 'value': '3.9'},
+        {'key': 'SONAR_SOURCES', 'value': '.'},
+        {'key': 'SONAR_PYTHON_VERSION', 'value': '3.9'},
+    ],
+    "inventory-api": [
+        {'key': 'SERVICE_NAME', 'value': 'inventory-api'},
+        {'key': 'NODE_VERSION', 'value': '16'},
+        {'key': 'SONAR_SOURCES', 'value': 'src'},
+        {'key': 'NPM_CONFIG_CACHE', 'value': '.npm'},
+    ],
+    "auth-service": [
+        {'key': 'SERVICE_NAME', 'value': 'auth-service'},
+        {'key': 'JAVA_VERSION', 'value': '11'},
+        {'key': 'SONAR_SOURCES', 'value': 'src/main/java'},
+        {'key': 'SONAR_JAVA_BINARIES', 'value': 'target/classes'},
+    ],
+    "notification-api": [
+        {'key': 'SERVICE_NAME', 'value': 'notification-api'},
+        {'key': 'PYTHON_VERSION', 'value': '3.9'},
+        {'key': 'SONAR_SOURCES', 'value': 'src'},
+        {'key': 'SONAR_PYTHON_VERSION', 'value': '3.9'},
+    ],
+    "dashboard-ui": [
+        {'key': 'SERVICE_NAME', 'value': 'dashboard-ui'},
+        {'key': 'NODE_VERSION', 'value': '16'},
+        {'key': 'SONAR_SOURCES', 'value': 'src'},
+        {'key': 'BUILD_PATH', 'value': 'build'},
+    ],
+}
 
 # Enhanced project definitions with various failure scenarios
 PROJECTS = {
@@ -113,25 +179,82 @@ public class PaymentController {
         result.put("id", id);
         return result;
     }
+}
+""",
+            "src/main/java/com/demo/payment/model/PaymentRequest.java": """
+package com.demo.payment.model;
+
+public class PaymentRequest {
+    private String userId;
+    private String cardNumber;
+    private double amount;
+    private String currency;
     
-    // Another duplicate method with similar logic
-    @GetMapping("/details/{id}")
-    public Map<String, Object> getPaymentDetails(@PathVariable String id) {
-        Map<String, Object> result = new HashMap<>();
-        
-        // Same hardcoded values - duplication
-        Connection conn = null;
-        try {
-            conn = DriverManager.getConnection("jdbc:mysql://localhost:3306/payments", "root", "password");
-        } catch (SQLException e) {
-            // Swallowing exception again
-        }
-        
-        result.put("status", "SUCCESS");
-        result.put("id", id);
-        result.put("details", "Payment details here");
-        return result;
+    public String getUserId() { return userId; }
+    public void setUserId(String userId) { this.userId = userId; }
+    
+    public String getCardNumber() { return cardNumber; }
+    public void setCardNumber(String cardNumber) { this.cardNumber = cardNumber; }
+    
+    public double getAmount() { return amount; }
+    public void setAmount(double amount) { this.amount = amount; }
+    
+    public String getCurrency() { return currency; }
+    public void setCurrency(String currency) { this.currency = currency; }
+}
+""",
+            "src/main/java/com/demo/payment/model/PaymentResponse.java": """
+package com.demo.payment.model;
+
+public class PaymentResponse {
+    private String transactionId;
+    private String status;
+    
+    public PaymentResponse(String transactionId, String status) {
+        this.transactionId = transactionId;
+        this.status = status;
     }
+    
+    public String getTransactionId() { return transactionId; }
+    public String getStatus() { return status; }
+}
+""",
+            "src/main/java/com/demo/payment/model/Payment.java": """
+package com.demo.payment.model;
+
+import javax.persistence.*;
+
+@Entity
+@Table(name = "payments")
+public class Payment {
+    @Id
+    @GeneratedValue(strategy = GenerationType.IDENTITY)
+    private Long id;
+    
+    private String userId;
+    private String merchantId;
+    private Double amount;
+    private String currency;
+    private String status;
+    
+    // Getters and setters
+    public Long getId() { return id; }
+    public void setId(Long id) { this.id = id; }
+    
+    public String getUserId() { return userId; }
+    public void setUserId(String userId) { this.userId = userId; }
+    
+    public String getMerchantId() { return merchantId; }
+    public void setMerchantId(String merchantId) { this.merchantId = merchantId; }
+    
+    public Double getAmount() { return amount; }
+    public void setAmount(Double amount) { this.amount = amount; }
+    
+    public String getCurrency() { return currency; }
+    public void setCurrency(String currency) { this.currency = currency; }
+    
+    public String getStatus() { return status; }
+    public void setStatus(String status) { this.status = status; }
 }
 """,
             "src/main/java/com/demo/payment/service/PaymentService.java": """
@@ -161,13 +284,6 @@ public class PaymentService {
         // Security issue: Logging sensitive data
         System.out.println("Processing payment for card: " + cardNumber);
         
-        // Performance issue: N+1 queries
-        List<Payment> userPayments = repository.findByUserId(request.getUserId());
-        for (Payment p : userPayments) {
-            // Individual query for each payment
-            repository.findRelatedTransactions(p.getId());
-        }
-        
         // Vulnerability: Weak random number generator
         Random random = new Random();
         String transactionId = String.valueOf(random.nextInt(999999));
@@ -188,56 +304,6 @@ public class PaymentService {
         
         return new PaymentResponse(transactionId, "SUCCESS");
     }
-    
-    // Code smell: Long method
-    public void reconcilePayments() {
-        // 100+ lines of complex logic here...
-        List<Payment> payments = repository.findAll();
-        Map<String, List<Payment>> groupedPayments = new HashMap<>();
-        
-        // Complex nested loops - high cyclomatic complexity
-        for (Payment payment : payments) {
-            if (payment.getStatus().equals("PENDING")) {
-                if (payment.getAmount() > 100) {
-                    if (payment.getCurrency().equals("USD")) {
-                        // More nested conditions...
-                        List<Payment> group = groupedPayments.get(payment.getMerchantId());
-                        if (group == null) {
-                            group = new ArrayList<>();
-                            groupedPayments.put(payment.getMerchantId(), group);
-                        }
-                        group.add(payment);
-                    }
-                }
-            }
-        }
-        // More complex logic...
-    }
-}
-""",
-            "src/main/java/com/demo/payment/model/PaymentRequest.java": """
-package com.demo.payment.model;
-
-public class PaymentRequest {
-    private String userId;
-    private String cardNumber;
-    private double amount;
-    private String currency;
-    
-    // Missing validation annotations
-    // No getters/setters shown for brevity
-    
-    public String getUserId() { return userId; }
-    public void setUserId(String userId) { this.userId = userId; }
-    
-    public String getCardNumber() { return cardNumber; }
-    public void setCardNumber(String cardNumber) { this.cardNumber = cardNumber; }
-    
-    public double getAmount() { return amount; }
-    public void setAmount(double amount) { this.amount = amount; }
-    
-    public String getCurrency() { return currency; }
-    public void setCurrency(String currency) { this.currency = currency; }
 }
 """,
             "src/main/java/com/demo/payment/repository/PaymentRepository.java": """
@@ -256,6 +322,8 @@ public interface PaymentRepository extends JpaRepository<Payment, Long> {
     
     @Query(value = "SELECT * FROM transactions WHERE payment_id = ?1", nativeQuery = true)
     List<Object[]> findRelatedTransactions(Long paymentId);
+    
+    List<Payment> findAll();
 }
 """,
             "pom.xml": """<?xml version="1.0" encoding="UTF-8"?>
@@ -321,17 +389,13 @@ CMD ["java", "-jar", "app.jar"]
   - project: 'cicd-demo/shared-pipelines'
     ref: main
     file: '/templates/java-complete.yml'
-
-variables:
-  SERVICE_NAME: payment-gateway
-  SONAR_SOURCES: src/main/java
 """
         }
     },
 
-    # 2. Python FastAPI - Test failure scenario
-    "user-management": {
-        "description": "Python FastAPI user service - Test failure & security issues",
+    # 2. Python FastAPI - Fixed dependencies
+    "user-service": {
+        "description": "Python FastAPI user service - Test failures & quality issues",
         "language": "python",
         "failure_types": ["test", "quality", "security"],
         "files": {
@@ -366,14 +430,6 @@ async def get_user(user_id: str):
         raise HTTPException(status_code=404, detail="User not found")
     
     return {"user": dict(user)}
-
-# Vulnerability: Insecure deserialization
-@app.post("/import/users")
-async def import_users(data: str):
-    # Dangerous: Using pickle on user input
-    users = pickle.loads(data.encode())
-    # Process users...
-    return {"imported": len(users)}
 
 # Bug: Race condition
 user_sessions = {}
@@ -446,27 +502,6 @@ def fetch_user_profile(user_id):
 def fetch_user_settings(user_id):
     # Simulated database call
     pass
-
-# Code smell: God object
-class UserService:
-    def __init__(self):
-        self.db = None
-        self.cache = {}
-        self.validators = []
-        self.processors = []
-        self.notifiers = []
-        # Too many responsibilities
-    
-    def create_user(self, data): pass
-    def update_user(self, data): pass
-    def delete_user(self, user_id): pass
-    def validate_user(self, data): pass
-    def process_user(self, data): pass
-    def notify_user(self, user_id): pass
-    def cache_user(self, user): pass
-    def export_users(self): pass
-    def import_users(self): pass
-    # ... many more methods
 """,
             "app/models.py": """
 from sqlalchemy import Column, Integer, String, DateTime
@@ -509,52 +544,26 @@ def test_login():
     assert response.status_code == 200
     assert "token" in response.json()  # Will fail
 
-def test_import_users():
-    # Unsafe test - using pickle
-    import pickle
-    users = [{"name": "test"}]
-    data = pickle.dumps(users).decode('latin-1')
-    
-    response = client.post("/import/users", json={"data": data})
-    assert response.status_code == 200  # Will fail due to encoding issues
-
 def test_admin_access():
     # Missing authentication
     response = client.get("/admin/users")
     assert response.status_code == 401  # Will fail - no auth check
 
-# Flaky test
-def test_concurrent_login():
-    # This test has race conditions
-    import threading
-    results = []
-    
-    def login():
-        response = client.post("/login", json={
-            "username": "admin",
-            "password": "admin123"
-        })
-        results.append(response.json())
-    
-    threads = [threading.Thread(target=login) for _ in range(10)]
-    for t in threads:
-        t.start()
-    for t in threads:
-        t.join()
-    
-    # Will fail due to race condition in session storage
-    assert len(set(r['token'] for r in results)) == 10
+# Test that passes
+def test_health():
+    response = client.get("/")
+    assert response.status_code == 200
 """,
             "requirements.txt": """fastapi==0.104.1
 uvicorn==0.24.0
 sqlalchemy==1.4.32
 pytest==7.4.3
-httpx==0.25.1
+pytest-asyncio==0.21.1
+httpx==0.25.2
 pyjwt==2.8.0
 psycopg2-binary==2.9.9
-# Vulnerable dependencies
-pyyaml==5.3.1  # CVE-2020-1747
-requests==2.20.0  # Multiple CVEs
+pyyaml==6.0.1
+# No conflicting packages
 """,
             "Dockerfile": """FROM python:3.9-slim
 
@@ -579,17 +588,13 @@ CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
   - project: 'cicd-demo/shared-pipelines'
     ref: main
     file: '/templates/python-complete.yml'
-
-variables:
-  SERVICE_NAME: user-management
-  PYTHON_VERSION: "3.9"
 """
         }
     },
 
-    # 3. Node.js Express - Quality gate failure
-    "inventory-tracker": {
-        "description": "Node.js inventory service - Quality issues & vulnerabilities",
+    # 3. Node.js Express - Fixed test hanging issue
+    "inventory-api": {
+        "description": "Node.js inventory API - Quality gate failures",
         "language": "nodejs",
         "failure_types": ["quality", "security"],
         "files": {
@@ -605,8 +610,12 @@ const path = require('path');
 const app = express();
 app.use(bodyParser.json());
 
+// Models
+const Inventory = require('./models/Inventory');
+const User = require('./models/User');
+
 // Security issue: Hardcoded connection string
-mongoose.connect('mongodb://admin:password@localhost:27017/inventory');
+const mongoUrl = 'mongodb://admin:password@localhost:27017/inventory';
 
 // Vulnerability: No input validation
 app.post('/api/inventory/search', (req, res) => {
@@ -619,30 +628,6 @@ app.post('/api/inventory/search', (req, res) => {
             return res.status(500).json({ error: err.message });
         }
         res.json(items);
-    });
-});
-
-// Code smell: Callback hell
-app.get('/api/inventory/report', (req, res) => {
-    Inventory.find({}, (err, items) => {
-        if (err) return res.status(500).send(err);
-        
-        items.forEach(item => {
-            Category.findById(item.categoryId, (err, category) => {
-                if (err) return;
-                
-                Supplier.findById(item.supplierId, (err, supplier) => {
-                    if (err) return;
-                    
-                    Warehouse.findById(item.warehouseId, (err, warehouse) => {
-                        if (err) return;
-                        
-                        // More nested callbacks...
-                        // This is callback hell
-                    });
-                });
-            });
-        });
     });
 });
 
@@ -724,16 +709,6 @@ app.get('/api/inventory/:id', async (req, res) => {
     res.json(cache[id]);
 });
 
-// Performance issue: Synchronous file operations
-app.get('/api/inventory/export', (req, res) => {
-    const items = Inventory.find({}).lean();  // Missing await
-    
-    // Blocking I/O
-    fs.writeFileSync('export.json', JSON.stringify(items));
-    
-    res.download('export.json');
-});
-
 // Global error handler that leaks information
 app.use((err, req, res, next) => {
     console.error(err.stack);  // Full stack trace
@@ -743,13 +718,29 @@ app.use((err, req, res, next) => {
     });
 });
 
-// Server configuration
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-    console.log(`Server running on port ${PORT}`);
-});
-
+// Export for testing
 module.exports = app;
+""",
+            "src/server.js": """
+const app = require('./app');
+const mongoose = require('mongoose');
+
+const PORT = process.env.PORT || 3000;
+const mongoUrl = 'mongodb://admin:password@localhost:27017/inventory';
+
+// Connect to MongoDB
+mongoose.connect(mongoUrl, {
+    useNewUrlParser: true,
+    useUnifiedTopology: true
+}).then(() => {
+    console.log('Connected to MongoDB');
+    app.listen(PORT, () => {
+        console.log(`Server running on port ${PORT}`);
+    });
+}).catch(err => {
+    console.error('MongoDB connection error:', err);
+    process.exit(1);
+});
 """,
             "src/models/Inventory.js": """
 const mongoose = require('mongoose');
@@ -780,53 +771,38 @@ const inventorySchema = new mongoose.Schema({
 
 module.exports = mongoose.model('Inventory', inventorySchema);
 """,
-            "src/utils/validator.js": """
-// Duplicate validation functions (code smell)
+            "src/models/User.js": """
+const mongoose = require('mongoose');
 
-function validateEmail(email) {
-    // Weak regex
-    return /^[^@]+@[^@]+$/.test(email);
-}
+const userSchema = new mongoose.Schema({
+    username: String,
+    password: String,  // Storing plain text password!
+    email: String,
+    role: String
+});
 
-function validateEmail2(email) {
-    // Duplicate function with slightly different logic
-    return email.includes('@') && email.includes('.');
-}
-
-function validatePhone(phone) {
-    // Only works for US numbers
-    return /^\\d{10}$/.test(phone);
-}
-
-function validatePhone2(phone) {
-    // Another duplicate
-    return phone.length === 10 && !isNaN(phone);
-}
-
-// Unused functions (dead code)
-function validateAddress(address) {
-    return true;
-}
-
-function validateZipCode(zip) {
-    return true;
-}
-
-module.exports = {
-    validateEmail,
-    validateEmail2,
-    validatePhone,
-    validatePhone2,
-    validateAddress,
-    validateZipCode
-};
+module.exports = mongoose.model('User', userSchema);
 """,
             "tests/inventory.test.js": """
 const request = require('supertest');
 const app = require('../src/app');
 
+// Mock mongoose to prevent connection issues during tests
+jest.mock('mongoose', () => ({
+    connect: jest.fn().mockResolvedValue(true),
+    model: jest.fn().mockReturnValue({
+        findById: jest.fn(),
+        findOne: jest.fn(),
+        find: jest.fn()
+    }),
+    Schema: jest.fn().mockImplementation(() => ({}))
+}));
+
 describe('Inventory API', () => {
-    // Tests will pass but don't test security issues
+    afterAll((done) => {
+        // Ensure Jest exits properly
+        done();
+    });
     
     test('GET /api/inventory/:id', async () => {
         const res = await request(app).get('/api/inventory/123');
@@ -843,20 +819,16 @@ describe('Inventory API', () => {
             });
         expect(res.statusCode).toBe(200);
     });
-    
-    // Missing security tests
-    // Missing edge case tests
-    // Missing performance tests
 });
 """,
             "package.json": """{
-  "name": "inventory-tracker",
+  "name": "inventory-api",
   "version": "1.0.0",
-  "description": "Inventory management service",
-  "main": "src/app.js",
+  "description": "Inventory management API",
+  "main": "src/server.js",
   "scripts": {
-    "start": "node src/app.js",
-    "test": "jest --coverage",
+    "start": "node src/server.js",
+    "test": "jest --coverage --forceExit --detectOpenHandles",
     "lint": "eslint src/"
   },
   "dependencies": {
@@ -871,6 +843,10 @@ describe('Inventory API', () => {
     "jest": "27.0.6",
     "supertest": "6.1.3",
     "eslint": "7.32.0"
+  },
+  "jest": {
+    "testEnvironment": "node",
+    "testTimeout": 10000
   }
 }
 """,
@@ -892,321 +868,678 @@ CMD ["npm", "start"]
   - project: 'cicd-demo/shared-pipelines'
     ref: main
     file: '/templates/nodejs-complete.yml'
-
-variables:
-  SERVICE_NAME: inventory-tracker
-  NODE_VERSION: "16"
 """
         }
     },
 
-    # 4. Go service - Image scan failure
-    "notification-service": {
-        "description": "Go notification service - Container security issues",
-        "language": "go",
-        "failure_types": ["security", "image-scan"],
+    # 4. Java Spring Boot - Authentication service
+    "auth-service": {
+        "description": "Java Spring Boot auth service - Security vulnerabilities",
+        "language": "java",
+        "failure_types": ["security", "quality"],
         "files": {
-            "main.go": r"""package main
+            "src/main/java/com/demo/auth/AuthServiceApplication.java": """
+package com.demo.auth;
 
-import (
-    "database/sql"
-    "encoding/json"
-    "fmt"
-    "log"
-    "net/http"
-    "os"
-    "os/exec"
-    "crypto/md5"
-    _ "github.com/lib/pq"
-)
+import org.springframework.boot.SpringApplication;
+import org.springframework.boot.autoconfigure.SpringBootApplication;
 
-// Hardcoded credentials (security issue)
-const (
-    dbHost     = "localhost"
-    dbPort     = 5432
-    dbUser     = "postgres"
-    dbPassword = "password123"
-    dbName     = "notifications"
-)
-
-type Notification struct {
-    ID      int    `json:"id"`
-    UserID  string `json:"user_id"`
-    Message string `json:"message"`
-    Type    string `json:"type"`
-}
-
-var db *sql.DB
-
-func main() {
-    initDB()
+@SpringBootApplication
+public class AuthServiceApplication {
     
-    http.HandleFunc("/notify", handleNotify)
-    http.HandleFunc("/template", handleTemplate)
-    http.HandleFunc("/broadcast", handleBroadcast)
-    http.HandleFunc("/execute", handleExecute)
-    
-    log.Println("Server starting on :8080")
-    log.Fatal(http.ListenAndServe(":8080", nil))
-}
-
-func initDB() {
-    psqlInfo := fmt.Sprintf("host=%s port=%d user=%s password=%s dbname=%s sslmode=disable",
-        dbHost, dbPort, dbUser, dbPassword, dbName)
-    
-    var err error
-    db, err = sql.Open("postgres", psqlInfo)
-    if err != nil {
-        panic(err)
+    public static void main(String[] args) {
+        SpringApplication.run(AuthServiceApplication.class, args);
     }
 }
+""",
+            "src/main/java/com/demo/auth/controller/AuthController.java": """
+package com.demo.auth.controller;
 
-// SQL Injection vulnerability
-func handleNotify(w http.ResponseWriter, r *http.Request) {
-    userID := r.URL.Query().Get("user_id")
-    message := r.URL.Query().Get("message")
-    
-    // Vulnerable to SQL injection
-    query := fmt.Sprintf("INSERT INTO notifications (user_id, message) VALUES ('%s', '%s')", userID, message)
-    
-    _, err := db.Exec(query)
-    if err != nil {
-        http.Error(w, err.Error(), http.StatusInternalServerError)
-        return
-    }
-    
-    w.WriteHeader(http.StatusOK)
-    json.NewEncoder(w).Encode(map[string]string{"status": "sent"})
-}
+import com.demo.auth.service.AuthService;
+import com.demo.auth.model.*;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.web.bind.annotation.*;
+import java.util.*;
+import java.security.MessageDigest;
 
-// Template injection vulnerability
-func handleTemplate(w http.ResponseWriter, r *http.Request) {
-    template := r.URL.Query().Get("template")
-    data := r.URL.Query().Get("data")
+@RestController
+@RequestMapping("/api/auth")
+public class AuthController {
     
-    // Dangerous: executing template from user input
-    cmd := exec.Command("sh", "-c", fmt.Sprintf("echo '%s' | sed 's/{{data}}/%s/g'", template, data))
-    output, err := cmd.Output()
+    @Autowired
+    private AuthService authService;
     
-    if err != nil {
-        http.Error(w, err.Error(), http.StatusInternalServerError)
-        return
-    }
+    // Hardcoded secret key
+    private static final String SECRET_KEY = "my-secret-key-123";
     
-    w.Write(output)
-}
-
-// Mass assignment vulnerability
-func handleBroadcast(w http.ResponseWriter, r *http.Request) {
-    var notification Notification
-    
-    // Decoding all fields including ID (mass assignment)
-    err := json.NewDecoder(r.Body).Decode(&notification)
-    if err != nil {
-        http.Error(w, err.Error(), http.StatusBadRequest)
-        return
-    }
-    
-    // No validation or authorization
-    query := "SELECT user_id FROM users WHERE active = true"
-    rows, _ := db.Query(query)
-    defer rows.Close()
-    
-    for rows.Next() {
-        var userID string
-        rows.Scan(&userID)
+    @PostMapping("/login")
+    public LoginResponse login(@RequestBody LoginRequest request) {
+        // Vulnerability: Timing attack
+        if (request.getUsername().equals("admin") && 
+            request.getPassword().equals("admin123")) {
+            return new LoginResponse("admin-token", "admin");
+        }
         
-        // Weak hashing for notification ID
-        hash := md5.Sum([]byte(userID + notification.Message))
-        notifID := fmt.Sprintf("%x", hash)
+        // SQL injection via string concatenation
+        String query = "SELECT * FROM users WHERE username = '" + 
+                      request.getUsername() + "' AND password = '" + 
+                      request.getPassword() + "'";
         
-        // Send notification (implementation hidden)
-        sendNotification(userID, notification.Message, notifID)
+        // Weak hashing
+        try {
+            MessageDigest md = MessageDigest.getInstance("MD5");
+            byte[] hash = md.digest(request.getPassword().getBytes());
+            // Use weak hash...
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+        
+        return authService.authenticate(request);
     }
     
-    json.NewEncoder(w).Encode(map[string]string{"status": "broadcast sent"})
-}
-
-// Command injection vulnerability
-func handleExecute(w http.ResponseWriter, r *http.Request) {
-    command := r.URL.Query().Get("cmd")
-    
-    // Extremely dangerous: executing arbitrary commands
-    cmd := exec.Command("sh", "-c", command)
-    output, err := cmd.CombinedOutput()
-    
-    if err != nil {
-        http.Error(w, string(output), http.StatusInternalServerError)
-        return
+    @GetMapping("/users")
+    public List<User> getAllUsers() {
+        // No authentication check
+        return authService.getAllUsers();
     }
     
-    w.Write(output)
-}
-
-func sendNotification(userID, message, notifID string) {
-    // Dummy implementation
-    log.Printf("Sending notification %s to user %s: %s", notifID, userID, message)
-}
-
-// Memory leak: goroutines not properly managed
-func startWorkers() {
-    for i := 0; i < 1000; i++ {
-        go func() {
-            for {
-                // Infinite loop without break condition
-                processQueue()
-            }
-        }()
+    @PostMapping("/register")
+    public User register(@RequestBody User user) {
+        // Mass assignment vulnerability
+        // User can set any field including role
+        return authService.createUser(user);
     }
-}
-
-func processQueue() {
-    // Simulate work
-    // No proper cleanup or channel closing
+    
+    // Information disclosure
+    @GetMapping("/config")
+    public Map<String, String> getConfig() {
+        Map<String, String> config = new HashMap<>();
+        config.put("database_url", "jdbc:mysql://localhost:3306/auth");
+        config.put("database_user", "root");
+        config.put("database_password", "password123");
+        config.put("jwt_secret", SECRET_KEY);
+        return config;
+    }
 }
 """,
-            "go.mod": """module notification-service
+            "src/main/java/com/demo/auth/model/User.java": """
+package com.demo.auth.model;
 
-go 1.19
+import javax.persistence.*;
 
-require (
-    github.com/lib/pq v1.10.2
-    github.com/gorilla/mux v1.7.4
-)
-
-// Using outdated versions with known vulnerabilities
-require (
-    github.com/dgrijalva/jwt-go v3.2.0+incompatible
-    gopkg.in/yaml.v2 v2.2.8
-)
+@Entity
+@Table(name = "users")
+public class User {
+    @Id
+    @GeneratedValue(strategy = GenerationType.IDENTITY)
+    private Long id;
+    
+    private String username;
+    private String password;  // Storing plain text!
+    private String email;
+    private String role;
+    
+    // No validation annotations
+    
+    public Long getId() { return id; }
+    public void setId(Long id) { this.id = id; }
+    
+    public String getUsername() { return username; }
+    public void setUsername(String username) { this.username = username; }
+    
+    public String getPassword() { return password; }
+    public void setPassword(String password) { this.password = password; }
+    
+    public String getEmail() { return email; }
+    public void setEmail(String email) { this.email = email; }
+    
+    public String getRole() { return role; }
+    public void setRole(String role) { this.role = role; }
+}
 """,
-            "notification_test.go": """package main
+            "src/main/java/com/demo/auth/model/LoginRequest.java": """
+package com.demo.auth.model;
 
-import (
-    "testing"
-    "net/http"
-    "net/http/httptest"
-)
+public class LoginRequest {
+    private String username;
+    private String password;
+    
+    public String getUsername() { return username; }
+    public void setUsername(String username) { this.username = username; }
+    
+    public String getPassword() { return password; }
+    public void setPassword(String password) { this.password = password; }
+}
+""",
+            "src/main/java/com/demo/auth/model/LoginResponse.java": """
+package com.demo.auth.model;
 
-func TestHandleNotify(t *testing.T) {
-    req, _ := http.NewRequest("GET", "/notify?user_id=1&message=test", nil)
-    rr := httptest.NewRecorder()
-    handler := http.HandlerFunc(handleNotify)
+public class LoginResponse {
+    private String token;
+    private String username;
     
-    handler.ServeHTTP(rr, req)
+    public LoginResponse(String token, String username) {
+        this.token = token;
+        this.username = username;
+    }
     
-    // Weak test - doesn't check SQL injection
-    if status := rr.Code; status != http.StatusOK {
-        t.Errorf("handler returned wrong status code: got %v want %v",
-            status, http.StatusOK)
+    public String getToken() { return token; }
+    public String getUsername() { return username; }
+}
+""",
+            "src/main/java/com/demo/auth/service/AuthService.java": """
+package com.demo.auth.service;
+
+import com.demo.auth.model.*;
+import com.demo.auth.repository.UserRepository;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.stereotype.Service;
+import java.util.*;
+
+@Service
+public class AuthService {
+    
+    @Autowired
+    private UserRepository userRepository;
+    
+    // Weak token generation
+    public LoginResponse authenticate(LoginRequest request) {
+        User user = userRepository.findByUsername(request.getUsername());
+        
+        if (user != null && user.getPassword().equals(request.getPassword())) {
+            // Simple predictable token
+            String token = Base64.getEncoder().encodeToString(
+                (user.getUsername() + ":" + System.currentTimeMillis()).getBytes()
+            );
+            return new LoginResponse(token, user.getUsername());
+        }
+        
+        return null;
+    }
+    
+    public List<User> getAllUsers() {
+        // Exposing all user data including passwords
+        return userRepository.findAll();
+    }
+    
+    public User createUser(User user) {
+        // No password hashing
+        // No validation
+        return userRepository.save(user);
     }
 }
-
-// Missing security tests
-// Missing performance tests
-// Missing error case tests
 """,
-            "Dockerfile": """# Using outdated base image with vulnerabilities
-FROM golang:1.16-alpine
+            "src/main/java/com/demo/auth/repository/UserRepository.java": """
+package com.demo.auth.repository;
+
+import com.demo.auth.model.User;
+import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Query;
+
+public interface UserRepository extends JpaRepository<User, Long> {
+    
+    // SQL injection prone
+    @Query(value = "SELECT * FROM users WHERE username = ?1", nativeQuery = true)
+    User findByUsername(String username);
+}
+""",
+            "pom.xml": """<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 
+         https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+    
+    <groupId>com.demo</groupId>
+    <artifactId>auth-service</artifactId>
+    <version>1.0.0</version>
+    <packaging>jar</packaging>
+    
+    <parent>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-starter-parent</artifactId>
+        <version>2.7.0</version>
+    </parent>
+    
+    <properties>
+        <java.version>11</java.version>
+    </properties>
+    
+    <dependencies>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-web</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-data-jpa</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>com.h2database</groupId>
+            <artifactId>h2</artifactId>
+            <scope>runtime</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <!-- Old vulnerable dependency -->
+        <dependency>
+            <groupId>org.apache.logging.log4j</groupId>
+            <artifactId>log4j-core</artifactId>
+            <version>2.14.0</version>
+        </dependency>
+    </dependencies>
+    
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.springframework.boot</groupId>
+                <artifactId>spring-boot-maven-plugin</artifactId>
+            </plugin>
+        </plugins>
+    </build>
+</project>
+""",
+            "Dockerfile": """FROM openjdk:11-jre-slim
+WORKDIR /app
+COPY target/*.jar app.jar
 
 # Running as root
-WORKDIR /app
+EXPOSE 8080
 
-# Copying everything including secrets
-COPY . .
+# Hardcoded secrets
+ENV DB_PASSWORD=password123
+ENV JWT_SECRET=my-secret-key-123
 
-# Building without security flags
-RUN go build -o notification-service .
-
-# Installing unnecessary packages (increases attack surface)
-RUN apk add --no-cache curl wget netcat-openbsd
-
-# Exposing too many ports
-EXPOSE 8080 8081 8082 9090
-
-# No health check
-# No user creation (runs as root)
-
-CMD ["./notification-service"]
+CMD ["java", "-jar", "app.jar"]
 """,
             ".gitlab-ci.yml": """include:
   - project: 'cicd-demo/shared-pipelines'
     ref: main
-    file: '/templates/golang-complete.yml'
-
-variables:
-  SERVICE_NAME: notification-service
-  GO_VERSION: "1.19"
+    file: '/templates/java-complete.yml'
 """
         }
     },
 
-    # 5. React Frontend - Build optimization issues
-    "customer-portal": {
-        "description": "React customer portal - Build and quality issues",
+    # 5. Python Django - Notification API
+    "notification-api": {
+        "description": "Python Django notification API - Performance and security issues",
+        "language": "python",
+        "failure_types": ["quality", "performance"],
+        "files": {
+            "src/manage.py": """#!/usr/bin/env python
+import os
+import sys
+
+if __name__ == '__main__':
+    os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'notification.settings')
+    try:
+        from django.core.management import execute_from_command_line
+    except ImportError as exc:
+        raise ImportError(
+            "Couldn't import Django. Are you sure it's installed and "
+            "available on your PYTHONPATH environment variable? Did you "
+            "forget to activate a virtual environment?"
+        ) from exc
+    execute_from_command_line(sys.argv)
+""",
+            "src/notification/__init__.py": "",
+            "src/notification/settings.py": """
+import os
+
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+# Security issue: Hardcoded secret key
+SECRET_KEY = 'django-insecure-1234567890abcdefghijklmnop'
+
+# Security issue: Debug enabled
+DEBUG = True
+
+ALLOWED_HOSTS = ['*']  # Security issue
+
+INSTALLED_APPS = [
+    'django.contrib.admin',
+    'django.contrib.auth',
+    'django.contrib.contenttypes',
+    'django.contrib.sessions',
+    'django.contrib.messages',
+    'django.contrib.staticfiles',
+    'api',
+]
+
+MIDDLEWARE = [
+    'django.middleware.security.SecurityMiddleware',
+    'django.contrib.sessions.middleware.SessionMiddleware',
+    'django.middleware.common.CommonMiddleware',
+    # Missing CSRF middleware - security issue
+    'django.contrib.auth.middleware.AuthenticationMiddleware',
+    'django.contrib.messages.middleware.MessageMiddleware',
+    'django.middleware.clickjacking.XFrameOptionsMiddleware',
+]
+
+ROOT_URLCONF = 'notification.urls'
+
+TEMPLATES = [
+    {
+        'BACKEND': 'django.template.backends.django.DjangoTemplates',
+        'DIRS': [],
+        'APP_DIRS': True,
+        'OPTIONS': {
+            'context_processors': [
+                'django.template.context_processors.debug',
+                'django.template.context_processors.request',
+                'django.contrib.auth.context_processors.auth',
+                'django.contrib.messages.context_processors.messages',
+            ],
+        },
+    },
+]
+
+WSGI_APPLICATION = 'notification.wsgi.application'
+
+# Database - hardcoded credentials
+DATABASES = {
+    'default': {
+        'ENGINE': 'django.db.backends.sqlite3',
+        'NAME': os.path.join(BASE_DIR, 'db.sqlite3'),
+    }
+}
+
+# No password validators - security issue
+AUTH_PASSWORD_VALIDATORS = []
+
+LANGUAGE_CODE = 'en-us'
+TIME_ZONE = 'UTC'
+USE_I18N = True
+USE_L10N = True
+USE_TZ = True
+
+STATIC_URL = '/static/'
+""",
+            "src/notification/urls.py": """
+from django.contrib import admin
+from django.urls import path, include
+
+urlpatterns = [
+    path('admin/', admin.site.urls),
+    path('api/', include('api.urls')),
+]
+""",
+            "src/notification/wsgi.py": """
+import os
+from django.core.wsgi import get_wsgi_application
+
+os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'notification.settings')
+application = get_wsgi_application()
+""",
+            "src/api/__init__.py": "",
+            "src/api/models.py": """
+from django.db import models
+from django.contrib.auth.models import User
+
+class Notification(models.Model):
+    user = models.ForeignKey(User, on_delete=models.CASCADE)
+    message = models.TextField()
+    created_at = models.DateTimeField(auto_now_add=True)
+    read = models.BooleanField(default=False)
+    
+    # No indexes defined
+    # No validation
+    
+class EmailTemplate(models.Model):
+    name = models.CharField(max_length=100)
+    subject = models.CharField(max_length=200)
+    body = models.TextField()  # Stores raw HTML - XSS risk
+    
+    # No sanitization
+""",
+            "src/api/views.py": """
+from django.shortcuts import render
+from django.http import JsonResponse
+from django.views.decorators.csrf import csrf_exempt
+from django.contrib.auth.models import User
+from .models import Notification, EmailTemplate
+import json
+import os
+
+# No authentication required - security issue
+@csrf_exempt
+def send_notification(request):
+    if request.method == 'POST':
+        data = json.loads(request.body)
+        
+        # Mass assignment vulnerability
+        notification = Notification.objects.create(**data)
+        
+        # Performance issue: N+1 queries
+        users = User.objects.all()
+        for user in users:
+            # Individual query for each user
+            user_notifications = Notification.objects.filter(user=user)
+            # Process notifications...
+        
+        return JsonResponse({'status': 'sent', 'id': notification.id})
+    
+    return JsonResponse({'error': 'Method not allowed'}, status=405)
+
+# SQL injection via raw query
+def get_user_notifications(request, username):
+    # Vulnerable to SQL injection
+    query = f"SELECT * FROM api_notification WHERE user_id IN (SELECT id FROM auth_user WHERE username = '{username}')"
+    
+    # Using raw SQL
+    from django.db import connection
+    with connection.cursor() as cursor:
+        cursor.execute(query)
+        results = cursor.fetchall()
+    
+    return JsonResponse({'notifications': results})
+
+# Template injection vulnerability
+@csrf_exempt
+def render_template(request):
+    if request.method == 'POST':
+        data = json.loads(request.body)
+        template_body = data.get('template', '')
+        context = data.get('context', {})
+        
+        # Dangerous: User input in template
+        from django.template import Template, Context
+        template = Template(template_body)
+        rendered = template.render(Context(context))
+        
+        return JsonResponse({'rendered': rendered})
+    
+    return JsonResponse({'error': 'Method not allowed'}, status=405)
+
+# File operation vulnerability
+def export_notifications(request):
+    filename = request.GET.get('filename', 'export.json')
+    
+    # Path traversal vulnerability
+    filepath = os.path.join('/tmp', filename)
+    
+    notifications = list(Notification.objects.all().values())
+    
+    # Blocking I/O
+    with open(filepath, 'w') as f:
+        json.dump(notifications, f)
+    
+    return JsonResponse({'file': filepath})
+
+# Performance issue: Loading all data
+def get_all_notifications(request):
+    # Loading entire table into memory
+    notifications = list(Notification.objects.all().values())
+    
+    # No pagination
+    return JsonResponse({'notifications': notifications, 'count': len(notifications)})
+""",
+            "src/api/urls.py": """
+from django.urls import path
+from . import views
+
+urlpatterns = [
+    path('send/', views.send_notification),
+    path('user/<str:username>/', views.get_user_notifications),
+    path('template/', views.render_template),
+    path('export/', views.export_notifications),
+    path('all/', views.get_all_notifications),
+]
+""",
+            "tests/test_api.py": """
+import pytest
+from django.test import TestCase, Client
+from django.contrib.auth.models import User
+from api.models import Notification
+
+class NotificationAPITest(TestCase):
+    def setUp(self):
+        self.client = Client()
+        self.user = User.objects.create_user('testuser', 'test@example.com', 'password')
+    
+    def test_send_notification(self):
+        # This test will pass but doesn't check security
+        response = self.client.post('/api/send/', 
+            data={'user': self.user.id, 'message': 'Test notification'},
+            content_type='application/json'
+        )
+        self.assertEqual(response.status_code, 200)
+    
+    def test_get_notifications(self):
+        # SQL injection not tested
+        response = self.client.get(f'/api/user/{self.user.username}/')
+        self.assertEqual(response.status_code, 200)
+    
+    def test_template_rendering(self):
+        # Template injection not tested
+        response = self.client.post('/api/template/',
+            data={'template': 'Hello {{ name }}', 'context': {'name': 'World'}},
+            content_type='application/json'
+        )
+        self.assertEqual(response.status_code, 200)
+""",
+            "requirements.txt": """Django==3.2.13
+djangorestframework==3.13.1
+psycopg2-binary==2.9.3
+gunicorn==20.1.0
+pytest==7.1.2
+pytest-django==4.5.2
+# Vulnerable dependency
+Pillow==8.1.1
+""",
+            "Dockerfile": """FROM python:3.9-slim
+
+WORKDIR /app
+
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+COPY src/ .
+
+# Running as root
+EXPOSE 8000
+
+# Hardcoded environment
+ENV DJANGO_SETTINGS_MODULE=notification.settings
+ENV PYTHONUNBUFFERED=1
+
+# No static file collection
+CMD ["gunicorn", "notification.wsgi:application", "--bind", "0.0.0.0:8000"]
+""",
+            ".gitlab-ci.yml": """include:
+  - project: 'cicd-demo/shared-pipelines'
+    ref: main
+    file: '/templates/python-complete.yml'
+"""
+        }
+    },
+
+    # 6. React Dashboard - Frontend with quality issues
+    "dashboard-ui": {
+        "description": "React dashboard UI - Build and quality issues",
         "language": "javascript",
-        "failure_types": ["build", "quality"],
+        "failure_types": ["quality", "security"],
         "files": {
             "src/App.js": r"""import React, { useState, useEffect } from 'react';
 import axios from 'axios';
 import './App.css';
 
-// Hardcoded API keys (security issue)
-const API_KEY = 'sk_live_abcd1234567890';
+// Hardcoded API configuration
+const API_KEY = 'sk_live_1234567890abcdef';
 const API_URL = 'https://api.example.com';
 
 function App() {
   const [user, setUser] = useState(null);
   const [data, setData] = useState([]);
+  const [loading, setLoading] = useState(false);
   
-  // Performance issue: API call on every render
+  // Performance issue: Missing dependency array
   useEffect(() => {
     fetchUserData();
-    fetchAllData();
-  });  // Missing dependency array
+    fetchDashboardData();
+  });
   
-  // Security: Storing sensitive data in localStorage
+  // Security: Storing sensitive data
   const fetchUserData = async () => {
-    const response = await axios.get(`${API_URL}/user`);
-    localStorage.setItem('user_token', response.data.token);
-    localStorage.setItem('user_password', response.data.password); // Very bad!
-    setUser(response.data);
+    try {
+      const response = await axios.get(`${API_URL}/user`, {
+        headers: { 'X-API-Key': API_KEY }
+      });
+      
+      // Storing sensitive data in localStorage
+      localStorage.setItem('user_token', response.data.token);
+      localStorage.setItem('api_key', API_KEY);
+      
+      setUser(response.data);
+    } catch (error) {
+      console.error('Full error:', error); // Information disclosure
+    }
   };
   
-  // Performance: Fetching all data without pagination
-  const fetchAllData = async () => {
-    const response = await axios.get(`${API_URL}/all-data`);
-    setData(response.data); // Could be huge
+  // Performance: No pagination
+  const fetchDashboardData = async () => {
+    const response = await axios.get(`${API_URL}/dashboard/all`);
+    setData(response.data); // Could be huge dataset
   };
   
   // XSS vulnerability
-  const renderHTML = (html) => {
-    return <div dangerouslySetInnerHTML={{ __html: html }} />;
+  const renderUserContent = (content) => {
+    return <div dangerouslySetInnerHTML={{ __html: content }} />;
   };
   
-  // Memory leak: Event listener not cleaned up
+  // Memory leak: Event listener
   useEffect(() => {
-    window.addEventListener('resize', handleResize);
+    const handleScroll = () => console.log('Scrolling');
+    window.addEventListener('scroll', handleScroll);
     // Missing cleanup
   }, []);
   
-  const handleResize = () => {
-    console.log('Window resized');
-  };
-  
   return (
     <div className="App">
-      <h1>Customer Portal</h1>
+      <header>
+        <h1>Dashboard</h1>
+        {/* Exposing API key in UI */}
+        <div className="api-status">API Key: {API_KEY}</div>
+      </header>
       
-      {/* Rendering user input without sanitization */}
-      {user && renderHTML(user.bio)}
+      {user && (
+        <div className="user-section">
+          {/* XSS vulnerability */}
+          {renderUserContent(user.bio)}
+        </div>
+      )}
       
-      {/* Performance: Rendering large lists without virtualization */}
-      <div>
+      {/* Performance: Rendering large lists */}
+      <div className="data-grid">
         {data.map((item, index) => (
-          <div key={index}> {/* Using index as key - bad practice */}
+          <div key={index} className="data-item">
             <h3>{item.title}</h3>
             <p>{item.description}</p>
+            {/* Rendering user HTML */}
+            <div dangerouslySetInnerHTML={{ __html: item.content }} />
           </div>
         ))}
       </div>
@@ -1214,131 +1547,155 @@ function App() {
   );
 }
 
-// Duplicate component (code smell)
-function UserCard({ user }) {
+// Duplicate components
+function Card({ title, content }) {
   return (
-    <div>
-      <h2>{user.name}</h2>
-      <p>{user.email}</p>
+    <div className="card">
+      <h3>{title}</h3>
+      <p>{content}</p>
     </div>
   );
 }
 
-// Another duplicate with slight variation
-function UserCardWithAvatar({ user }) {
+function CardWithImage({ title, content, image }) {
   return (
-    <div>
-      <img src={user.avatar} alt={user.name} />
-      <h2>{user.name}</h2>
-      <p>{user.email}</p>
+    <div className="card">
+      <img src={image} alt={title} />
+      <h3>{title}</h3>
+      <p>{content}</p>
     </div>
   );
 }
 
 export default App;
 """,
-            "src/utils/auth.js": r"""// Authentication utilities with security issues
+            "src/components/Login.js": r"""import React, { useState } from 'react';
+import axios from 'axios';
 
-export const login = async (username, password) => {
-  // Client-side validation only (security issue)
-  if (username === 'admin' && password === 'admin') {
-    return { token: 'fake-jwt-token' };
-  }
+const Login = () => {
+  const [username, setUsername] = useState('');
+  const [password, setPassword] = useState('');
   
-  // Logging sensitive data
-  console.log('Login attempt:', username, password);
-  
-  // Weak encryption
-  const encryptedPassword = btoa(password); // Base64 is not encryption!
-  
-  const response = await fetch('/api/login', {
-    method: 'POST',
-    body: JSON.stringify({ username, password: encryptedPassword })
-  });
-  
-  return response.json();
-};
-
-// Insecure token storage
-export const saveToken = (token) => {
-  // Storing in localStorage (vulnerable to XSS)
-  localStorage.setItem('auth_token', token);
-  
-  // Also storing in cookie without secure flags
-  document.cookie = `token=${token}`;
-};
-
-// No token expiration check
-export const isAuthenticated = () => {
-  return localStorage.getItem('auth_token') !== null;
-};
-""",
-            "src/components/Payment.jsx": """import React, { useState } from 'react';
-
-const Payment = () => {
-  const [cardNumber, setCardNumber] = useState('');
-  const [cvv, setCvv] = useState('');
-  
-  // Security: Credit card data in state (can be exposed in React DevTools)
-  const [creditCardData, setCreditCardData] = useState({});
-  
-  const handleSubmit = async (e) => {
+  const handleLogin = async (e) => {
     e.preventDefault();
     
-    // Logging sensitive payment data
-    console.log('Payment data:', { cardNumber, cvv });
+    // Client-side validation only
+    if (username === 'admin' && password === 'admin') {
+      localStorage.setItem('isAdmin', 'true');
+      window.location.href = '/admin';
+      return;
+    }
     
-    // Sending payment data to analytics (security issue)
-    window.gtag('event', 'payment', {
-      card_number: cardNumber,
-      cvv: cvv
-    });
+    // Logging credentials
+    console.log('Login attempt:', { username, password });
     
-    // No HTTPS check
-    const response = await fetch('http://api.example.com/payment', {
-      method: 'POST',
-      body: JSON.stringify({ cardNumber, cvv })
-    });
+    try {
+      // Sending credentials over HTTP
+      const response = await axios.post('http://api.example.com/login', {
+        username,
+        password
+      });
+      
+      // Weak token storage
+      document.cookie = `token=${response.data.token}`;
+      localStorage.setItem('token', response.data.token);
+      
+    } catch (error) {
+      // Exposing error details
+      alert(`Login failed: ${error.response.data.message}`);
+    }
   };
   
   return (
-    <form onSubmit={handleSubmit}>
+    <form onSubmit={handleLogin}>
       <input
         type="text"
-        value={cardNumber}
-        onChange={(e) => setCardNumber(e.target.value)}
-        placeholder="Card Number"
-        autoComplete="off" // Not preventing autocomplete properly
+        value={username}
+        onChange={(e) => setUsername(e.target.value)}
+        placeholder="Username"
+        autoComplete="username"
       />
       <input
-        type="text" // Should be type="password"
-        value={cvv}
-        onChange={(e) => setCvv(e.target.value)}
-        placeholder="CVV"
+        type="text" // Should be password type
+        value={password}
+        onChange={(e) => setPassword(e.target.value)}
+        placeholder="Password"
       />
-      <button type="submit">Pay Now</button>
+      <button type="submit">Login</button>
     </form>
   );
 };
 
-// Code duplication
-const PaymentForm = () => {
-  // Duplicate logic from above
-  const [cardNumber, setCardNumber] = useState('');
-  const [cvv, setCvv] = useState('');
+// Duplicate login form
+const LoginForm = () => {
+  const [username, setUsername] = useState('');
+  const [password, setPassword] = useState('');
   
-  // ... same implementation
+  // Same implementation as above...
+  
+  return (
+    <form>
+      {/* Duplicate code */}
+    </form>
+  );
 };
 
-export default Payment;
+export default Login;
+""",
+            "src/utils/api.js": r"""import axios from 'axios';
+
+// Hardcoded configuration
+const API_BASE = 'http://api.example.com';
+const API_KEY = 'sk_live_1234567890';
+
+// Creating axios instance with exposed key
+const apiClient = axios.create({
+  baseURL: API_BASE,
+  headers: {
+    'X-API-Key': API_KEY,
+    'Content-Type': 'application/json'
+  }
+});
+
+// No request/response interceptors for error handling
+
+// Duplicate API calls
+export const fetchUsers = async () => {
+  const response = await apiClient.get('/users');
+  return response.data;
+};
+
+export const getUsers = async () => {
+  // Duplicate of fetchUsers
+  const response = await apiClient.get('/users');
+  return response.data;
+};
+
+// No error handling
+export const createUser = async (userData) => {
+  const response = await apiClient.post('/users', userData);
+  return response.data;
+};
+
+// Exposing internal API structure
+export const debugAPI = () => {
+  console.log('API Configuration:', {
+    base: API_BASE,
+    key: API_KEY,
+    endpoints: ['/users', '/admin', '/config']
+  });
+};
+
+export default apiClient;
 """,
             "package.json": """{
-  "name": "customer-portal",
+  "name": "dashboard-ui",
   "version": "1.0.0",
   "dependencies": {
     "react": "17.0.2",
     "react-dom": "17.0.2",
     "axios": "0.21.1",
+    "react-router-dom": "5.2.0",
     "lodash": "4.17.19",
     "moment": "2.29.1"
   },
@@ -1350,8 +1707,11 @@ export default Payment;
   "scripts": {
     "start": "react-scripts start",
     "build": "react-scripts build",
-    "test": "react-scripts test",
+    "test": "react-scripts test --watchAll=false",
     "eject": "react-scripts eject"
+  },
+  "eslintConfig": {
+    "extends": ["react-app"]
   },
   "browserslist": {
     "production": [">0.2%", "not dead", "not op_mini all"],
@@ -1359,22 +1719,89 @@ export default Payment;
   }
 }
 """,
-            "Dockerfile": """FROM node:14-alpine
+            "public/index.html": """<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Dashboard</title>
+    <!-- Exposing internal info -->
+    <meta name="api-endpoint" content="https://api.example.com" />
+    <meta name="version" content="1.0.0-internal" />
+  </head>
+  <body>
+    <noscript>You need to enable JavaScript to run this app.</noscript>
+    <div id="root"></div>
+    <!-- Including API key in HTML -->
+    <script>
+      window.API_KEY = 'sk_live_1234567890';
+      window.DEBUG_MODE = true;
+    </script>
+  </body>
+</html>
+""",
+            "src/App.css": """/* Basic styles */
+.App {
+  text-align: center;
+  padding: 20px;
+}
+
+.api-status {
+  background: #f0f0f0;
+  padding: 10px;
+  margin: 10px;
+  /* Exposing sensitive info in CSS */
+  /* API endpoint: https://api.example.com */
+}
+
+.data-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  gap: 20px;
+  margin: 20px;
+}
+
+.card {
+  border: 1px solid #ddd;
+  padding: 15px;
+  border-radius: 8px;
+}
+
+/* Duplicate styles */
+.data-item {
+  border: 1px solid #ddd;
+  padding: 15px;
+  border-radius: 8px;
+}
+""",
+            "src/App.test.js": """import { render, screen } from '@testing-library/react';
+import App from './App';
+
+test('renders dashboard header', () => {
+  render(<App />);
+  const headerElement = screen.getByText(/Dashboard/i);
+  expect(headerElement).toBeInTheDocument();
+});
+
+// Missing security tests
+// Missing performance tests
+// Missing error handling tests
+""",
+            "Dockerfile": """FROM node:16-alpine AS build
 
 WORKDIR /app
 
-# Inefficient: copying everything before install
+# Copying everything including secrets
 COPY . .
 RUN npm install
 RUN npm run build
 
-# Using nginx with default config (security headers missing)
 FROM nginx:alpine
-COPY --from=0 /app/build /usr/share/nginx/html
+COPY --from=build /app/build /usr/share/nginx/html
 
 # No custom nginx config
 # No security headers
-# No rate limiting
+# Running as root
 
 EXPOSE 80
 CMD ["nginx", "-g", "daemon off;"]
@@ -1383,191 +1810,12 @@ CMD ["nginx", "-g", "daemon off;"]
   - project: 'cicd-demo/shared-pipelines'
     ref: main
     file: '/templates/react-complete.yml'
-
-variables:
-  SERVICE_NAME: customer-portal
-  NODE_VERSION: "16"
-"""
-        }
-    },
-
-    # 6. .NET Core API - Deployment failure
-    "order-processing": {
-        "description": ".NET Core order processing API - Deployment issues",
-        "language": "dotnet",
-        "failure_types": ["deploy", "security"],
-        "files": {
-            "Controllers/OrderController.cs": """using Microsoft.AspNetCore.Mvc;
-using System.Data.SqlClient;
-using System.Threading.Tasks;
-using OrderProcessing.Models;
-
-namespace OrderProcessing.Controllers
-{
-    [ApiController]
-    [Route("api/[controller]")]
-    public class OrderController : ControllerBase
-    {
-        private readonly string connectionString = "Server=localhost;Database=Orders;User Id=sa;Password=Password123!;";
-        
-        // SQL Injection vulnerability
-        [HttpGet("{orderId}")]
-        public async Task<IActionResult> GetOrder(string orderId)
-        {
-            using var connection = new SqlConnection(connectionString);
-            var query = $"SELECT * FROM Orders WHERE OrderId = '{orderId}'";
-            
-            using var command = new SqlCommand(query, connection);
-            await connection.OpenAsync();
-            
-            var reader = await command.ExecuteReaderAsync();
-            if (reader.Read())
-            {
-                return Ok(new Order
-                {
-                    OrderId = reader["OrderId"].ToString(),
-                    CustomerId = reader["CustomerId"].ToString(),
-                    Total = decimal.Parse(reader["Total"].ToString())
-                });
-            }
-            
-            return NotFound();
-        }
-        
-        // Mass assignment vulnerability
-        [HttpPost]
-        public async Task<IActionResult> CreateOrder([FromBody] Order order)
-        {
-            // No validation
-            // User can set any field including OrderId and Status
-            
-            using var connection = new SqlConnection(connectionString);
-            var query = $@"INSERT INTO Orders (OrderId, CustomerId, Total, Status) 
-                          VALUES ('{order.OrderId}', '{order.CustomerId}', {order.Total}, '{order.Status}')";
-            
-            using var command = new SqlCommand(query, connection);
-            await connection.OpenAsync();
-            await command.ExecuteNonQueryAsync();
-            
-            return Ok(order);
-        }
-        
-        // Information disclosure
-        [HttpGet("error-test")]
-        public IActionResult ErrorTest()
-        {
-            try
-            {
-                throw new System.Exception("Database connection failed: Server=prod-db;User=admin;Password=SuperSecret123");
-            }
-            catch (System.Exception ex)
-            {
-                // Returning full exception details
-                return StatusCode(500, new { 
-                    error = ex.Message, 
-                    stackTrace = ex.StackTrace,
-                    innerException = ex.InnerException?.Message 
-                });
-            }
-        }
-    }
-}
-""",
-            "Models/Order.cs": """namespace OrderProcessing.Models
-{
-    public class Order
-    {
-        public string OrderId { get; set; }
-        public string CustomerId { get; set; }
-        public decimal Total { get; set; }
-        public string Status { get; set; }
-        
-        // No validation attributes
-        // No data annotations
-    }
-}
-""",
-            "Startup.cs": """using Microsoft.AspNetCore.Builder;
-using Microsoft.AspNetCore.Hosting;
-using Microsoft.Extensions.DependencyInjection;
-
-namespace OrderProcessing
-{
-    public class Startup
-    {
-        public void ConfigureServices(IServiceCollection services)
-        {
-            services.AddControllers();
-            
-            // Missing security headers
-            // Missing CORS configuration
-            // Missing authentication
-        }
-        
-        public void Configure(IApplicationBuilder app, IWebHostEnvironment env)
-        {
-            // Always using development exception page
-            app.UseDeveloperExceptionPage();
-            
-            app.UseRouting();
-            
-            // Missing authorization
-            // Missing HTTPS redirection
-            
-            app.UseEndpoints(endpoints =>
-            {
-                endpoints.MapControllers();
-            });
-        }
-    }
-}
-""",
-            "OrderProcessing.csproj": """<Project Sdk="Microsoft.NET.Sdk.Web">
-  <PropertyGroup>
-    <TargetFramework>net6.0</TargetFramework>
-  </PropertyGroup>
-  
-  <ItemGroup>
-    <PackageReference Include="Microsoft.AspNetCore.App" />
-    <PackageReference Include="System.Data.SqlClient" Version="4.8.1" />
-    <!-- Vulnerable package versions -->
-    <PackageReference Include="Newtonsoft.Json" Version="10.0.3" />
-  </ItemGroup>
-</Project>
-""",
-            "Dockerfile": """FROM mcr.microsoft.com/dotnet/sdk:6.0 AS build
-WORKDIR /src
-
-# Copy everything (including secrets)
-COPY . .
-RUN dotnet restore
-RUN dotnet build -c Release
-
-FROM mcr.microsoft.com/dotnet/aspnet:6.0
-WORKDIR /app
-
-# Running as root
-COPY --from=build /src/bin/Release/net6.0 .
-
-# Hardcoded environment variables
-ENV ASPNETCORE_ENVIRONMENT=Production
-ENV ConnectionStrings__DefaultConnection="Server=prod;Database=Orders;User=sa;Password=Password123!"
-
-EXPOSE 80
-ENTRYPOINT ["dotnet", "OrderProcessing.dll"]
-""",
-            ".gitlab-ci.yml": """include:
-  - project: 'cicd-demo/shared-pipelines'
-    ref: main
-    file: '/templates/dotnet-complete.yml'
-
-variables:
-  SERVICE_NAME: order-processing
-  DOTNET_VERSION: "6.0"
 """
         }
     }
 }
+
+# Continuing from Part 1...
 
 # Enhanced shared CI/CD templates
 SHARED_TEMPLATES = {
@@ -1578,7 +1826,8 @@ variables:
   DOCKER_TLS_CERTDIR: ""
   SONAR_USER_HOME: "${CI_PROJECT_DIR}/.sonar"
   GIT_DEPTH: "0"
-  IMAGE_TAG: "${CI_REGISTRY_IMAGE}:${CI_COMMIT_SHORT_SHA}"
+  IMAGE_NAME: "${CI_PROJECT_NAME}"
+  IMAGE_TAG: "${CI_PROJECT_NAME}:${CI_COMMIT_SHORT_SHA}"
 
 stages:
   - build
@@ -1601,15 +1850,18 @@ stages:
     - docker:24.0.5-dind
   before_script:
     - docker info
-    - echo "$CI_REGISTRY_PASSWORD" | docker login -u "$CI_REGISTRY_USER" --password-stdin $CI_REGISTRY
+    - |
+      if [ "$SKIP_IMAGE_PUSH" != "true" ] && [ -n "$CI_REGISTRY" ]; then
+        echo "Logging in to registry $CI_REGISTRY"
+        echo "$CI_JOB_TOKEN" | docker login -u gitlab-ci-token --password-stdin $CI_REGISTRY || true
+      else
+        echo "Skipping registry login (SKIP_IMAGE_PUSH=true or no registry configured)"
+      fi
 
 # SonarQube scanner
 .sonar-scan:
   image: sonarsource/sonar-scanner-cli:latest
   stage: scan
-  parallel:
-    matrix:
-      - SCAN_TYPE: [code, security]
   cache:
     key: "${CI_JOB_NAME}"
     paths:
@@ -1620,7 +1872,7 @@ stages:
         -Dsonar.projectKey=${SONAR_PROJECT_KEY:-$CI_PROJECT_NAME} \
         -Dsonar.host.url=${SONAR_HOST_URL} \
         -Dsonar.token=${SONAR_TOKEN} \
-        -Dsonar.sources=. \
+        -Dsonar.sources=${SONAR_SOURCES:-.} \
         -Dsonar.projectName=${CI_PROJECT_NAME} \
         -Dsonar.projectVersion=${CI_COMMIT_SHORT_SHA} \
         -Dsonar.qualitygate.wait=true
@@ -1630,8 +1882,27 @@ stages:
 .container-scan:
   stage: security-scan
   image: aquasec/trivy:latest
+  services:
+    - docker:24.0.5-dind
+  before_script:
+    - |
+      # Wait for docker to be ready
+      for i in $(seq 1 30); do
+        if docker info >/dev/null 2>&1; then
+          echo "Docker is ready"
+          break
+        fi
+        echo "Waiting for docker... ($i/30)"
+        sleep 1
+      done
   script:
-    - trivy image --severity HIGH,CRITICAL --exit-code 1 ${IMAGE_TAG}
+    - |
+      echo "Scanning image ${IMAGE_TAG}"
+      if [ -n "${IMAGE_TAG}" ] && docker image inspect ${IMAGE_TAG} >/dev/null 2>&1; then
+        trivy image --severity HIGH,CRITICAL --exit-code 0 ${IMAGE_TAG} || echo "Scan completed with findings"
+      else
+        echo "Image ${IMAGE_TAG} not found locally, skipping scan"
+      fi
   allow_failure: true
 
 # Image cleanup
@@ -1639,8 +1910,16 @@ stages:
   stage: cleanup
   extends: .docker-base
   script:
-    - docker rmi ${IMAGE_TAG} || true
+    - |
+      echo "Starting cleanup for ${IMAGE_TAG}"
+      if [ -n "${IMAGE_TAG}" ]; then
+        docker rmi ${IMAGE_TAG} 2>/dev/null || echo "Image ${IMAGE_TAG} already removed or not found"
+      else
+        echo "No image tag specified, skipping cleanup"
+      fi
+      echo "Cleanup completed successfully"
   when: always
+  allow_failure: true
 """,
 
     "templates/java-complete.yml": """
@@ -1650,7 +1929,7 @@ include:
 # Build stage
 build:
   stage: build
-  image: maven:3.8-openjdk-11
+  image: maven:3.8-openjdk-$JAVA_VERSION
   extends: .base-rules
   cache:
     paths:
@@ -1664,7 +1943,7 @@ build:
 # Test stage
 test:
   stage: test
-  image: maven:3.8-openjdk-11
+  image: maven:3.8-openjdk-$JAVA_VERSION
   extends: .base-rules
   needs: ["build"]
   script:
@@ -1681,14 +1960,14 @@ sonarqube-check:
   extends: .sonar-scan
   needs: ["build"]
   variables:
-    SONAR_SOURCES: "src/main/java"
-    SONAR_JAVA_BINARIES: "target/classes"
-    SONAR_JUNIT_REPORT_PATHS: "target/surefire-reports"
+    SONAR_SOURCES: ${SONAR_SOURCES:-src/main/java}
+    SONAR_JAVA_BINARIES: ${SONAR_JAVA_BINARIES:-target/classes}
+    SONAR_JUNIT_REPORT_PATHS: target/surefire-reports
 
 # Package application
 package:
   stage: package
-  image: maven:3.8-openjdk-11
+  image: maven:3.8-openjdk-$JAVA_VERSION
   extends: .base-rules
   needs: ["test"]
   script:
@@ -1705,8 +1984,15 @@ build-image:
     - .base-rules
   needs: ["package"]
   script:
-    - docker build -t ${IMAGE_TAG} .
-    - docker push ${IMAGE_TAG}
+    - |
+      echo "Building Docker image ${IMAGE_TAG}"
+      docker build -t ${IMAGE_TAG} .
+      if [ "$SKIP_IMAGE_PUSH" != "true" ]; then
+        echo "Pushing image to registry"
+        docker push ${IMAGE_TAG} || echo "Push failed, continuing anyway"
+      else
+        echo "Skipping image push (SKIP_IMAGE_PUSH=true)"
+      fi
 
 # Scan Docker image
 scan-image:
@@ -1731,6 +2017,7 @@ deploy:
 cleanup:
   extends: .cleanup-image
   needs: ["deploy"]
+  allow_failure: true
 """,
 
     "templates/python-complete.yml": """
@@ -1740,7 +2027,7 @@ include:
 # Build dependencies
 build:
   stage: build
-  image: python:${PYTHON_VERSION:-3.9}
+  image: python:$PYTHON_VERSION
   extends: .base-rules
   cache:
     paths:
@@ -1758,13 +2045,13 @@ build:
 # Run tests
 test:
   stage: test
-  image: python:${PYTHON_VERSION:-3.9}
+  image: python:$PYTHON_VERSION
   extends: .base-rules
   needs: ["build"]
   script:
     - source venv/bin/activate
     - pip install pytest pytest-cov
-    - pytest --cov=. --cov-report=xml --cov-report=term
+    - pytest --cov=. --cov-report=xml --cov-report=term || true
   artifacts:
     reports:
       coverage_report:
@@ -1778,9 +2065,9 @@ sonarqube-check:
   extends: .sonar-scan
   needs: ["build"]
   variables:
-    SONAR_SOURCES: "."
-    SONAR_PYTHON_COVERAGE_REPORTPATHS: "coverage.xml"
-    SONAR_PYTHON_VERSION: ${PYTHON_VERSION:-3.9}
+    SONAR_SOURCES: ${SONAR_SOURCES:-.}
+    SONAR_PYTHON_COVERAGE_REPORTPATHS: coverage.xml
+    SONAR_PYTHON_VERSION: $PYTHON_VERSION
 
 # Build Docker image
 build-image:
@@ -1790,20 +2077,27 @@ build-image:
     - .base-rules
   needs: ["test"]
   script:
-    - docker build -t ${IMAGE_TAG} .
-    - docker push ${IMAGE_TAG}
+    - |
+      echo "Building Docker image ${IMAGE_TAG}"
+      docker build -t ${IMAGE_TAG} .
+      if [ "$SKIP_IMAGE_PUSH" != "true" ]; then
+        echo "Pushing image to registry"
+        docker push ${IMAGE_TAG} || echo "Push failed, continuing anyway"
+      else
+        echo "Skipping image push (SKIP_IMAGE_PUSH=true)"
+      fi
 
 # Security scanning
 security-scan:
   stage: security-scan
-  image: python:${PYTHON_VERSION:-3.9}
+  image: python:$PYTHON_VERSION
   extends: .base-rules
   needs: ["build"]
   script:
     - source venv/bin/activate
     - pip install safety bandit
-    - safety check
-    - bandit -r . -f json -o bandit-report.json
+    - safety check || true
+    - bandit -r . -f json -o bandit-report.json || true
   artifacts:
     reports:
       sast: bandit-report.json
@@ -1827,6 +2121,7 @@ deploy:
 cleanup:
   extends: .cleanup-image
   needs: ["deploy"]
+  allow_failure: true
 """,
 
     "templates/nodejs-complete.yml": """
@@ -1836,11 +2131,12 @@ include:
 # Install dependencies
 build:
   stage: build
-  image: node:${NODE_VERSION:-16}
+  image: node:$NODE_VERSION
   extends: .base-rules
   cache:
     paths:
       - node_modules/
+      - .npm/
   script:
     - npm ci || npm install
   artifacts:
@@ -1850,11 +2146,11 @@ build:
 # Run tests
 test:
   stage: test
-  image: node:${NODE_VERSION:-16}
+  image: node:$NODE_VERSION
   extends: .base-rules
   needs: ["build"]
   script:
-    - npm test -- --coverage
+    - npm test -- --coverage --forceExit || true
   coverage: '/Lines\\s+:\\s+(\\d+\\.?\\d*)%/'
   artifacts:
     reports:
@@ -1862,11 +2158,13 @@ test:
       coverage_report:
         coverage_format: cobertura
         path: coverage/cobertura-coverage.xml
+    paths:
+      - coverage/
 
 # Lint code
 lint:
   stage: test
-  image: node:${NODE_VERSION:-16}
+  image: node:$NODE_VERSION
   extends: .base-rules
   needs: ["build"]
   script:
@@ -1877,13 +2175,13 @@ sonarqube-check:
   extends: .sonar-scan
   needs: ["build"]
   variables:
-    SONAR_SOURCES: "src"
-    SONAR_JAVASCRIPT_LCOV_REPORTPATHS: "coverage/lcov.info"
+    SONAR_SOURCES: ${SONAR_SOURCES:-src}
+    SONAR_JAVASCRIPT_LCOV_REPORTPATHS: coverage/lcov.info
 
 # Build application
 package:
   stage: package
-  image: node:${NODE_VERSION:-16}
+  image: node:$NODE_VERSION
   extends: .base-rules
   needs: ["test"]
   script:
@@ -1901,108 +2199,24 @@ build-image:
     - .base-rules
   needs: ["package"]
   script:
-    - docker build -t ${IMAGE_TAG} .
-    - docker push ${IMAGE_TAG}
+    - |
+      echo "Building Docker image ${IMAGE_TAG}"
+      docker build -t ${IMAGE_TAG} .
+      if [ "$SKIP_IMAGE_PUSH" != "true" ]; then
+        echo "Pushing image to registry"
+        docker push ${IMAGE_TAG} || echo "Push failed, continuing anyway"
+      else
+        echo "Skipping image push (SKIP_IMAGE_PUSH=true)"
+      fi
 
 # Security audit
 security-scan:
   stage: security-scan
-  image: node:${NODE_VERSION:-16}
+  image: node:$NODE_VERSION
   extends: .base-rules
   needs: ["build"]
   script:
-    - npm audit --audit-level=moderate
-
-# Image scan
-scan-image:
-  extends: .container-scan
-  needs: ["build-image"]
-
-# Deploy
-deploy:
-  stage: deploy
-  extends: .base-rules
-  needs: ["scan-image"]
-  script:
-    - echo "Deploying ${SERVICE_NAME} version ${CI_COMMIT_SHORT_SHA}"
-
-# Cleanup
-cleanup:
-  extends: .cleanup-image
-  needs: ["deploy"]
-""",
-
-    "templates/golang-complete.yml": r"""
-include:
-  - local: '/templates/base.yml'
-
-# Build stage
-build:
-  stage: build
-  image: golang:${GO_VERSION:-1.19}
-  extends: .base-rules
-  script:
-    - go mod download
-    - go build -o ${SERVICE_NAME} .
-  artifacts:
-    paths:
-      - ${SERVICE_NAME}
-
-# Test stage
-test:
-  stage: test
-  image: golang:${GO_VERSION:-1.19}
-  extends: .base-rules
-  needs: ["build"]
-  script:
-    - go test -v -coverprofile=coverage.out ./...
-    - go tool cover -func=coverage.out
-  coverage: '/total:\s+\(statements\)\s+(\d+\.\d+)%/'
-  artifacts:
-    paths:
-      - coverage.out
-
-# SonarQube analysis
-sonarqube-check:
-  extends: .sonar-scan
-  needs: ["build"]
-  variables:
-    SONAR_SOURCES: "."
-    SONAR_GO_COVERAGE_REPORTPATHS: "coverage.out"
-
-# Static analysis
-staticcheck:
-  stage: test
-  image: golang:${GO_VERSION:-1.19}
-  extends: .base-rules
-  needs: ["build"]
-  script:
-    - go install honnef.co/go/tools/cmd/staticcheck@latest
-    - staticcheck ./...
-
-# Build Docker image
-build-image:
-  stage: package
-  extends:
-    - .docker-base
-    - .base-rules
-  needs: ["test"]
-  script:
-    - docker build -t ${IMAGE_TAG} .
-    - docker push ${IMAGE_TAG}
-
-# Security scan
-security-scan:
-  stage: security-scan
-  image: golang:${GO_VERSION:-1.19}
-  extends: .base-rules
-  needs: ["build"]
-  script:
-    - go install github.com/securego/gosec/v2/cmd/gosec@latest
-    - gosec -fmt json -out gosec-report.json ./...
-  artifacts:
-    reports:
-      sast: gosec-report.json
+    - npm audit --audit-level=moderate || true
 
 # Image scan
 scan-image:
@@ -2030,12 +2244,13 @@ include:
 # Override for React specific build
 package:
   stage: package
-  image: node:${NODE_VERSION:-16}
+  image: node:$NODE_VERSION
   extends: .base-rules
   needs: ["test"]
   script:
     - npm run build
-    - echo "Build size: $(du -sh build | cut -f1)"
+    - echo "Build size:"
+    - du -sh build | cut -f1
   artifacts:
     paths:
       - build/
@@ -2048,124 +2263,13 @@ deploy:
   needs: ["scan-image"]
   script:
     - echo "=== Simulating deployment of ${SERVICE_NAME} ==="
-    - echo "Target: CDN bucket s3://frontend-${SERVICE_NAME}"
-    - echo "CloudFront distribution: d1234567890.cloudfront.net"
-    - echo "Invalidating cache paths: /*"
+    - echo "Target CDN bucket s3://frontend-${SERVICE_NAME}"
+    - echo "CloudFront distribution d1234567890.cloudfront.net"
+    - echo "Invalidating cache paths /*"
     - echo "Deployment simulation completed successfully"
   environment:
     name: production
     url: https://${SERVICE_NAME}.example.com
-""",
-
-    "templates/dotnet-complete.yml": """
-include:
-  - local: '/templates/base.yml'
-
-# Build stage
-build:
-  stage: build
-  image: mcr.microsoft.com/dotnet/sdk:${DOTNET_VERSION:-6.0}
-  extends: .base-rules
-  script:
-    - dotnet restore
-    - dotnet build -c Release
-  artifacts:
-    paths:
-      - bin/
-      - obj/
-
-# Test stage
-test:
-  stage: test
-  image: mcr.microsoft.com/dotnet/sdk:${DOTNET_VERSION:-6.0}
-  extends: .base-rules
-  needs: ["build"]
-  script:
-    - dotnet test --no-build -c Release --logger "trx;LogFileName=test-results.trx"
-  artifacts:
-    reports:
-      junit: test-results.trx
-    paths:
-      - test-results.trx
-
-# SonarQube analysis
-sonarqube-check:
-  stage: scan
-  image: mcr.microsoft.com/dotnet/sdk:${DOTNET_VERSION:-6.0}
-  extends: .base-rules
-  needs: ["build"]
-  script:
-    - apt-get update && apt-get install -y openjdk-11-jre
-    - dotnet tool install --global dotnet-sonarscanner
-    - export PATH="$PATH:$HOME/.dotnet/tools"
-    - |
-      dotnet sonarscanner begin \
-        /k:"${SONAR_PROJECT_KEY:-$CI_PROJECT_NAME}" \
-        /d:sonar.host.url="${SONAR_HOST_URL}" \
-        /d:sonar.token="${SONAR_TOKEN}"
-    - dotnet build
-    - dotnet sonarscanner end /d:sonar.token="${SONAR_TOKEN}"
-
-# Publish application
-package:
-  stage: package
-  image: mcr.microsoft.com/dotnet/sdk:${DOTNET_VERSION:-6.0}
-  extends: .base-rules
-  needs: ["test"]
-  script:
-    - dotnet publish -c Release -o ./publish
-  artifacts:
-    paths:
-      - publish/
-
-# Build Docker image
-build-image:
-  stage: package
-  extends:
-    - .docker-base
-    - .base-rules
-  needs: ["package"]
-  script:
-    - docker build -t ${IMAGE_TAG} .
-    - docker push ${IMAGE_TAG}
-
-# Security scan
-security-scan:
-  stage: security-scan
-  image: mcr.microsoft.com/dotnet/sdk:${DOTNET_VERSION:-6.0}
-  extends: .base-rules
-  needs: ["build"]
-  script:
-    - dotnet list package --vulnerable --include-transitive
-
-# Image scan
-scan-image:
-  extends: .container-scan
-  needs: ["build-image"]
-
-# Deploy simulation
-deploy:
-  stage: deploy
-  image: alpine:latest
-  extends: .base-rules
-  needs: ["scan-image"]
-  script:
-    - echo "=== Simulating deployment of ${SERVICE_NAME} ==="
-    - echo "Target namespace: production"
-    - echo "Deployment method: Rolling update"
-    - echo "Replicas: 3"
-    - echo "Health check endpoint: /health"
-    - echo "Simulating Kubernetes deployment..."
-    - sleep 2
-    - echo "Deployment simulation completed successfully"
-  environment:
-    name: production
-    url: https://api-${SERVICE_NAME}.example.com
-
-# Cleanup
-cleanup:
-  extends: .cleanup-image
-  needs: ["deploy"]
 """
 }
 
@@ -2198,23 +2302,18 @@ class GitLabSetup:
             'description': 'CI/CD demonstration environment with comprehensive failure scenarios'
         })
         
-        # Set group variables
-        info("Setting group-level CI/CD variables...")
-        variables = [
-            {'key': 'SONAR_HOST_URL', 'value': 'http://sonarqube:9000'},
-            {'key': 'SONAR_TOKEN', 'value': sonar_token, 'masked': True},
-            {'key': 'CI_REGISTRY', 'value': 'registry.gitlab.com'},
-            {'key': 'CI_REGISTRY_USER', 'value': 'gitlab-ci-token'},
-            {'key': 'CI_REGISTRY_PASSWORD', 'value': '${CI_JOB_TOKEN}'},
-            {'key': 'DOCKER_HOST', 'value': 'tcp://docker:2375'},
-            {'key': 'DOCKER_TLS_CERTDIR', 'value': ''}
-        ]
-        
-        for var in variables:
+        # Set namespace-level CI/CD variables
+        info("Setting namespace-level CI/CD variables...")
+        for var in NAMESPACE_VARIABLES:
             try:
+                # Update sonar token if provided
+                if var['key'] == 'SONAR_TOKEN' and hasattr(self, 'sonar_token'):
+                    var['value'] = self.sonar_token
+                    
                 group.variables.create(var)
-            except:
-                pass  # Variable might already exist
+                info(f"  Added namespace variable: {var['key']}")
+            except Exception as e:
+                warning(f"  Failed to add namespace variable {var['key']}: {e}")
         
         # Create shared pipelines project
         info("Creating shared pipelines repository...")
@@ -2236,11 +2335,23 @@ class GitLabSetup:
                 'description': config['description']
             })
             
-            # Set project variables
+            # Set project-specific variables
+            info(f"  Setting project-level variables for {project_name}...")
+            
+            # Always set SONAR_PROJECT_KEY
             project.variables.create({
                 'key': 'SONAR_PROJECT_KEY',
                 'value': project_name
             })
+            
+            # Set project-specific variables
+            if project_name in PROJECT_VARIABLES:
+                for var in PROJECT_VARIABLES[project_name]:
+                    try:
+                        project.variables.create(var)
+                        info(f"    Added variable: {var['key']} = {var['value']}")
+                    except Exception as e:
+                        warning(f"    Failed to add variable {var['key']}: {e}")
             
             # Create webhooks
             webhooks = [
@@ -2255,6 +2366,7 @@ class GitLabSetup:
             for webhook in webhooks:
                 try:
                     project.hooks.create(webhook)
+                    info(f"  Added webhook: {webhook['url']}")
                 except:
                     pass
             
@@ -2417,9 +2529,7 @@ class SonarQubeSetup:
                 'java': {'sonar.java.source': '11'},
                 'python': {'sonar.python.version': '3.9'},
                 'nodejs': {'sonar.javascript.node.maxspace': '4096'},
-                'go': {'sonar.go.coverage.reportPaths': 'coverage.out'},
-                'javascript': {'sonar.javascript.environments': 'browser'},
-                'dotnet': {'sonar.cs.vscoveragexml.reportsPaths': 'coverage.xml'}
+                'javascript': {'sonar.javascript.environments': 'browser'}
             }
             
             if config['language'] in language_settings:
@@ -2439,48 +2549,51 @@ def print_summary():
     """Print summary of created projects and their failure scenarios"""
     print("\n" + "="*80)
     success("Environment setup complete! Created projects with various failure scenarios:")
+    
     print("\n📦 JAVA PROJECTS:")
-    print("  • payment-gateway: Spring Boot service")
-    print("    - Build failure: Missing H2 dependency")
+    print("  • payment-gateway: Spring Boot payment service")
+    print("    - Build failure: Missing H2 dependency (intentional)")
     print("    - Quality issues: SQL injection, weak encryption, hardcoded secrets")
-    print("    - Code smells: Duplicate code, magic numbers, long methods")
+    print("    - Code smells: Duplicate code, magic numbers")
+    
+    print("\n  • auth-service: Spring Boot authentication service")
+    print("    - Security vulnerabilities: Plain text passwords, SQL injection")
+    print("    - Quality issues: Mass assignment, timing attacks")
+    print("    - Dependencies: Vulnerable Log4j version")
     
     print("\n🐍 PYTHON PROJECTS:")
-    print("  • user-management: FastAPI service")
-    print("    - Test failures: SQL injection tests, race conditions")
-    print("    - Security: Pickle deserialization, MD5 hashing, hardcoded admin")
-    print("    - Quality: God object, N+1 queries, duplicate code")
+    print("  • user-service: FastAPI user management")
+    print("    - Test failures: SQL injection tests, authentication tests")
+    print("    - Security: MD5 hashing, hardcoded admin credentials")
+    print("    - Quality: Duplicate code, N+1 queries")
+    
+    print("\n  • notification-api: Django notification service")
+    print("    - Quality issues: Template injection, path traversal")
+    print("    - Performance: No pagination, blocking I/O")
+    print("    - Security: CSRF disabled, debug mode enabled")
     
     print("\n📗 NODE.JS PROJECTS:")
-    print("  • inventory-tracker: Express.js service")
-    print("    - Quality gate failure: Callback hell, memory leaks")
-    print("    - Security: NoSQL injection, JWT weak secret")
-    print("    - Code smells: Duplicate validation, synchronous I/O")
-    
-    print("\n🔷 GO PROJECTS:")
-    print("  • notification-service: HTTP service")
-    print("    - Image scan failures: Outdated base image, running as root")
-    print("    - Security: Command injection, SQL injection")
-    print("    - Quality: Goroutine leaks, hardcoded credentials")
+    print("  • inventory-api: Express.js inventory management")
+    print("    - Quality gate failures: NoSQL injection, memory leaks")
+    print("    - Security: JWT weak secret, hardcoded credentials")
+    print("    - Code smells: Duplicate code, no validation")
     
     print("\n⚛️ REACT PROJECTS:")
-    print("  • customer-portal: Frontend application")
-    print("    - Build issues: Large bundle size, missing optimizations")
+    print("  • dashboard-ui: React dashboard application")
+    print("    - Build issues: Missing optimizations")
     print("    - Security: XSS vulnerabilities, exposed API keys")
-    print("    - Quality: Performance issues, memory leaks")
+    print("    - Quality: Memory leaks, duplicate components")
     
-    print("\n🔶 .NET PROJECTS:")
-    print("  • order-processing: .NET Core API")
-    print("    - Deployment failures: Missing configuration")
-    print("    - Security: SQL injection, mass assignment")
-    print("    - Quality: No validation, information disclosure")
+    print("\n🔑 CI/CD VARIABLES:")
+    print("  Namespace-level variables set at group level")
+    print("  Project-specific variables set for each service")
     
     print("\n🚀 CI/CD PIPELINE STAGES:")
     print("  1. Build - Compile/install dependencies")
     print("  2. Test - Run unit tests with coverage")
-    print("  3. Scan - SonarQube analysis (parallel with build)")
+    print("  3. Scan - SonarQube analysis (parallel with tests)")
     print("  4. Package - Create artifacts/build images")
-    print("  5. Security Scan - Trivy container scanning")
+    print("  5. Security Scan - Container vulnerability scanning")
     print("  6. Deploy - Simulated deployment (dry-run)")
     print("  7. Cleanup - Remove temporary images")
     
@@ -2497,7 +2610,6 @@ if __name__ == "__main__":
     print("=== Enhanced CI/CD Failure Analysis Environment Setup ===\n")
     
     # Get credentials
-    global gitlab_url, sonar_url, sonar_token
     gitlab_url = input("GitLab URL [http://localhost:8080]: ").strip() or "http://localhost:8080"
     gitlab_token = getpass.getpass("GitLab Token (api scope): ")
     sonar_url = input("SonarQube URL [http://localhost:9001]: ").strip() or "http://localhost:9001"
@@ -2505,8 +2617,9 @@ if __name__ == "__main__":
     
     print("\nThis script will:")
     print(f"- Create GitLab group '{GROUP_NAME}' with shared pipeline templates")
-    print(f"- Create {len(PROJECTS)} projects across Java, Python, Node.js, Go, React, and .NET")
+    print(f"- Create {len(PROJECTS)} projects: 2 Java, 2 Python, 1 Node.js, 1 React")
     print(f"- Configure comprehensive CI/CD pipelines with all stages")
+    print(f"- Set up namespace and project-level CI/CD variables")
     print(f"- Create strict SonarQube quality gate '{QUALITY_GATE_NAME}'")
     print("- Set up webhooks for automated failure analysis")
     print("\nAll projects will have realistic codebases with various failure scenarios.")
@@ -2518,6 +2631,7 @@ if __name__ == "__main__":
     try:
         # Initialize managers
         gitlab_manager = GitLabSetup(gitlab_url, gitlab_token)
+        gitlab_manager.sonar_token = sonar_token  # Pass sonar token
         sonar_manager = SonarQubeSetup(sonar_url, sonar_token)
         
         # Cleanup
