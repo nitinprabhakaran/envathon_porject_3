@@ -17,6 +17,46 @@ session_manager = SessionManager()
 pipeline_agent = PipelineAgent()
 quality_agent = QualityAgent()
 
+async def check_quality_gate_in_logs(webhook_data: Dict[str, Any]) -> bool:
+    """Check if pipeline failure is due to quality gate by analyzing logs"""
+    from tools.gitlab import get_job_logs
+    
+    failed_jobs = [job for job in webhook_data.get("builds", []) if job.get("status") == "failed"]
+    
+    if not failed_jobs:
+        return False
+    
+    project_id = str(webhook_data.get("project", {}).get("id"))
+    
+    # Check logs of failed jobs for quality gate failure indicators
+    for job in failed_jobs:
+        try:
+            job_id = str(job.get("id"))
+            logs = await get_job_logs(job_id, project_id)
+            
+            # Look for quality gate failure indicators in logs
+            quality_indicators = [
+                "Quality Gate failure",
+                "QUALITY GATE STATUS: FAILED",
+                "Quality gate failed",
+                "SonarQube analysis reported",
+                "Quality gate status: ERROR",
+                "failed because the quality gate",
+                "Your code fails the quality gate",
+                "SonarQube Quality Gate has failed"
+            ]
+            
+            logs_lower = logs.lower()
+            if any(indicator.lower() in logs_lower for indicator in quality_indicators):
+                log.info(f"Found quality gate failure in job {job.get('name')} logs")
+                return True
+                
+        except Exception as e:
+            log.warning(f"Could not fetch logs for job {job.get('id')}: {e}")
+            continue
+    
+    return False
+
 @router.post("/gitlab")
 async def handle_gitlab_webhook(request: Request):
     """Handle GitLab pipeline failure webhook"""
@@ -31,18 +71,81 @@ async def handle_gitlab_webhook(request: Request):
         if data.get("object_attributes", {}).get("status") != "failed":
             return {"status": "ignored", "reason": "Not a failure event"}
         
-        # Check if this is a SonarQube quality gate failure
-        failed_jobs = [job for job in data.get("builds", []) if job.get("status") == "failed"]
-        if failed_jobs:
-            # Check if the only failed job is sonarqube-check
-            sonar_jobs = [job for job in failed_jobs if "sonar" in job.get("name", "").lower()]
-            if len(failed_jobs) == len(sonar_jobs) and len(sonar_jobs) > 0:
-                log.info("Pipeline failed due to SonarQube quality gate - ignoring GitLab webhook")
-                return {
-                    "status": "ignored", 
-                    "reason": "SonarQube quality gate failure - will be handled by SonarQube webhook"
-                }
+        # Check if this is a quality gate failure by analyzing logs
+        is_quality_failure = await check_quality_gate_in_logs(data)
+        
+        if is_quality_failure:
+            # Extract project info
+            project = data.get("project", {})
+            pipeline = data.get("object_attributes", {})
+            
+            # Try to get SonarQube project key
+            sonarqube_key = project.get("name")  # Default to project name
+            gitlab_project_id = str(project.get("id"))
+            
+            # Get the failed job to extract more details
+            failed_jobs = [job for job in data.get("builds", []) if job.get("status") == "failed"]
+            failed_job = failed_jobs[0] if failed_jobs else {}
+            
+            metadata = {
+                "sonarqube_key": sonarqube_key,
+                "project_name": project.get("name"),
+                "quality_gate_status": "ERROR",
+                "branch": pipeline.get("ref", "main"),
+                "webhook_data": data,
+                "gitlab_project_id": gitlab_project_id,
+                "pipeline_id": str(pipeline.get("id")),
+                "pipeline_url": pipeline.get("url"),
+                "job_name": failed_job.get("name", "sonarqube-check"),
+                "failed_stage": failed_job.get("stage", "scan")
+            }
+            
+            # Check if there's already an active quality session for this project
+            existing_sessions = await session_manager.get_active_sessions()
+            for session in existing_sessions:
+                if (session.get("session_type") == "quality" and 
+                    session.get("project_id") == gitlab_project_id and
+                    session.get("status") == "active"):
+                    log.info(f"Found existing quality session {session['id']} for project {gitlab_project_id}, ignoring duplicate webhook")
+                    return {
+                        "status": "ignored",
+                        "reason": "Active quality session already exists",
+                        "session_id": session['id']
+                    }
+            
+            # Create quality session instead of pipeline session
+            session_id = str(uuid.uuid4())
+            session = await session_manager.create_session(
+                session_id=session_id,
+                session_type="quality",
+                project_id=gitlab_project_id,
+                metadata=metadata
+            )
+            
+            # Add initial message
+            await session_manager.add_message(
+                session_id,
+                "system",
+                f"Quality gate failure detected for {metadata['project_name']} in pipeline #{metadata['pipeline_id']}"
+            )
+            
+            # Start quality analysis in background
+            asyncio.create_task(analyze_quality_from_pipeline(
+                session_id,
+                sonarqube_key,
+                gitlab_project_id,
+                data
+            ))
+            
+            log.info(f"Created quality session {session_id} for pipeline quality gate failure")
+            return {
+                "status": "analyzing",
+                "session_id": session_id,
+                "session_type": "quality",
+                "message": "Quality gate failure analysis started"
+            }
 
+        # Regular pipeline failure handling
         # Extract metadata
         project = data.get("project", {})
         pipeline = data.get("object_attributes", {})
@@ -92,6 +195,7 @@ async def handle_gitlab_webhook(request: Request):
         return {
             "status": "analyzing",
             "session_id": session_id,
+            "session_type": "pipeline",
             "message": "Pipeline analysis started"
         }
         
@@ -115,13 +219,24 @@ async def handle_sonarqube_webhook(request: Request):
         project = data.get("project", {})
         
         # Map SonarQube project to GitLab
-        # In production, you'd have a mapping table or naming convention
-        # For demo, use the project key as-is
         gitlab_project_id = await get_gitlab_project_id(project.get("key"))
         
         if not gitlab_project_id:
             log.error(f"Could not map SonarQube project {project.get('key')} to GitLab")
             raise HTTPException(status_code=404, detail="GitLab project not found")
+        
+        # Check if there's already an active quality session for this project
+        existing_sessions = await session_manager.get_active_sessions()
+        for session in existing_sessions:
+            if (session.get("session_type") == "quality" and 
+                session.get("project_id") == gitlab_project_id and
+                session.get("status") == "active"):
+                log.info(f"Found existing quality session {session['id']} for project {gitlab_project_id}")
+                return {
+                    "status": "existing",
+                    "session_id": session['id'],
+                    "message": "Using existing quality session"
+                }
         
         metadata = {
             "sonarqube_key": project.get("key"),
@@ -196,6 +311,116 @@ async def analyze_pipeline_failure(session_id: str, project_id: str, pipeline_id
             f"Analysis failed: {str(e)}"
         )
 
+async def analyze_quality_from_pipeline(session_id: str, project_key: str, gitlab_project_id: str, webhook_data: Dict):
+    """Analyze quality issues when detected from pipeline failure"""
+    try:
+        log.info(f"Starting quality analysis from pipeline failure for session {session_id}")
+        
+        # First, try to get actual quality data from SonarQube
+        from tools.sonarqube import get_project_issues, get_project_metrics, get_project_quality_gate_status
+        
+        # Get quality gate status
+        quality_status = await get_project_quality_gate_status(project_key)
+        
+        # Check if there are actual quality issues or just no analysis
+        project_status = quality_status.get("projectStatus", {})
+        if project_status.get("status") == "NONE" or not project_status:
+            log.warning(f"No quality gate configured or no analysis for {project_key}")
+            
+            # This is not a quality issue - it's a configuration/analysis issue
+            # Update to pipeline failure
+            await session_manager.update_session_metadata(
+                session_id,
+                {"session_type": "pipeline"}
+            )
+            
+            await session_manager.add_message(
+                session_id,
+                "assistant",
+                f"## ⚠️ SonarQube Analysis Issue\n\n"
+                f"The pipeline failed at the SonarQube check stage, but this is not due to quality gate failure.\n\n"
+                f"**Issue**: No SonarQube analysis results found for project '{project_key}'\n\n"
+                f"**Possible reasons:**\n"
+                f"1. SonarQube analysis was not performed\n"
+                f"2. Project key mismatch between CI configuration and SonarQube\n"
+                f"3. Authentication/permission issues\n"
+                f"4. SonarQube server connectivity problems\n\n"
+                f"**Recommended actions:**\n"
+                f"1. Check the sonarqube-check job logs for specific errors\n"
+                f"2. Verify the project key in your `sonar-project.properties` or CI configuration\n"
+                f"3. Ensure SonarQube authentication token is valid\n"
+                f"4. Verify the project exists in SonarQube\n\n"
+                f"This appears to be a **pipeline configuration issue**, not a code quality issue."
+            )
+            return
+        
+        # Get issue counts by type
+        bugs = await get_project_issues(project_key, types="BUG", limit=500)
+        vulnerabilities = await get_project_issues(project_key, types="VULNERABILITY", limit=500)
+        code_smells = await get_project_issues(project_key, types="CODE_SMELL", limit=500)
+        
+        # Get project metrics
+        try:
+            metrics = await get_project_metrics(project_key)
+        except Exception as e:
+            log.warning(f"Could not fetch metrics for {project_key}: {e}")
+            metrics = {}
+        
+        # Calculate counts
+        total_issues = len(bugs) + len(vulnerabilities) + len(code_smells)
+        critical_count = sum(1 for b in bugs if b.get("severity") in ["CRITICAL", "BLOCKER"])
+        critical_count += sum(1 for v in vulnerabilities if v.get("severity") in ["CRITICAL", "BLOCKER"])
+        major_count = sum(1 for b in bugs if b.get("severity") == "MAJOR")
+        major_count += sum(1 for v in vulnerabilities if v.get("severity") == "MAJOR")
+        
+        # Update session with quality metrics
+        await session_manager.update_quality_metrics(
+            session_id,
+            {
+                "total_issues": total_issues,
+                "bug_count": len(bugs),
+                "vulnerability_count": len(vulnerabilities),
+                "code_smell_count": len(code_smells),
+                "critical_issues": critical_count,
+                "major_issues": major_count,
+                "coverage": metrics.get("coverage", "0"),
+                "duplicated_lines_density": metrics.get("duplicated_lines_density", "0"),
+                "reliability_rating": metrics.get("reliability_rating", "E"),
+                "security_rating": metrics.get("security_rating", "E"),
+                "maintainability_rating": metrics.get("maintainability_rating", "E")
+            }
+        )
+        
+        # Prepare enhanced webhook data with quality information
+        enhanced_webhook_data = {
+            **webhook_data,
+            "qualityGate": project_status
+        }
+        
+        # Run quality analysis
+        analysis = await quality_agent.analyze_quality_issues(
+            session_id, project_key, gitlab_project_id, enhanced_webhook_data
+        )
+        
+        # Extract text if analysis is a complex object
+        if isinstance(analysis, dict) and "content" in analysis:
+            content = analysis["content"]
+            if isinstance(content, list) and len(content) > 0:
+                analysis = content[0].get("text", str(analysis))
+        
+        # Store analysis in conversation
+        await session_manager.add_message(session_id, "assistant", analysis)
+        
+        log.info(f"Quality analysis complete for session {session_id}")
+        
+    except Exception as e:
+        log.error(f"Quality analysis failed: {e}", exc_info=True)
+        await session_manager.add_message(
+            session_id,
+            "assistant",
+            f"Quality analysis failed: {str(e)}"
+        )
+
 async def analyze_quality_issues(session_id: str, project_key: str, gitlab_project_id: str, webhook_data: Dict):
     """Background task to analyze quality issues"""
     try:
@@ -210,7 +435,11 @@ async def analyze_quality_issues(session_id: str, project_key: str, gitlab_proje
         code_smells = await get_project_issues(project_key, types="CODE_SMELL", limit=500)
         
         # Get project metrics
-        metrics = await get_project_metrics(project_key)
+        try:
+            metrics = await get_project_metrics(project_key)
+        except Exception as e:
+            log.warning(f"Could not fetch metrics for {project_key}: {e}")
+            metrics = {}
         
         # Calculate counts
         total_issues = len(bugs) + len(vulnerabilities) + len(code_smells)
@@ -262,13 +491,7 @@ async def analyze_quality_issues(session_id: str, project_key: str, gitlab_proje
         )
 
 async def get_gitlab_project_id(sonarqube_key: str) -> Optional[str]:
-    """Map SonarQube project key to GitLab project ID
-    
-    Strategy:
-    1. Try exact match with project path
-    2. Try match with project name
-    3. Search in group if key contains group prefix
-    """
+    """Map SonarQube project key to GitLab project ID"""
     from tools.gitlab import get_gitlab_client
     
     log.info(f"Looking up GitLab project for SonarQube key: {sonarqube_key}")
@@ -276,9 +499,7 @@ async def get_gitlab_project_id(sonarqube_key: str) -> Optional[str]:
     async with await get_gitlab_client() as client:
         try:
             # Strategy 1: Direct lookup by path (most common case)
-            # SonarQube keys often match GitLab project paths
             if "/" in sonarqube_key:
-                # It's a full path like "group/project"
                 encoded_path = sonarqube_key.replace("/", "%2F")
                 try:
                     response = await client.get(f"/projects/{encoded_path}")
@@ -317,7 +538,6 @@ async def get_gitlab_project_id(sonarqube_key: str) -> Optional[str]:
                     return project_id
             
             # Strategy 3: If key contains underscore, try without group prefix
-            # e.g., "envathon_payment-service" -> "payment-service"
             if "_" in sonarqube_key:
                 parts = sonarqube_key.split("_", 1)
                 if len(parts) == 2:

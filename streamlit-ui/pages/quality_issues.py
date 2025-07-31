@@ -46,6 +46,15 @@ with col1:
         sessions = asyncio.run(fetch_sessions())
         quality_sessions = [s for s in sessions if s.get("session_type") == "quality"]
         
+        # Remove duplicates based on project_name (keep latest)
+        seen_projects = {}
+        for session in quality_sessions:
+            project_name = session.get("project_name", "Unknown")
+            if project_name not in seen_projects or session.get("created_at", "") > seen_projects[project_name].get("created_at", ""):
+                seen_projects[project_name] = session
+        
+        quality_sessions = list(seen_projects.values())
+        
         if not quality_sessions:
             st.info("No active quality sessions")
         else:

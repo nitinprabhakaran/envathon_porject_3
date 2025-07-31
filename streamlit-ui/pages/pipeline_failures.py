@@ -100,8 +100,12 @@ with col1:
                 
                 with st.expander(f"{icon} {branch} ({len(sessions)} issues)", expanded=active_count > 0):
                     for session in sessions:
+                        # Get job name or use fallback
+                        job_name = session.get('job_name') or session.get('failed_stage') or 'Unknown Job'
+                        button_label = f"{job_name}"
+                        
                         if st.button(
-                            f"{session.get('job_name', 'Unknown Job')}",
+                            button_label,
                             key=f"job_{session['id']}",
                             use_container_width=True
                         ):

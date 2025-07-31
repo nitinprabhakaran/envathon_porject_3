@@ -116,7 +116,7 @@ async def get_project_metrics(project_key: str) -> Dict[str, Any]:
                 "/measures/component",
                 params={
                     "component": project_key,
-                    "metricKeys": "bugs,vulnerabilities,code_smells,coverage,duplicated_lines_density,reliability_rating,security_rating,maintainability_rating,ncloc"
+                    "metricKeys": "bugs,vulnerabilities,code_smells,coverage,duplicated_lines_density,reliability_rating,security_rating,sqale_rating,ncloc"
                 }
             )
             response.raise_for_status()
@@ -126,7 +126,12 @@ async def get_project_metrics(project_key: str) -> Dict[str, Any]:
             # Convert to dict for easier access
             metrics = {}
             for measure in measures:
-                metrics[measure["metric"]] = measure.get("value", measure.get("periods", [{}])[0].get("value", "N/A"))
+                metric_key = measure["metric"]
+                # Map sqale_rating to maintainability_rating
+                if metric_key == "sqale_rating":
+                    metrics["maintainability_rating"] = measure.get("value", "E")
+                else:
+                    metrics[metric_key] = measure.get("value", measure.get("periods", [{}])[0].get("value", "N/A"))
             
             return metrics
             

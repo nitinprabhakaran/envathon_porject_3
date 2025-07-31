@@ -1,5 +1,5 @@
 """SonarQube quality analysis agent"""
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
 from datetime import datetime
 from strands import Agent
 import os
@@ -25,6 +25,12 @@ QUALITY_SYSTEM_PROMPT = """You are an expert code quality analyst specialized in
 
 ## Your Role
 Analyze quality issues and provide actionable fixes. When analyzing, always fetch the actual metrics first.
+
+## Important Rules for File Access
+- When you need to fix issues in specific files, ALWAYS attempt to retrieve the file content using get_file_content()
+- If get_file_content() returns an error or fails, acknowledge this and explain that you cannot provide specific fixes without access to the source code
+- NEVER create a merge request if you cannot access the files that need to be changed
+- When creating MRs, only include files that you have successfully retrieved and can actually modify
 
 ## Analysis Format
 Use this exact format for your responses:
@@ -58,25 +64,21 @@ Use this exact format for your responses:
 ### 💡 Proposed Fixes
 [For each file with issues:]
 **File**: `path/to/file.ext`
-```language
-[Show the fixed code]
-```
+- If file can be retrieved, show the fixed code
+- If file cannot be retrieved, explain the issue and suggested fix approach
 
 ### ⚡ Quick Actions
 - [ ] Fix critical bugs first
 - [ ] Address security vulnerabilities
 - [ ] Clean up code smells
-- [ ] Create MR: [Yes/No - only if you have all fixes ready]
+- [ ] Create MR: [Only "Yes" if you have actual file content and fixes ready]
 
-## Important Guidelines
-- Always use get_project_metrics() and get_project_issues() tools first
-- Show actual numbers, not placeholders
-- NEVER create a merge request without explicit user permission
-- Prioritize security vulnerabilities and bugs over code smells
-- Show complete fixed code, not just descriptions
+## Guidelines for MR Creation
+- Only create MR if you have successfully retrieved and modified at least one file
+- If asked to create MR but cannot access files, explain why and suggest manual fixes
+- Always verify file content exists before including in MR
 - Branch names should be: fix/sonarqube_[timestamp]
-- When creating MR, ALWAYS include the full MR URL in your response
-- Group similar issues together for batch fixing"""
+- When creating MR, ALWAYS include the full MR URL in your response"""
 
 class QualityAgent:
     def __init__(self):
@@ -122,6 +124,12 @@ class QualityAgent:
         """Analyze quality gate failure and return findings"""
         log.info(f"Analyzing quality issues for {project_key} in session {session_id}")
         
+        # Check if issues are already fetched
+        total_issues = 0
+        if 'quality_metrics' in webhook_data:
+            metrics = webhook_data['quality_metrics']
+            total_issues = metrics.get('total_issues', 0)
+        
         prompt = f"""Analyze this SonarQube quality gate failure:
 
 SonarQube Project Key: {project_key}
@@ -134,14 +142,16 @@ Failed Conditions:
 Use the available tools to:
 1. Get the project metrics using get_project_metrics()
 2. Get all project issues using get_project_issues() - separate calls for BUG, VULNERABILITY, CODE_SMELL
-3. For the top issues, get the file content from GitLab
-4. Analyze the issues and provide fixes
-5. Present findings in the specified format with ACTUAL metrics
+3. For the top issues, attempt to get the file content from GitLab using get_file_content()
+4. If you can retrieve files, analyze the issues and provide specific fixes
+5. If you cannot retrieve files, explain the issues conceptually and provide general guidance
+6. Present findings in the specified format with ACTUAL metrics
 
 Important: 
 - Use project_key="{project_key}" for SonarQube API calls
 - Use project_id="{gitlab_project_id}" for GitLab API calls
-- Do NOT create a merge request, only analyze and propose fixes"""
+- If files cannot be retrieved, acknowledge this and provide conceptual fixes
+- Do NOT create a merge request unless you have actual file content to work with"""
         
         # Create fresh agent for analysis
         agent = Agent(
@@ -197,22 +207,26 @@ Session Context:
 The user wants to create a merge request with the quality fixes.
 
 CRITICAL INSTRUCTIONS:
-1. Use the create_merge_request tool with all the file changes from the previous analysis
-2. After creating the MR, you MUST include the complete MR URL in your response
-3. Format your response to clearly show:
-   - How many issues were fixed
-   - What files were changed
-   - The branch name created
-   - **The full merge request URL** (e.g., https://gitlab.example.com/group/project/-/merge_requests/123)
+1. First, verify which files need to be changed based on the previous analysis
+2. Attempt to retrieve each file using get_file_content()
+3. If you can retrieve files:
+   - Apply the fixes to the actual file content
+   - Use create_merge_request with the modified files
+   - Include the complete MR URL in your response
+4. If you CANNOT retrieve files:
+   - Explain that you cannot access the source files
+   - List which files would need to be changed
+   - Provide manual instructions for the fixes
+   - DO NOT create an empty merge request
 
-Use these parameters:
+Use these parameters IF creating MR:
 - GitLab Project ID: {context.gitlab_project_id}
 - Source Branch: {branch_name}
 - Target Branch: main
 - Title: Fix SonarQube quality gate failures
 - Description: Automated fixes for bugs, vulnerabilities, and code smells
 
-Create the merge request now with all the fixes."""
+Remember: Only create an MR if you have actual file content to commit."""
         else:
             final_prompt = f"{context_prompt}\n\nUser Question: {message}"
         

@@ -25,6 +25,12 @@ Analyze pipeline failures and provide actionable solutions. Every analysis must 
 2. Specific actions to fix the issue
 3. Confidence score for your analysis
 
+## Special Case: Quality Gate Failures
+If the pipeline failed due to SonarQube quality gate:
+- Clearly state this is a quality issue, not a pipeline configuration issue
+- Recommend viewing this in the Quality Issues tab for detailed analysis
+- Provide a brief summary of quality problems if visible in logs
+
 ## Analysis Format
 Use this exact format for your responses:
 
@@ -108,9 +114,37 @@ class PipelineAgent:
         if not failed_jobs:
             return "No failed jobs found in the pipeline."
         
+        # Sort failed jobs by finished_at timestamp to get the most recent failure
+        failed_jobs.sort(key=lambda x: x.get("finished_at", ""), reverse=True)
+        
+        # Check if this is a quality gate failure
+        quality_gate_job = None
+        for job in failed_jobs:
+            if any(keyword in job.get('name', '').lower() for keyword in ['sonar', 'quality', 'scan']):
+                quality_gate_job = job
+                break
+        
         # Create analysis prompt
         failed_job = failed_jobs[0]  # Focus on first failure
-        prompt = f"""Analyze this pipeline failure:
+        
+        if quality_gate_job:
+            prompt = f"""Analyze this pipeline failure:
+
+Project ID: {project_id}
+Pipeline ID: {pipeline_id}
+Failed Job: {quality_gate_job.get('name', 'unknown')}
+Stage: {quality_gate_job.get('stage', 'unknown')}
+
+IMPORTANT: This appears to be a SonarQube quality gate failure.
+
+Use the available tools to:
+1. Get the job logs to confirm it's a quality gate failure
+2. If confirmed, provide a brief summary and recommend using the Quality Issues tab
+3. Do NOT attempt to fix quality issues here - they should be handled in the Quality Issues tab
+
+Follow the analysis format but focus on explaining this is a quality issue."""
+        else:
+            prompt = f"""Analyze this pipeline failure:
 
 Project ID: {project_id}
 Pipeline ID: {pipeline_id}
@@ -124,6 +158,9 @@ Use the available tools to:
 3. Analyze the error and determine root cause
 4. If needed, examine relevant files (CI config, dependencies, etc.)
 5. Provide a solution following the specified format
+
+Note: If you need to check shared pipeline templates, they are in a separate project. 
+The .gitlab-ci.yml may include files like 'project: cicd-demo/shared-pipelines' - you'll need to look up that project separately.
 
 Remember: Do NOT create a merge request. Only analyze and propose solutions."""
         

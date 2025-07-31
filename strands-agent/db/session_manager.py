@@ -217,9 +217,9 @@ class SessionManager:
                 metrics.get("code_smell_count", 0),
                 metrics.get("coverage"),
                 metrics.get("duplicated_lines_density"),
-                metrics.get("reliability_rating"),
-                metrics.get("security_rating"),
-                metrics.get("maintainability_rating"),
+                metrics.get("reliability_rating", "E")[:1],
+                metrics.get("security_rating", "E")[:1],
+                metrics.get("maintainability_rating", "E")[:1],
                 json.dumps({"quality_metrics": metrics})
             )
             log.info(f"Updated quality metrics for session {session_id}")
