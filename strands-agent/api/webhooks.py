@@ -26,34 +26,45 @@ async def check_quality_gate_in_logs(webhook_data: Dict[str, Any]) -> bool:
     if not failed_jobs:
         return False
     
+    # Sort by finished_at to get the most recent failure
+    failed_jobs.sort(key=lambda x: x.get("finished_at", ""), reverse=True)
+    
+    # Only check the MOST RECENT failed job
+    most_recent_failed_job = failed_jobs[0]
     project_id = str(webhook_data.get("project", {}).get("id"))
     
-    # Check logs of failed jobs for quality gate failure indicators
-    for job in failed_jobs:
-        try:
-            job_id = str(job.get("id"))
-            logs = await get_job_logs(job_id, project_id)
+    try:
+        job_id = str(most_recent_failed_job.get("id"))
+        job_name = most_recent_failed_job.get("name", "")
+        
+        log.info(f"Checking most recent failed job: {job_name} (ID: {job_id})")
+        
+        # Skip checking if it's not a quality/sonar related job name
+        if not any(keyword in job_name.lower() for keyword in ['sonar', 'quality', 'scan']):
+            log.info(f"Job {job_name} is not a quality-related job, skipping quality check")
+            return False
+        
+        logs = await get_job_logs(job_id, project_id)
+        
+        # Look for quality gate failure indicators in logs
+        quality_indicators = [
+            "Quality Gate failure",
+            "QUALITY GATE STATUS: FAILED",
+            "Quality gate failed",
+            "SonarQube analysis reported",
+            "Quality gate status: ERROR",
+            "failed because the quality gate",
+            "Your code fails the quality gate",
+            "SonarQube Quality Gate has failed"
+        ]
+        
+        logs_lower = logs.lower()
+        if any(indicator.lower() in logs_lower for indicator in quality_indicators):
+            log.info(f"Found quality gate failure in most recent job {job_name} logs")
+            return True
             
-            # Look for quality gate failure indicators in logs
-            quality_indicators = [
-                "Quality Gate failure",
-                "QUALITY GATE STATUS: FAILED",
-                "Quality gate failed",
-                "SonarQube analysis reported",
-                "Quality gate status: ERROR",
-                "failed because the quality gate",
-                "Your code fails the quality gate",
-                "SonarQube Quality Gate has failed"
-            ]
-            
-            logs_lower = logs.lower()
-            if any(indicator.lower() in logs_lower for indicator in quality_indicators):
-                log.info(f"Found quality gate failure in job {job.get('name')} logs")
-                return True
-                
-        except Exception as e:
-            log.warning(f"Could not fetch logs for job {job.get('id')}: {e}")
-            continue
+    except Exception as e:
+        log.warning(f"Could not fetch logs for job {most_recent_failed_job.get('id')}: {e}")
     
     return False
 
@@ -85,6 +96,7 @@ async def handle_gitlab_webhook(request: Request):
             
             # Get the failed job to extract more details
             failed_jobs = [job for job in data.get("builds", []) if job.get("status") == "failed"]
+            failed_jobs.sort(key=lambda x: x.get("finished_at", ""), reverse=True)
             failed_job = failed_jobs[0] if failed_jobs else {}
             
             metadata = {
@@ -160,12 +172,15 @@ async def handle_gitlab_webhook(request: Request):
             "webhook_data": data
         }
         
-        # Extract failed job info
+        # Extract failed job info - get the most recent one
         failed_jobs = [job for job in data.get("builds", []) if job.get("status") == "failed"]
         if failed_jobs:
+            # Sort by finished_at to get most recent
+            failed_jobs.sort(key=lambda x: x.get("finished_at", ""), reverse=True)
             first_failed = failed_jobs[0]
             metadata["job_name"] = first_failed.get("name")
             metadata["failed_stage"] = first_failed.get("stage")
+            log.info(f"Most recent failed job: {metadata['job_name']} (ID: {first_failed.get('id')})")
         
         # Create session
         session_id = str(uuid.uuid4())
@@ -304,12 +319,26 @@ async def analyze_pipeline_failure(session_id: str, project_id: str, pipeline_id
         log.info(f"Pipeline analysis complete for session {session_id}")
         
     except Exception as e:
-        log.error(f"Pipeline analysis failed: {e}", exc_info=True)
-        await session_manager.add_message(
-            session_id,
-            "assistant",
-            f"Analysis failed: {str(e)}"
-        )
+        error_msg = str(e)
+        # Handle EventLoopException which contains curly braces
+        if "EventLoopException" in type(e).__name__:
+            error_msg = error_msg.replace("{", "{{").replace("}", "}}")
+        
+        log.error(f"Pipeline analysis failed: {error_msg}", exc_info=True)
+        
+        # Check if it's a token limit error
+        if "prompt is too long" in error_msg:
+            await session_manager.add_message(
+                session_id,
+                "assistant",
+                "Analysis failed: The pipeline logs are too large to analyze. This typically happens with verbose test output or coverage reports. Please check the GitLab UI directly for the full logs, or consider reducing log verbosity in your CI configuration."
+            )
+        else:
+            await session_manager.add_message(
+                session_id,
+                "assistant",
+                f"Analysis failed: {error_msg}"
+            )
 
 async def analyze_quality_from_pipeline(session_id: str, project_key: str, gitlab_project_id: str, webhook_data: Dict):
     """Analyze quality issues when detected from pipeline failure"""

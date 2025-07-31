@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-Enhanced CI/CD Environment Setup Script - Fixed Version
+CI/CD Demo Environment Setup Script
 Creates GitLab projects with various failure scenarios
-Focuses on Java, Python, and JavaScript/Node.js projects
+Includes shared pipeline templates and CI/CD variables
 """
 
 import gitlab
@@ -16,7 +16,7 @@ from datetime import datetime
 
 # Configuration
 GROUP_NAME = "cicd-demo"
-QUALITY_GATE_NAME = "strict-quality-gate"
+QUALITY_GATE_NAME = "demo-quality-gate"
 AGENT_WEBHOOK_URL = "http://strands-agent:8000/webhooks"
 
 # Color codes for output
@@ -45,7 +45,7 @@ NAMESPACE_VARIABLES = [
     # Docker and Registry
     {'key': 'DOCKER_DRIVER', 'value': 'overlay2'},
     {'key': 'DOCKER_TLS_CERTDIR', 'value': ''},
-    {'key': 'CI_REGISTRY', 'value': 'localhost:5000'},  # Local registry or disable
+    {'key': 'CI_REGISTRY', 'value': 'localhost:5000'},
     {'key': 'DOCKER_HOST', 'value': 'tcp://docker:2375'},
     
     # SonarQube
@@ -61,269 +61,499 @@ NAMESPACE_VARIABLES = [
     {'key': 'GIT_DEPTH', 'value': '0'},
     {'key': 'FF_USE_FASTZIP', 'value': 'true'},
     {'key': 'ARTIFACT_COMPRESSION_LEVEL', 'value': 'fast'},
-    {'key': 'SKIP_IMAGE_PUSH', 'value': 'true'},  # Skip registry push for now
+    {'key': 'SKIP_IMAGE_PUSH', 'value': 'true'},
 ]
 
 # Project-specific variables
 PROJECT_VARIABLES = {
-    "payment-gateway": [
-        {'key': 'SERVICE_NAME', 'value': 'payment-gateway'},
+    "calculator-service": [
+        {'key': 'SERVICE_NAME', 'value': 'calculator-service'},
         {'key': 'JAVA_VERSION', 'value': '11'},
         {'key': 'MAVEN_OPTS', 'value': '-Xmx1024m'},
         {'key': 'SONAR_SOURCES', 'value': 'src/main/java'},
         {'key': 'SONAR_JAVA_BINARIES', 'value': 'target/classes'},
+        {'key': 'SONAR_PROJECT_KEY', 'value': 'calculator-service'},
+    ],
+    "todo-api": [
+        {'key': 'SERVICE_NAME', 'value': 'todo-api'},
+        {'key': 'PYTHON_VERSION', 'value': '3.9'},
+        {'key': 'SONAR_SOURCES', 'value': '.'},
+        {'key': 'SONAR_PYTHON_VERSION', 'value': '3.9'},
+        {'key': 'SONAR_PROJECT_KEY', 'value': 'todo-api'},
+    ],
+    "weather-service": [
+        {'key': 'SERVICE_NAME', 'value': 'weather-service'},
+        {'key': 'NODE_VERSION', 'value': '16'},
+        {'key': 'SONAR_SOURCES', 'value': '.'},
+        {'key': 'NPM_CONFIG_CACHE', 'value': '.npm'},
+        {'key': 'SONAR_PROJECT_KEY', 'value': 'weather-service'},
     ],
     "user-service": [
         {'key': 'SERVICE_NAME', 'value': 'user-service'},
         {'key': 'PYTHON_VERSION', 'value': '3.9'},
         {'key': 'SONAR_SOURCES', 'value': '.'},
-        {'key': 'SONAR_PYTHON_VERSION', 'value': '3.9'},
+        {'key': 'SONAR_PROJECT_KEY', 'value': 'user-service'},
     ],
-    "inventory-api": [
-        {'key': 'SERVICE_NAME', 'value': 'inventory-api'},
-        {'key': 'NODE_VERSION', 'value': '16'},
-        {'key': 'SONAR_SOURCES', 'value': 'src'},
-        {'key': 'NPM_CONFIG_CACHE', 'value': '.npm'},
-    ],
-    "auth-service": [
-        {'key': 'SERVICE_NAME', 'value': 'auth-service'},
+    "library-manager": [
+        {'key': 'SERVICE_NAME', 'value': 'library-manager'},
         {'key': 'JAVA_VERSION', 'value': '11'},
         {'key': 'SONAR_SOURCES', 'value': 'src/main/java'},
         {'key': 'SONAR_JAVA_BINARIES', 'value': 'target/classes'},
-    ],
-    "notification-api": [
-        {'key': 'SERVICE_NAME', 'value': 'notification-api'},
-        {'key': 'PYTHON_VERSION', 'value': '3.9'},
-        {'key': 'SONAR_SOURCES', 'value': 'src'},
-        {'key': 'SONAR_PYTHON_VERSION', 'value': '3.9'},
-    ],
-    "dashboard-ui": [
-        {'key': 'SERVICE_NAME', 'value': 'dashboard-ui'},
-        {'key': 'NODE_VERSION', 'value': '16'},
-        {'key': 'SONAR_SOURCES', 'value': 'src'},
-        {'key': 'BUILD_PATH', 'value': 'build'},
+        {'key': 'SONAR_PROJECT_KEY', 'value': 'library-manager'},
     ],
 }
 
-# Enhanced project definitions with various failure scenarios
+# Shared CI/CD templates
+SHARED_TEMPLATES = {
+    "templates/base.yml": """
+# Base template with common configurations
+variables:
+  DOCKER_DRIVER: overlay2
+  DOCKER_TLS_CERTDIR: ""
+  SONAR_USER_HOME: "${CI_PROJECT_DIR}/.sonar"
+  GIT_DEPTH: "0"
+
+# Base job templates
+.base-rules:
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+    - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+
+.docker-base:
+  image: docker:24
+  services:
+    - docker:24-dind
+  before_script:
+    - docker info
+
+# Cache templates
+.maven-cache:
+  cache:
+    key: "${CI_JOB_NAME}"
+    paths:
+      - .m2/repository
+
+.npm-cache:
+  cache:
+    key: "${CI_JOB_NAME}"
+    paths:
+      - node_modules/
+      - .npm/
+
+.pip-cache:
+  cache:
+    key: "${CI_JOB_NAME}"
+    paths:
+      - .cache/pip
+      - venv/
+""",
+
+    "templates/java-maven.yml": """
+include:
+  - local: '/templates/base.yml'
+
+stages:
+  - build
+  - test
+  - quality
+  - package
+  - scan
+
+# Build stage
+build:
+  stage: build
+  image: maven:3.8-openjdk-${JAVA_VERSION:-11}
+  extends: 
+    - .base-rules
+    - .maven-cache
+  script:
+    - mvn clean compile
+  artifacts:
+    paths:
+      - target/
+    expire_in: 1 hour
+
+# Test stage
+test:
+  stage: test
+  image: maven:3.8-openjdk-${JAVA_VERSION:-11}
+  extends: 
+    - .base-rules
+    - .maven-cache
+  needs: ["build"]
+  script:
+    - mvn test
+  artifacts:
+    reports:
+      junit:
+        - target/surefire-reports/TEST-*.xml
+    paths:
+      - target/
+    expire_in: 1 hour
+
+# SonarQube analysis
+sonarqube-check:
+  stage: quality
+  image: maven:3.8-openjdk-${JAVA_VERSION:-11}
+  extends: 
+    - .base-rules
+    - .maven-cache
+  needs: ["test"]
+  script:
+    - mvn sonar:sonar 
+      -Dsonar.projectKey=${SONAR_PROJECT_KEY:-$CI_PROJECT_NAME}
+      -Dsonar.host.url=$SONAR_HOST_URL 
+      -Dsonar.login=$SONAR_TOKEN 
+      -Dsonar.qualitygate.wait=true
+  allow_failure: false
+
+# Package application
+package:
+  stage: package
+  image: maven:3.8-openjdk-${JAVA_VERSION:-11}
+  extends: 
+    - .base-rules
+    - .maven-cache
+  needs: ["test"]
+  script:
+    - mvn package -DskipTests
+  artifacts:
+    paths:
+      - target/*.jar
+    expire_in: 1 day
+
+# Build Docker image
+docker-build:
+  stage: package
+  extends: 
+    - .docker-base
+    - .base-rules
+  needs: ["package"]
+  script:
+    - docker build -t ${SERVICE_NAME:-$CI_PROJECT_NAME}:$CI_COMMIT_SHORT_SHA .
+    - docker save ${SERVICE_NAME:-$CI_PROJECT_NAME}:$CI_COMMIT_SHORT_SHA > image.tar
+  artifacts:
+    paths:
+      - image.tar
+    expire_in: 1 hour
+
+# Scan Docker image
+scan-image:
+  stage: scan
+  image: aquasec/trivy:latest
+  extends: .base-rules
+  needs: ["docker-build"]
+  script:
+    - trivy image --input image.tar --exit-code 1 --severity HIGH,CRITICAL
+  allow_failure: true
+""",
+
+    "templates/python.yml": """
+include:
+  - local: '/templates/base.yml'
+
+stages:
+  - build
+  - test
+  - quality
+  - package
+  - scan
+
+# Build dependencies
+build:
+  stage: build
+  image: python:${PYTHON_VERSION:-3.9}
+  extends: 
+    - .base-rules
+    - .pip-cache
+  script:
+    - python -m venv venv
+    - source venv/bin/activate
+    - pip install --upgrade pip
+    - pip install -r requirements.txt
+    - python -m py_compile *.py || true
+  artifacts:
+    paths:
+      - venv/
+    expire_in: 1 hour
+
+# Run tests
+test:
+  stage: test
+  image: python:${PYTHON_VERSION:-3.9}
+  extends: 
+    - .base-rules
+    - .pip-cache
+  needs: ["build"]
+  script:
+    - source venv/bin/activate
+    - pip install pytest pytest-cov
+    - pytest --junitxml=report.xml --cov=. --cov-report=xml --cov-report=term || true
+  coverage: '/TOTAL.*\s+(\d+%)$/'
+  artifacts:
+    reports:
+      junit: report.xml
+      coverage_report:
+        coverage_format: cobertura
+        path: coverage.xml
+    expire_in: 1 hour
+
+# Code quality checks
+lint:
+  stage: quality
+  image: python:${PYTHON_VERSION:-3.9}
+  extends: .base-rules
+  needs: ["build"]
+  script:
+    - source venv/bin/activate
+    - pip install flake8 bandit
+    - flake8 . --max-line-length=100 --exclude=venv || true
+    - bandit -r . -f json -o bandit-report.json || true
+  artifacts:
+    reports:
+      sast: bandit-report.json
+  allow_failure: true
+
+# SonarQube analysis
+sonarqube-check:
+  stage: quality
+  image: sonarsource/sonar-scanner-cli:latest
+  extends: .base-rules
+  needs: ["test"]
+  script:
+    - sonar-scanner 
+      -Dsonar.projectKey=${SONAR_PROJECT_KEY:-$CI_PROJECT_NAME}
+      -Dsonar.sources=${SONAR_SOURCES:-.}
+      -Dsonar.host.url=$SONAR_HOST_URL 
+      -Dsonar.login=$SONAR_TOKEN 
+      -Dsonar.python.coverage.reportPaths=coverage.xml
+      -Dsonar.qualitygate.wait=true
+  allow_failure: false
+
+# Build Docker image
+docker-build:
+  stage: package
+  extends: 
+    - .docker-base
+    - .base-rules
+  script:
+    - docker build -t ${SERVICE_NAME:-$CI_PROJECT_NAME}:$CI_COMMIT_SHORT_SHA .
+    - docker save ${SERVICE_NAME:-$CI_PROJECT_NAME}:$CI_COMMIT_SHORT_SHA > image.tar
+  artifacts:
+    paths:
+      - image.tar
+    expire_in: 1 hour
+
+# Scan Docker image
+scan-image:
+  stage: scan
+  image: aquasec/trivy:latest
+  extends: .base-rules
+  needs: ["docker-build"]
+  script:
+    - trivy image --input image.tar --exit-code 1 --severity HIGH,CRITICAL
+  allow_failure: true
+""",
+
+    "templates/nodejs.yml": """
+include:
+  - local: '/templates/base.yml'
+
+stages:
+  - build
+  - test
+  - quality
+  - package
+  - scan
+
+# Install dependencies
+build:
+  stage: build
+  image: node:${NODE_VERSION:-16}
+  extends: 
+    - .base-rules
+    - .npm-cache
+  script:
+    - npm ci || npm install
+  artifacts:
+    paths:
+      - node_modules/
+    expire_in: 1 hour
+
+# Run tests
+test:
+  stage: test
+  image: node:${NODE_VERSION:-16}
+  extends: 
+    - .base-rules
+    - .npm-cache
+  needs: ["build"]
+  script:
+    - npm test -- --coverage --coverageReporters=cobertura || true
+  coverage: '/Lines\\s*:\\s*(\\d+\\.?\\d*)%/'
+  artifacts:
+    reports:
+      junit: junit.xml
+      coverage_report:
+        coverage_format: cobertura
+        path: coverage/cobertura-coverage.xml
+    paths:
+      - coverage/
+    expire_in: 1 hour
+
+# Lint code
+lint:
+  stage: quality
+  image: node:${NODE_VERSION:-16}
+  extends: .base-rules
+  needs: ["build"]
+  script:
+    - npm run lint || true
+  allow_failure: true
+
+# Security audit
+security-scan:
+  stage: quality
+  image: node:${NODE_VERSION:-16}
+  extends: .base-rules
+  needs: ["build"]
+  script:
+    - npm audit --audit-level=moderate || true
+  allow_failure: true
+
+# SonarQube analysis
+sonarqube-check:
+  stage: quality
+  image: sonarsource/sonar-scanner-cli:latest
+  extends: .base-rules
+  needs: ["test"]
+  script:
+    - sonar-scanner 
+      -Dsonar.projectKey=${SONAR_PROJECT_KEY:-$CI_PROJECT_NAME}
+      -Dsonar.sources=${SONAR_SOURCES:-.}
+      -Dsonar.host.url=$SONAR_HOST_URL 
+      -Dsonar.login=$SONAR_TOKEN 
+      -Dsonar.javascript.lcov.reportPaths=coverage/lcov.info
+      -Dsonar.qualitygate.wait=true
+  allow_failure: false
+
+# Build Docker image
+docker-build:
+  stage: package
+  extends: 
+    - .docker-base
+    - .base-rules
+  script:
+    - docker build -t ${SERVICE_NAME:-$CI_PROJECT_NAME}:$CI_COMMIT_SHORT_SHA .
+    - docker save ${SERVICE_NAME:-$CI_PROJECT_NAME}:$CI_COMMIT_SHORT_SHA > image.tar
+  artifacts:
+    paths:
+      - image.tar
+    expire_in: 1 hour
+
+# Scan Docker image
+scan-image:
+  stage: scan
+  image: aquasec/trivy:latest
+  extends: .base-rules
+  needs: ["docker-build"]
+  script:
+    - trivy image --input image.tar --exit-code 1 --severity HIGH,CRITICAL
+  allow_failure: true
+"""
+}
+
+# Project definitions with simple codebases
 PROJECTS = {
-    # 1. Java Spring Boot - Build failure (missing dependencies)
-    "payment-gateway": {
-        "description": "Java Spring Boot payment service - Build failure scenario",
+    # 1. Java Spring Boot - Calculator Service
+    "calculator-service": {
+        "description": "Java Spring Boot calculator with intentional issues",
         "language": "java",
-        "failure_types": ["build", "quality"],
+        "template": "java-maven.yml",
         "files": {
-            "src/main/java/com/demo/payment/PaymentGatewayApplication.java": """
-package com.demo.payment;
+            "src/main/java/com/demo/calculator/CalculatorApplication.java": """
+package com.demo.calculator;
 
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 
 @SpringBootApplication
-public class PaymentGatewayApplication {
-    
+public class CalculatorApplication {
     public static void main(String[] args) {
-        SpringApplication.run(PaymentGatewayApplication.class, args);
+        SpringApplication.run(CalculatorApplication.class, args);
     }
 }
 """,
-            "src/main/java/com/demo/payment/controller/PaymentController.java": """
-package com.demo.payment.controller;
+            "src/main/java/com/demo/calculator/controller/CalculatorController.java": """
+package com.demo.calculator.controller;
 
-import com.demo.payment.service.PaymentService;
-import com.demo.payment.model.*;
-import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.web.bind.annotation.*;
-import java.util.*;
-import java.sql.*;
+import java.util.Map;
+import java.util.HashMap;
 
 @RestController
-@RequestMapping("/api/v1/payments")
-public class PaymentController {
+@RequestMapping("/api/calculator")
+public class CalculatorController {
     
-    @Autowired
-    private PaymentService paymentService;
-    
-    // Security vulnerability: SQL injection
-    @PostMapping("/process")
-    public PaymentResponse processPayment(@RequestBody PaymentRequest request) {
-        String query = "SELECT * FROM payments WHERE user_id = '" + request.getUserId() + "'";
-        // Bad practice: executing raw SQL
-        
-        // Bug: No validation
-        double amount = request.getAmount();
-        
-        // Code smell: Magic numbers
-        if (amount > 10000) {
-            throw new RuntimeException("Amount too large");
-        }
-        
-        return paymentService.processPayment(request);
+    // Bug: Division by zero not handled
+    @GetMapping("/divide/{a}/{b}")
+    public Map<String, Object> divide(@PathVariable double a, @PathVariable double b) {
+        Map<String, Object> result = new HashMap<>();
+        result.put("result", a / b);  // Will throw ArithmeticException if b is 0
+        return result;
     }
     
-    // Duplicate code (code smell)
-    @GetMapping("/status/{id}")
-    public Map<String, Object> getPaymentStatus(@PathVariable String id) {
+    // Code smell: Duplicate code
+    @GetMapping("/add/{a}/{b}")
+    public Map<String, Object> add(@PathVariable double a, @PathVariable double b) {
         Map<String, Object> result = new HashMap<>();
-        
-        // Hardcoded values
-        Connection conn = null;
-        try {
-            conn = DriverManager.getConnection("jdbc:mysql://localhost:3306/payments", "root", "password");
-            // Security issue: credentials in code
-        } catch (SQLException e) {
-            // Swallowing exception
-        }
-        
-        result.put("status", "SUCCESS");
-        result.put("id", id);
+        result.put("operation", "add");
+        result.put("a", a);
+        result.put("b", b);
+        result.put("result", a + b);
+        return result;
+    }
+    
+    @GetMapping("/subtract/{a}/{b}")
+    public Map<String, Object> subtract(@PathVariable double a, @PathVariable double b) {
+        Map<String, Object> result = new HashMap<>();
+        result.put("operation", "subtract");
+        result.put("a", a);
+        result.put("b", b);
+        result.put("result", a - b);
+        return result;
+    }
+    
+    // Security issue: eval-like behavior
+    @PostMapping("/eval")
+    public Map<String, Object> evaluate(@RequestBody String expression) {
+        // Bad practice: parsing user input as code
+        Map<String, Object> result = new HashMap<>();
+        result.put("expression", expression);
+        result.put("result", "Not implemented - security risk!");
         return result;
     }
 }
 """,
-            "src/main/java/com/demo/payment/model/PaymentRequest.java": """
-package com.demo.payment.model;
+            "src/test/java/com/demo/calculator/CalculatorApplicationTests.java": """
+package com.demo.calculator;
 
-public class PaymentRequest {
-    private String userId;
-    private String cardNumber;
-    private double amount;
-    private String currency;
-    
-    public String getUserId() { return userId; }
-    public void setUserId(String userId) { this.userId = userId; }
-    
-    public String getCardNumber() { return cardNumber; }
-    public void setCardNumber(String cardNumber) { this.cardNumber = cardNumber; }
-    
-    public double getAmount() { return amount; }
-    public void setAmount(double amount) { this.amount = amount; }
-    
-    public String getCurrency() { return currency; }
-    public void setCurrency(String currency) { this.currency = currency; }
-}
-""",
-            "src/main/java/com/demo/payment/model/PaymentResponse.java": """
-package com.demo.payment.model;
+import org.junit.jupiter.api.Test;
+import org.springframework.boot.test.context.SpringBootTest;
+import static org.junit.jupiter.api.Assertions.*;
 
-public class PaymentResponse {
-    private String transactionId;
-    private String status;
-    
-    public PaymentResponse(String transactionId, String status) {
-        this.transactionId = transactionId;
-        this.status = status;
+@SpringBootTest
+class CalculatorApplicationTests {
+
+    @Test
+    void contextLoads() {
     }
     
-    public String getTransactionId() { return transactionId; }
-    public String getStatus() { return status; }
-}
-""",
-            "src/main/java/com/demo/payment/model/Payment.java": """
-package com.demo.payment.model;
-
-import javax.persistence.*;
-
-@Entity
-@Table(name = "payments")
-public class Payment {
-    @Id
-    @GeneratedValue(strategy = GenerationType.IDENTITY)
-    private Long id;
-    
-    private String userId;
-    private String merchantId;
-    private Double amount;
-    private String currency;
-    private String status;
-    
-    // Getters and setters
-    public Long getId() { return id; }
-    public void setId(Long id) { this.id = id; }
-    
-    public String getUserId() { return userId; }
-    public void setUserId(String userId) { this.userId = userId; }
-    
-    public String getMerchantId() { return merchantId; }
-    public void setMerchantId(String merchantId) { this.merchantId = merchantId; }
-    
-    public Double getAmount() { return amount; }
-    public void setAmount(Double amount) { this.amount = amount; }
-    
-    public String getCurrency() { return currency; }
-    public void setCurrency(String currency) { this.currency = currency; }
-    
-    public String getStatus() { return status; }
-    public void setStatus(String status) { this.status = status; }
-}
-""",
-            "src/main/java/com/demo/payment/service/PaymentService.java": """
-package com.demo.payment.service;
-
-import com.demo.payment.model.*;
-import com.demo.payment.repository.PaymentRepository;
-import org.springframework.stereotype.Service;
-import org.springframework.beans.factory.annotation.Autowired;
-import java.util.*;
-import javax.crypto.Cipher;
-import javax.crypto.spec.SecretKeySpec;
-
-@Service
-public class PaymentService {
-    
-    @Autowired
-    private PaymentRepository repository;
-    
-    // Vulnerability: Weak encryption
-    private static final String ENCRYPTION_KEY = "1234567890123456";
-    
-    public PaymentResponse processPayment(PaymentRequest request) {
-        // Bug: No null checks
-        String cardNumber = request.getCardNumber();
-        
-        // Security issue: Logging sensitive data
-        System.out.println("Processing payment for card: " + cardNumber);
-        
-        // Vulnerability: Weak random number generator
-        Random random = new Random();
-        String transactionId = String.valueOf(random.nextInt(999999));
-        
-        try {
-            // Vulnerability: ECB mode encryption
-            Cipher cipher = Cipher.getInstance("AES/ECB/NoPadding");
-            SecretKeySpec key = new SecretKeySpec(ENCRYPTION_KEY.getBytes(), "AES");
-            cipher.init(Cipher.ENCRYPT_MODE, key);
-            
-            // Store encrypted card number (bad practice)
-            byte[] encrypted = cipher.doFinal(cardNumber.getBytes());
-            
-        } catch (Exception e) {
-            // Generic exception handling
-            e.printStackTrace();
-        }
-        
-        return new PaymentResponse(transactionId, "SUCCESS");
+    @Test
+    void testAddition() {
+        // This test will fail
+        assertEquals(5, 2 + 2); // Wrong assertion
     }
-}
-""",
-            "src/main/java/com/demo/payment/repository/PaymentRepository.java": """
-package com.demo.payment.repository;
-
-import com.demo.payment.model.Payment;
-import org.springframework.data.jpa.repository.JpaRepository;
-import org.springframework.data.jpa.repository.Query;
-import java.util.List;
-
-public interface PaymentRepository extends JpaRepository<Payment, Long> {
-    
-    // Vulnerability: SQL injection in native query
-    @Query(value = "SELECT * FROM payments WHERE user_id = ?1", nativeQuery = true)
-    List<Payment> findByUserId(String userId);
-    
-    @Query(value = "SELECT * FROM transactions WHERE payment_id = ?1", nativeQuery = true)
-    List<Object[]> findRelatedTransactions(Long paymentId);
-    
-    List<Payment> findAll();
 }
 """,
             "pom.xml": """<?xml version="1.0" encoding="UTF-8"?>
@@ -334,7 +564,7 @@ public interface PaymentRepository extends JpaRepository<Payment, Long> {
     <modelVersion>4.0.0</modelVersion>
     
     <groupId>com.demo</groupId>
-    <artifactId>payment-gateway</artifactId>
+    <artifactId>calculator-service</artifactId>
     <version>1.0.0</version>
     <packaging>jar</packaging>
     
@@ -346,6 +576,8 @@ public interface PaymentRepository extends JpaRepository<Payment, Long> {
     
     <properties>
         <java.version>11</java.version>
+        <sonar.organization>demo</sonar.organization>
+        <sonar.projectKey>calculator-service</sonar.projectKey>
     </properties>
     
     <dependencies>
@@ -355,780 +587,8 @@ public interface PaymentRepository extends JpaRepository<Payment, Long> {
         </dependency>
         <dependency>
             <groupId>org.springframework.boot</groupId>
-            <artifactId>spring-boot-starter-data-jpa</artifactId>
-        </dependency>
-        <!-- Missing H2 database dependency - will cause build failure -->
-        <dependency>
-            <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-test</artifactId>
             <scope>test</scope>
-        </dependency>
-        <!-- Vulnerable dependency -->
-        <dependency>
-            <groupId>commons-collections</groupId>
-            <artifactId>commons-collections</artifactId>
-            <version>3.2.1</version>
-        </dependency>
-    </dependencies>
-</project>
-""",
-            "Dockerfile": """FROM openjdk:11-jre-slim
-WORKDIR /app
-COPY target/*.jar app.jar
-
-# Security issue: Running as root
-EXPOSE 8080
-
-# Hardcoded environment variables
-ENV DB_HOST=localhost
-ENV DB_PASSWORD=password
-
-CMD ["java", "-jar", "app.jar"]
-""",
-            ".gitlab-ci.yml": """include:
-  - project: 'cicd-demo/shared-pipelines'
-    ref: main
-    file: '/templates/java-complete.yml'
-"""
-        }
-    },
-
-    # 2. Python FastAPI - Fixed dependencies
-    "user-service": {
-        "description": "Python FastAPI user service - Test failures & quality issues",
-        "language": "python",
-        "failure_types": ["test", "quality", "security"],
-        "files": {
-            "app/main.py": """
-from fastapi import FastAPI, HTTPException, Depends
-from sqlalchemy import create_engine, text
-from typing import Optional, List
-import jwt
-import hashlib
-import pickle
-import yaml
-import os
-
-app = FastAPI(title="User Management Service")
-
-# Security issue: Hardcoded secret
-JWT_SECRET = "super_secret_key_123"
-DATABASE_URL = "postgresql://user:password@localhost/users"
-
-# Vulnerability: SQL injection
-@app.get("/users/{user_id}")
-async def get_user(user_id: str):
-    # Direct string concatenation in SQL
-    query = f"SELECT * FROM users WHERE id = '{user_id}'"
-    
-    engine = create_engine(DATABASE_URL)
-    with engine.connect() as conn:
-        result = conn.execute(text(query))
-        user = result.fetchone()
-    
-    if not user:
-        raise HTTPException(status_code=404, detail="User not found")
-    
-    return {"user": dict(user)}
-
-# Bug: Race condition
-user_sessions = {}
-
-@app.post("/login")
-async def login(username: str, password: str):
-    # Vulnerability: Weak hashing
-    password_hash = hashlib.md5(password.encode()).hexdigest()
-    
-    # Hardcoded admin credentials
-    if username == "admin" and password == "admin123":
-        token = jwt.encode({"user": "admin"}, JWT_SECRET, algorithm="HS256")
-        user_sessions[username] = token  # Race condition here
-        return {"token": token}
-    
-    # SQL injection vulnerability
-    query = f"SELECT * FROM users WHERE username='{username}' AND password_hash='{password_hash}'"
-    # Execute query...
-    
-    return {"status": "login failed"}
-
-# Code smell: Duplicate code
-@app.get("/admin/users")
-async def get_admin_users():
-    query = "SELECT * FROM users WHERE role='admin'"
-    engine = create_engine(DATABASE_URL)
-    with engine.connect() as conn:
-        result = conn.execute(text(query))
-        users = result.fetchall()
-    return {"users": [dict(u) for u in users]}
-
-@app.get("/manager/users")
-async def get_manager_users():
-    # Duplicate logic
-    query = "SELECT * FROM users WHERE role='manager'"
-    engine = create_engine(DATABASE_URL)
-    with engine.connect() as conn:
-        result = conn.execute(text(query))
-        users = result.fetchall()
-    return {"users": [dict(u) for u in users]}
-
-# Vulnerability: Path traversal
-@app.get("/files/{filename}")
-async def get_file(filename: str):
-    # No path validation
-    with open(f"/app/data/{filename}", "r") as f:
-        content = f.read()
-    return {"content": content}
-
-# Performance issue: N+1 queries
-@app.get("/users/detailed")
-async def get_users_detailed():
-    users = []  # Get all users first
-    
-    # Then for each user, fetch additional data
-    for user in users:
-        # Individual query for each user's profile
-        profile = fetch_user_profile(user['id'])
-        # Another query for user's settings
-        settings = fetch_user_settings(user['id'])
-        user['profile'] = profile
-        user['settings'] = settings
-    
-    return {"users": users}
-
-def fetch_user_profile(user_id):
-    # Simulated database call
-    pass
-
-def fetch_user_settings(user_id):
-    # Simulated database call
-    pass
-""",
-            "app/models.py": """
-from sqlalchemy import Column, Integer, String, DateTime
-from sqlalchemy.ext.declarative import declarative_base
-import datetime
-
-Base = declarative_base()
-
-class User(Base):
-    __tablename__ = 'users'
-    
-    id = Column(Integer, primary_key=True)
-    username = Column(String(50))  # No unique constraint
-    email = Column(String(100))
-    password_hash = Column(String(32))  # MD5 hash - insecure
-    role = Column(String(20))
-    created_at = Column(DateTime, default=datetime.datetime.utcnow)
-    
-    # Bug: No validation
-    # Missing indexes
-""",
-            "tests/test_users.py": """
-import pytest
-from fastapi.testclient import TestClient
-from app.main import app
-
-client = TestClient(app)
-
-def test_get_user():
-    # This test will fail - SQL injection protection will break it
-    response = client.get("/users/1' OR '1'='1")
-    assert response.status_code == 200  # Will actually be 500
-
-def test_login():
-    # Test will fail due to hardcoded credentials
-    response = client.post("/login", json={
-        "username": "testuser",
-        "password": "testpass"
-    })
-    assert response.status_code == 200
-    assert "token" in response.json()  # Will fail
-
-def test_admin_access():
-    # Missing authentication
-    response = client.get("/admin/users")
-    assert response.status_code == 401  # Will fail - no auth check
-
-# Test that passes
-def test_health():
-    response = client.get("/")
-    assert response.status_code == 200
-""",
-            "requirements.txt": """fastapi==0.104.1
-uvicorn==0.24.0
-sqlalchemy==1.4.32
-pytest==7.4.3
-pytest-asyncio==0.21.1
-httpx==0.25.2
-pyjwt==2.8.0
-psycopg2-binary==2.9.9
-pyyaml==6.0.1
-# No conflicting packages
-""",
-            "Dockerfile": """FROM python:3.9-slim
-
-WORKDIR /app
-
-# Security issue: Running as root
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
-
-COPY . .
-
-# Exposing unnecessary ports
-EXPOSE 8000 8001 8002
-
-# Hardcoded secrets in environment
-ENV JWT_SECRET=super_secret_key_123
-ENV DATABASE_URL=postgresql://user:password@localhost/users
-
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
-""",
-            ".gitlab-ci.yml": """include:
-  - project: 'cicd-demo/shared-pipelines'
-    ref: main
-    file: '/templates/python-complete.yml'
-"""
-        }
-    },
-
-    # 3. Node.js Express - Fixed test hanging issue
-    "inventory-api": {
-        "description": "Node.js inventory API - Quality gate failures",
-        "language": "nodejs",
-        "failure_types": ["quality", "security"],
-        "files": {
-            "src/app.js": r"""
-const express = require('express');
-const mongoose = require('mongoose');
-const bodyParser = require('body-parser');
-const jwt = require('jsonwebtoken');
-const bcrypt = require('bcrypt');
-const fs = require('fs');
-const path = require('path');
-
-const app = express();
-app.use(bodyParser.json());
-
-// Models
-const Inventory = require('./models/Inventory');
-const User = require('./models/User');
-
-// Security issue: Hardcoded connection string
-const mongoUrl = 'mongodb://admin:password@localhost:27017/inventory';
-
-// Vulnerability: No input validation
-app.post('/api/inventory/search', (req, res) => {
-    const { query } = req.body;
-    
-    // NoSQL injection vulnerability
-    Inventory.find({ $where: `this.name == '${query}'` }, (err, items) => {
-        if (err) {
-            console.error(err);  // Information disclosure
-            return res.status(500).json({ error: err.message });
-        }
-        res.json(items);
-    });
-});
-
-// Duplicate code blocks
-app.post('/api/inventory/add', async (req, res) => {
-    const { name, quantity, price } = req.body;
-    
-    // No validation
-    const item = new Inventory({
-        name: name,
-        quantity: quantity,
-        price: price,
-        created: new Date()
-    });
-    
-    try {
-        await item.save();
-        
-        // Duplicate logging logic
-        console.log(`Item added: ${name}`);
-        fs.appendFileSync('inventory.log', `[${new Date()}] Item added: ${name}\n`);
-        
-        res.json({ success: true });
-    } catch (error) {
-        res.status(500).json({ error: error.message });
-    }
-});
-
-app.post('/api/inventory/update', async (req, res) => {
-    const { id, name, quantity, price } = req.body;
-    
-    // Duplicate validation logic
-    const item = await Inventory.findById(id);
-    item.name = name;
-    item.quantity = quantity;
-    item.price = price;
-    
-    try {
-        await item.save();
-        
-        // Duplicate logging logic (same as above)
-        console.log(`Item updated: ${name}`);
-        fs.appendFileSync('inventory.log', `[${new Date()}] Item updated: ${name}\n`);
-        
-        res.json({ success: true });
-    } catch (error) {
-        res.status(500).json({ error: error.message });
-    }
-});
-
-// Security vulnerability: JWT with weak secret
-const JWT_SECRET = 'secret123';
-
-app.post('/api/auth/login', async (req, res) => {
-    const { username, password } = req.body;
-    
-    // SQL-like injection in MongoDB
-    const user = await User.findOne({ username: username });
-    
-    // Timing attack vulnerability
-    if (user && user.password === password) {
-        const token = jwt.sign({ username }, JWT_SECRET);
-        res.json({ token });
-    } else {
-        res.status(401).json({ error: 'Invalid credentials' });
-    }
-});
-
-// Memory leak
-let cache = {};
-app.get('/api/inventory/:id', async (req, res) => {
-    const { id } = req.params;
-    
-    // Cache never cleared - memory leak
-    if (!cache[id]) {
-        cache[id] = await Inventory.findById(id);
-    }
-    
-    res.json(cache[id]);
-});
-
-// Global error handler that leaks information
-app.use((err, req, res, next) => {
-    console.error(err.stack);  // Full stack trace
-    res.status(500).json({
-        error: err.message,
-        stack: err.stack  // Security issue: exposing stack trace
-    });
-});
-
-// Export for testing
-module.exports = app;
-""",
-            "src/server.js": """
-const app = require('./app');
-const mongoose = require('mongoose');
-
-const PORT = process.env.PORT || 3000;
-const mongoUrl = 'mongodb://admin:password@localhost:27017/inventory';
-
-// Connect to MongoDB
-mongoose.connect(mongoUrl, {
-    useNewUrlParser: true,
-    useUnifiedTopology: true
-}).then(() => {
-    console.log('Connected to MongoDB');
-    app.listen(PORT, () => {
-        console.log(`Server running on port ${PORT}`);
-    });
-}).catch(err => {
-    console.error('MongoDB connection error:', err);
-    process.exit(1);
-});
-""",
-            "src/models/Inventory.js": """
-const mongoose = require('mongoose');
-
-// Poor schema design
-const inventorySchema = new mongoose.Schema({
-    name: String,  // No validation
-    quantity: Number,  // Can be negative
-    price: Number,  // No decimal precision
-    categoryId: String,  // Should be ObjectId
-    supplierId: String,  // Should be ObjectId
-    warehouseId: String,  // Should be ObjectId
-    created: Date,
-    
-    // Security issue: storing sensitive data
-    internalNotes: String,  // Might contain passwords
-    
-    // Performance issue: large embedded documents
-    history: [{
-        date: Date,
-        action: String,
-        user: String,
-        details: Object  // Unbounded growth
-    }]
-});
-
-// No indexes defined - performance issue
-
-module.exports = mongoose.model('Inventory', inventorySchema);
-""",
-            "src/models/User.js": """
-const mongoose = require('mongoose');
-
-const userSchema = new mongoose.Schema({
-    username: String,
-    password: String,  // Storing plain text password!
-    email: String,
-    role: String
-});
-
-module.exports = mongoose.model('User', userSchema);
-""",
-            "tests/inventory.test.js": """
-const request = require('supertest');
-const app = require('../src/app');
-
-// Mock mongoose to prevent connection issues during tests
-jest.mock('mongoose', () => ({
-    connect: jest.fn().mockResolvedValue(true),
-    model: jest.fn().mockReturnValue({
-        findById: jest.fn(),
-        findOne: jest.fn(),
-        find: jest.fn()
-    }),
-    Schema: jest.fn().mockImplementation(() => ({}))
-}));
-
-describe('Inventory API', () => {
-    afterAll((done) => {
-        // Ensure Jest exits properly
-        done();
-    });
-    
-    test('GET /api/inventory/:id', async () => {
-        const res = await request(app).get('/api/inventory/123');
-        expect(res.statusCode).toBe(200);
-    });
-    
-    test('POST /api/inventory/add', async () => {
-        const res = await request(app)
-            .post('/api/inventory/add')
-            .send({
-                name: 'Test Item',
-                quantity: 10,
-                price: 99.99
-            });
-        expect(res.statusCode).toBe(200);
-    });
-});
-""",
-            "package.json": """{
-  "name": "inventory-api",
-  "version": "1.0.0",
-  "description": "Inventory management API",
-  "main": "src/server.js",
-  "scripts": {
-    "start": "node src/server.js",
-    "test": "jest --coverage --forceExit --detectOpenHandles",
-    "lint": "eslint src/"
-  },
-  "dependencies": {
-    "express": "4.17.1",
-    "mongoose": "5.11.15",
-    "jsonwebtoken": "8.5.1",
-    "bcrypt": "5.0.0",
-    "body-parser": "1.19.0",
-    "morgan": "1.10.0"
-  },
-  "devDependencies": {
-    "jest": "27.0.6",
-    "supertest": "6.1.3",
-    "eslint": "7.32.0"
-  },
-  "jest": {
-    "testEnvironment": "node",
-    "testTimeout": 10000
-  }
-}
-""",
-            "Dockerfile": """FROM node:16-alpine
-
-WORKDIR /app
-
-# Inefficient layering
-COPY . .
-RUN npm install
-
-# Security: Running as root
-EXPOSE 3000
-
-# No health check defined
-CMD ["npm", "start"]
-""",
-            ".gitlab-ci.yml": """include:
-  - project: 'cicd-demo/shared-pipelines'
-    ref: main
-    file: '/templates/nodejs-complete.yml'
-"""
-        }
-    },
-
-    # 4. Java Spring Boot - Authentication service
-    "auth-service": {
-        "description": "Java Spring Boot auth service - Security vulnerabilities",
-        "language": "java",
-        "failure_types": ["security", "quality"],
-        "files": {
-            "src/main/java/com/demo/auth/AuthServiceApplication.java": """
-package com.demo.auth;
-
-import org.springframework.boot.SpringApplication;
-import org.springframework.boot.autoconfigure.SpringBootApplication;
-
-@SpringBootApplication
-public class AuthServiceApplication {
-    
-    public static void main(String[] args) {
-        SpringApplication.run(AuthServiceApplication.class, args);
-    }
-}
-""",
-            "src/main/java/com/demo/auth/controller/AuthController.java": """
-package com.demo.auth.controller;
-
-import com.demo.auth.service.AuthService;
-import com.demo.auth.model.*;
-import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.web.bind.annotation.*;
-import java.util.*;
-import java.security.MessageDigest;
-
-@RestController
-@RequestMapping("/api/auth")
-public class AuthController {
-    
-    @Autowired
-    private AuthService authService;
-    
-    // Hardcoded secret key
-    private static final String SECRET_KEY = "my-secret-key-123";
-    
-    @PostMapping("/login")
-    public LoginResponse login(@RequestBody LoginRequest request) {
-        // Vulnerability: Timing attack
-        if (request.getUsername().equals("admin") && 
-            request.getPassword().equals("admin123")) {
-            return new LoginResponse("admin-token", "admin");
-        }
-        
-        // SQL injection via string concatenation
-        String query = "SELECT * FROM users WHERE username = '" + 
-                      request.getUsername() + "' AND password = '" + 
-                      request.getPassword() + "'";
-        
-        // Weak hashing
-        try {
-            MessageDigest md = MessageDigest.getInstance("MD5");
-            byte[] hash = md.digest(request.getPassword().getBytes());
-            // Use weak hash...
-        } catch (Exception e) {
-            e.printStackTrace();
-        }
-        
-        return authService.authenticate(request);
-    }
-    
-    @GetMapping("/users")
-    public List<User> getAllUsers() {
-        // No authentication check
-        return authService.getAllUsers();
-    }
-    
-    @PostMapping("/register")
-    public User register(@RequestBody User user) {
-        // Mass assignment vulnerability
-        // User can set any field including role
-        return authService.createUser(user);
-    }
-    
-    // Information disclosure
-    @GetMapping("/config")
-    public Map<String, String> getConfig() {
-        Map<String, String> config = new HashMap<>();
-        config.put("database_url", "jdbc:mysql://localhost:3306/auth");
-        config.put("database_user", "root");
-        config.put("database_password", "password123");
-        config.put("jwt_secret", SECRET_KEY);
-        return config;
-    }
-}
-""",
-            "src/main/java/com/demo/auth/model/User.java": """
-package com.demo.auth.model;
-
-import javax.persistence.*;
-
-@Entity
-@Table(name = "users")
-public class User {
-    @Id
-    @GeneratedValue(strategy = GenerationType.IDENTITY)
-    private Long id;
-    
-    private String username;
-    private String password;  // Storing plain text!
-    private String email;
-    private String role;
-    
-    // No validation annotations
-    
-    public Long getId() { return id; }
-    public void setId(Long id) { this.id = id; }
-    
-    public String getUsername() { return username; }
-    public void setUsername(String username) { this.username = username; }
-    
-    public String getPassword() { return password; }
-    public void setPassword(String password) { this.password = password; }
-    
-    public String getEmail() { return email; }
-    public void setEmail(String email) { this.email = email; }
-    
-    public String getRole() { return role; }
-    public void setRole(String role) { this.role = role; }
-}
-""",
-            "src/main/java/com/demo/auth/model/LoginRequest.java": """
-package com.demo.auth.model;
-
-public class LoginRequest {
-    private String username;
-    private String password;
-    
-    public String getUsername() { return username; }
-    public void setUsername(String username) { this.username = username; }
-    
-    public String getPassword() { return password; }
-    public void setPassword(String password) { this.password = password; }
-}
-""",
-            "src/main/java/com/demo/auth/model/LoginResponse.java": """
-package com.demo.auth.model;
-
-public class LoginResponse {
-    private String token;
-    private String username;
-    
-    public LoginResponse(String token, String username) {
-        this.token = token;
-        this.username = username;
-    }
-    
-    public String getToken() { return token; }
-    public String getUsername() { return username; }
-}
-""",
-            "src/main/java/com/demo/auth/service/AuthService.java": """
-package com.demo.auth.service;
-
-import com.demo.auth.model.*;
-import com.demo.auth.repository.UserRepository;
-import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.stereotype.Service;
-import java.util.*;
-
-@Service
-public class AuthService {
-    
-    @Autowired
-    private UserRepository userRepository;
-    
-    // Weak token generation
-    public LoginResponse authenticate(LoginRequest request) {
-        User user = userRepository.findByUsername(request.getUsername());
-        
-        if (user != null && user.getPassword().equals(request.getPassword())) {
-            // Simple predictable token
-            String token = Base64.getEncoder().encodeToString(
-                (user.getUsername() + ":" + System.currentTimeMillis()).getBytes()
-            );
-            return new LoginResponse(token, user.getUsername());
-        }
-        
-        return null;
-    }
-    
-    public List<User> getAllUsers() {
-        // Exposing all user data including passwords
-        return userRepository.findAll();
-    }
-    
-    public User createUser(User user) {
-        // No password hashing
-        // No validation
-        return userRepository.save(user);
-    }
-}
-""",
-            "src/main/java/com/demo/auth/repository/UserRepository.java": """
-package com.demo.auth.repository;
-
-import com.demo.auth.model.User;
-import org.springframework.data.jpa.repository.JpaRepository;
-import org.springframework.data.jpa.repository.Query;
-
-public interface UserRepository extends JpaRepository<User, Long> {
-    
-    // SQL injection prone
-    @Query(value = "SELECT * FROM users WHERE username = ?1", nativeQuery = true)
-    User findByUsername(String username);
-}
-""",
-            "pom.xml": """<?xml version="1.0" encoding="UTF-8"?>
-<project xmlns="http://maven.apache.org/POM/4.0.0"
-         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
-         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 
-         https://maven.apache.org/xsd/maven-4.0.0.xsd">
-    <modelVersion>4.0.0</modelVersion>
-    
-    <groupId>com.demo</groupId>
-    <artifactId>auth-service</artifactId>
-    <version>1.0.0</version>
-    <packaging>jar</packaging>
-    
-    <parent>
-        <groupId>org.springframework.boot</groupId>
-        <artifactId>spring-boot-starter-parent</artifactId>
-        <version>2.7.0</version>
-    </parent>
-    
-    <properties>
-        <java.version>11</java.version>
-    </properties>
-    
-    <dependencies>
-        <dependency>
-            <groupId>org.springframework.boot</groupId>
-            <artifactId>spring-boot-starter-web</artifactId>
-        </dependency>
-        <dependency>
-            <groupId>org.springframework.boot</groupId>
-            <artifactId>spring-boot-starter-data-jpa</artifactId>
-        </dependency>
-        <dependency>
-            <groupId>com.h2database</groupId>
-            <artifactId>h2</artifactId>
-            <scope>runtime</scope>
-        </dependency>
-        <dependency>
-            <groupId>org.springframework.boot</groupId>
-            <artifactId>spring-boot-starter-test</artifactId>
-            <scope>test</scope>
-        </dependency>
-        <!-- Old vulnerable dependency -->
-        <dependency>
-            <groupId>org.apache.logging.log4j</groupId>
-            <artifactId>log4j-core</artifactId>
-            <version>2.14.0</version>
         </dependency>
     </dependencies>
     
@@ -1145,1132 +605,515 @@ public interface UserRepository extends JpaRepository<User, Long> {
             "Dockerfile": """FROM openjdk:11-jre-slim
 WORKDIR /app
 COPY target/*.jar app.jar
-
-# Running as root
 EXPOSE 8080
-
-# Hardcoded secrets
-ENV DB_PASSWORD=password123
-ENV JWT_SECRET=my-secret-key-123
-
 CMD ["java", "-jar", "app.jar"]
 """,
             ".gitlab-ci.yml": """include:
   - project: 'cicd-demo/shared-pipelines'
     ref: main
-    file: '/templates/java-complete.yml'
+    file: '/templates/java-maven.yml'
 """
         }
     },
 
-    # 5. Python Django - Notification API
-    "notification-api": {
-        "description": "Python Django notification API - Performance and security issues",
+    # 2. Python Flask - Todo API
+    "todo-api": {
+        "description": "Python Flask API with test failures and quality issues",
         "language": "python",
-        "failure_types": ["quality", "performance"],
+        "template": "python.yml",
         "files": {
-            "src/manage.py": """#!/usr/bin/env python
-import os
-import sys
-
-if __name__ == '__main__':
-    os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'notification.settings')
-    try:
-        from django.core.management import execute_from_command_line
-    except ImportError as exc:
-        raise ImportError(
-            "Couldn't import Django. Are you sure it's installed and "
-            "available on your PYTHONPATH environment variable? Did you "
-            "forget to activate a virtual environment?"
-        ) from exc
-    execute_from_command_line(sys.argv)
-""",
-            "src/notification/__init__.py": "",
-            "src/notification/settings.py": """
-import os
-
-BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-
-# Security issue: Hardcoded secret key
-SECRET_KEY = 'django-insecure-1234567890abcdefghijklmnop'
-
-# Security issue: Debug enabled
-DEBUG = True
-
-ALLOWED_HOSTS = ['*']  # Security issue
-
-INSTALLED_APPS = [
-    'django.contrib.admin',
-    'django.contrib.auth',
-    'django.contrib.contenttypes',
-    'django.contrib.sessions',
-    'django.contrib.messages',
-    'django.contrib.staticfiles',
-    'api',
-]
-
-MIDDLEWARE = [
-    'django.middleware.security.SecurityMiddleware',
-    'django.contrib.sessions.middleware.SessionMiddleware',
-    'django.middleware.common.CommonMiddleware',
-    # Missing CSRF middleware - security issue
-    'django.contrib.auth.middleware.AuthenticationMiddleware',
-    'django.contrib.messages.middleware.MessageMiddleware',
-    'django.middleware.clickjacking.XFrameOptionsMiddleware',
-]
-
-ROOT_URLCONF = 'notification.urls'
-
-TEMPLATES = [
-    {
-        'BACKEND': 'django.template.backends.django.DjangoTemplates',
-        'DIRS': [],
-        'APP_DIRS': True,
-        'OPTIONS': {
-            'context_processors': [
-                'django.template.context_processors.debug',
-                'django.template.context_processors.request',
-                'django.contrib.auth.context_processors.auth',
-                'django.contrib.messages.context_processors.messages',
-            ],
-        },
-    },
-]
-
-WSGI_APPLICATION = 'notification.wsgi.application'
-
-# Database - hardcoded credentials
-DATABASES = {
-    'default': {
-        'ENGINE': 'django.db.backends.sqlite3',
-        'NAME': os.path.join(BASE_DIR, 'db.sqlite3'),
-    }
-}
-
-# No password validators - security issue
-AUTH_PASSWORD_VALIDATORS = []
-
-LANGUAGE_CODE = 'en-us'
-TIME_ZONE = 'UTC'
-USE_I18N = True
-USE_L10N = True
-USE_TZ = True
-
-STATIC_URL = '/static/'
-""",
-            "src/notification/urls.py": """
-from django.contrib import admin
-from django.urls import path, include
-
-urlpatterns = [
-    path('admin/', admin.site.urls),
-    path('api/', include('api.urls')),
-]
-""",
-            "src/notification/wsgi.py": """
-import os
-from django.core.wsgi import get_wsgi_application
-
-os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'notification.settings')
-application = get_wsgi_application()
-""",
-            "src/api/__init__.py": "",
-            "src/api/models.py": """
-from django.db import models
-from django.contrib.auth.models import User
-
-class Notification(models.Model):
-    user = models.ForeignKey(User, on_delete=models.CASCADE)
-    message = models.TextField()
-    created_at = models.DateTimeField(auto_now_add=True)
-    read = models.BooleanField(default=False)
-    
-    # No indexes defined
-    # No validation
-    
-class EmailTemplate(models.Model):
-    name = models.CharField(max_length=100)
-    subject = models.CharField(max_length=200)
-    body = models.TextField()  # Stores raw HTML - XSS risk
-    
-    # No sanitization
-""",
-            "src/api/views.py": """
-from django.shortcuts import render
-from django.http import JsonResponse
-from django.views.decorators.csrf import csrf_exempt
-from django.contrib.auth.models import User
-from .models import Notification, EmailTemplate
+            "app.py": """
+from flask import Flask, jsonify, request
 import json
-import os
 
-# No authentication required - security issue
-@csrf_exempt
-def send_notification(request):
-    if request.method == 'POST':
-        data = json.loads(request.body)
-        
-        # Mass assignment vulnerability
-        notification = Notification.objects.create(**data)
-        
-        # Performance issue: N+1 queries
-        users = User.objects.all()
-        for user in users:
-            # Individual query for each user
-            user_notifications = Notification.objects.filter(user=user)
-            # Process notifications...
-        
-        return JsonResponse({'status': 'sent', 'id': notification.id})
-    
-    return JsonResponse({'error': 'Method not allowed'}, status=405)
+app = Flask(__name__)
 
-# SQL injection via raw query
-def get_user_notifications(request, username):
-    # Vulnerable to SQL injection
-    query = f"SELECT * FROM api_notification WHERE user_id IN (SELECT id FROM auth_user WHERE username = '{username}')"
-    
-    # Using raw SQL
-    from django.db import connection
-    with connection.cursor() as cursor:
-        cursor.execute(query)
-        results = cursor.fetchall()
-    
-    return JsonResponse({'notifications': results})
+# In-memory storage (not thread-safe)
+todos = []
 
-# Template injection vulnerability
-@csrf_exempt
-def render_template(request):
-    if request.method == 'POST':
-        data = json.loads(request.body)
-        template_body = data.get('template', '')
-        context = data.get('context', {})
-        
-        # Dangerous: User input in template
-        from django.template import Template, Context
-        template = Template(template_body)
-        rendered = template.render(Context(context))
-        
-        return JsonResponse({'rendered': rendered})
-    
-    return JsonResponse({'error': 'Method not allowed'}, status=405)
+@app.route('/todos', methods=['GET'])
+def get_todos():
+    return jsonify(todos)
 
-# File operation vulnerability
-def export_notifications(request):
-    filename = request.GET.get('filename', 'export.json')
-    
-    # Path traversal vulnerability
-    filepath = os.path.join('/tmp', filename)
-    
-    notifications = list(Notification.objects.all().values())
-    
-    # Blocking I/O
-    with open(filepath, 'w') as f:
-        json.dump(notifications, f)
-    
-    return JsonResponse({'file': filepath})
+@app.route('/todos', methods=['POST'])
+def create_todo():
+    data = request.get_json()
+    # Bug: No validation
+    todo = {
+        'id': len(todos) + 1,
+        'title': data['title'],  # Will crash if 'title' not provided
+        'completed': False
+    }
+    todos.append(todo)
+    return jsonify(todo), 201
 
-# Performance issue: Loading all data
-def get_all_notifications(request):
-    # Loading entire table into memory
-    notifications = list(Notification.objects.all().values())
-    
-    # No pagination
-    return JsonResponse({'notifications': notifications, 'count': len(notifications)})
+@app.route('/todos/<int:todo_id>', methods=['DELETE'])
+def delete_todo(todo_id):
+    # Bug: No bounds checking
+    del todos[todo_id - 1]  # Will crash if todo_id is invalid
+    return '', 204
+
+# Security issue: Debug mode enabled
+if __name__ == '__main__':
+    app.run(debug=True, host='0.0.0.0')
 """,
-            "src/api/urls.py": """
-from django.urls import path
-from . import views
-
-urlpatterns = [
-    path('send/', views.send_notification),
-    path('user/<str:username>/', views.get_user_notifications),
-    path('template/', views.render_template),
-    path('export/', views.export_notifications),
-    path('all/', views.get_all_notifications),
-]
-""",
-            "tests/test_api.py": """
+            "test_app.py": """
 import pytest
-from django.test import TestCase, Client
-from django.contrib.auth.models import User
-from api.models import Notification
+from app import app, todos
 
-class NotificationAPITest(TestCase):
-    def setUp(self):
-        self.client = Client()
-        self.user = User.objects.create_user('testuser', 'test@example.com', 'password')
-    
-    def test_send_notification(self):
-        # This test will pass but doesn't check security
-        response = self.client.post('/api/send/', 
-            data={'user': self.user.id, 'message': 'Test notification'},
-            content_type='application/json'
-        )
-        self.assertEqual(response.status_code, 200)
-    
-    def test_get_notifications(self):
-        # SQL injection not tested
-        response = self.client.get(f'/api/user/{self.user.username}/')
-        self.assertEqual(response.status_code, 200)
-    
-    def test_template_rendering(self):
-        # Template injection not tested
-        response = self.client.post('/api/template/',
-            data={'template': 'Hello {{ name }}', 'context': {'name': 'World'}},
-            content_type='application/json'
-        )
-        self.assertEqual(response.status_code, 200)
+@pytest.fixture
+def client():
+    app.config['TESTING'] = True
+    with app.test_client() as client:
+        yield client
+    todos.clear()
+
+def test_get_todos(client):
+    response = client.get('/todos')
+    assert response.status_code == 200
+    assert response.json == []
+
+def test_create_todo(client):
+    response = client.post('/todos', json={'title': 'Test todo'})
+    assert response.status_code == 201
+    assert response.json['title'] == 'Test todo'
+
+def test_create_todo_without_title(client):
+    # This test will fail - the app doesn't handle missing title
+    response = client.post('/todos', json={})
+    assert response.status_code == 400  # App will actually crash with 500
+
+def test_delete_invalid_todo(client):
+    # This test will fail - the app doesn't handle invalid IDs
+    response = client.delete('/todos/999')
+    assert response.status_code == 404  # App will actually crash with 500
 """,
-            "requirements.txt": """Django==3.2.13
-djangorestframework==3.13.1
-psycopg2-binary==2.9.3
-gunicorn==20.1.0
-pytest==7.1.2
-pytest-django==4.5.2
-# Vulnerable dependency
-Pillow==8.1.1
+            "requirements.txt": """Flask==2.3.2
+pytest==7.4.0
+pytest-cov==4.1.0
+flake8==6.0.0
+bandit==1.7.5
 """,
             "Dockerfile": """FROM python:3.9-slim
-
 WORKDIR /app
-
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
-
-COPY src/ .
-
-# Running as root
-EXPOSE 8000
-
-# Hardcoded environment
-ENV DJANGO_SETTINGS_MODULE=notification.settings
-ENV PYTHONUNBUFFERED=1
-
-# No static file collection
-CMD ["gunicorn", "notification.wsgi:application", "--bind", "0.0.0.0:8000"]
+COPY . .
+EXPOSE 5000
+CMD ["python", "app.py"]
 """,
             ".gitlab-ci.yml": """include:
   - project: 'cicd-demo/shared-pipelines'
     ref: main
-    file: '/templates/python-complete.yml'
+    file: '/templates/python.yml'
 """
         }
     },
 
-    # 6. React Dashboard - Frontend with quality issues
-    "dashboard-ui": {
-        "description": "React dashboard UI - Build and quality issues",
+    # 3. Node.js Express - Weather Service
+    "weather-service": {
+        "description": "Node.js weather service with quality issues",
         "language": "javascript",
-        "failure_types": ["quality", "security"],
+        "template": "nodejs.yml",
         "files": {
-            "src/App.js": r"""import React, { useState, useEffect } from 'react';
-import axios from 'axios';
-import './App.css';
+            "index.js": """
+const express = require('express');
+const app = express();
+app.use(express.json());
 
-// Hardcoded API configuration
-const API_KEY = 'sk_live_1234567890abcdef';
-const API_URL = 'https://api.example.com';
+// Hardcoded API key (security issue)
+const API_KEY = 'my-secret-weather-api-key';
 
-function App() {
-  const [user, setUser] = useState(null);
-  const [data, setData] = useState([]);
-  const [loading, setLoading] = useState(false);
-  
-  // Performance issue: Missing dependency array
-  useEffect(() => {
-    fetchUserData();
-    fetchDashboardData();
-  });
-  
-  // Security: Storing sensitive data
-  const fetchUserData = async () => {
-    try {
-      const response = await axios.get(`${API_URL}/user`, {
-        headers: { 'X-API-Key': API_KEY }
-      });
-      
-      // Storing sensitive data in localStorage
-      localStorage.setItem('user_token', response.data.token);
-      localStorage.setItem('api_key', API_KEY);
-      
-      setUser(response.data);
-    } catch (error) {
-      console.error('Full error:', error); // Information disclosure
-    }
-  };
-  
-  // Performance: No pagination
-  const fetchDashboardData = async () => {
-    const response = await axios.get(`${API_URL}/dashboard/all`);
-    setData(response.data); // Could be huge dataset
-  };
-  
-  // XSS vulnerability
-  const renderUserContent = (content) => {
-    return <div dangerouslySetInnerHTML={{ __html: content }} />;
-  };
-  
-  // Memory leak: Event listener
-  useEffect(() => {
-    const handleScroll = () => console.log('Scrolling');
-    window.addEventListener('scroll', handleScroll);
-    // Missing cleanup
-  }, []);
-  
-  return (
-    <div className="App">
-      <header>
-        <h1>Dashboard</h1>
-        {/* Exposing API key in UI */}
-        <div className="api-status">API Key: {API_KEY}</div>
-      </header>
-      
-      {user && (
-        <div className="user-section">
-          {/* XSS vulnerability */}
-          {renderUserContent(user.bio)}
-        </div>
-      )}
-      
-      {/* Performance: Rendering large lists */}
-      <div className="data-grid">
-        {data.map((item, index) => (
-          <div key={index} className="data-item">
-            <h3>{item.title}</h3>
-            <p>{item.description}</p>
-            {/* Rendering user HTML */}
-            <div dangerouslySetInnerHTML={{ __html: item.content }} />
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-}
+// In-memory cache (memory leak potential)
+const cache = {};
 
-// Duplicate components
-function Card({ title, content }) {
-  return (
-    <div className="card">
-      <h3>{title}</h3>
-      <p>{content}</p>
-    </div>
-  );
-}
-
-function CardWithImage({ title, content, image }) {
-  return (
-    <div className="card">
-      <img src={image} alt={title} />
-      <h3>{title}</h3>
-      <p>{content}</p>
-    </div>
-  );
-}
-
-export default App;
-""",
-            "src/components/Login.js": r"""import React, { useState } from 'react';
-import axios from 'axios';
-
-const Login = () => {
-  const [username, setUsername] = useState('');
-  const [password, setPassword] = useState('');
-  
-  const handleLogin = async (e) => {
-    e.preventDefault();
+app.get('/weather/:city', async (req, res) => {
+    const { city } = req.params;
     
-    // Client-side validation only
-    if (username === 'admin' && password === 'admin') {
-      localStorage.setItem('isAdmin', 'true');
-      window.location.href = '/admin';
-      return;
+    // Bug: No input validation
+    if (cache[city]) {
+        return res.json(cache[city]);
     }
     
-    // Logging credentials
-    console.log('Login attempt:', { username, password });
+    // Fake weather data
+    const weather = {
+        city: city,
+        temperature: Math.random() * 30 + 10,
+        condition: ['sunny', 'cloudy', 'rainy'][Math.floor(Math.random() * 3)]
+    };
     
-    try {
-      // Sending credentials over HTTP
-      const response = await axios.post('http://api.example.com/login', {
-        username,
-        password
-      });
-      
-      // Weak token storage
-      document.cookie = `token=${response.data.token}`;
-      localStorage.setItem('token', response.data.token);
-      
-    } catch (error) {
-      // Exposing error details
-      alert(`Login failed: ${error.response.data.message}`);
-    }
-  };
-  
-  return (
-    <form onSubmit={handleLogin}>
-      <input
-        type="text"
-        value={username}
-        onChange={(e) => setUsername(e.target.value)}
-        placeholder="Username"
-        autoComplete="username"
-      />
-      <input
-        type="text" // Should be password type
-        value={password}
-        onChange={(e) => setPassword(e.target.value)}
-        placeholder="Password"
-      />
-      <button type="submit">Login</button>
-    </form>
-  );
-};
-
-// Duplicate login form
-const LoginForm = () => {
-  const [username, setUsername] = useState('');
-  const [password, setPassword] = useState('');
-  
-  // Same implementation as above...
-  
-  return (
-    <form>
-      {/* Duplicate code */}
-    </form>
-  );
-};
-
-export default Login;
-""",
-            "src/utils/api.js": r"""import axios from 'axios';
-
-// Hardcoded configuration
-const API_BASE = 'http://api.example.com';
-const API_KEY = 'sk_live_1234567890';
-
-// Creating axios instance with exposed key
-const apiClient = axios.create({
-  baseURL: API_BASE,
-  headers: {
-    'X-API-Key': API_KEY,
-    'Content-Type': 'application/json'
-  }
+    // Memory leak: cache grows indefinitely
+    cache[city] = weather;
+    
+    res.json(weather);
 });
 
-// No request/response interceptors for error handling
+// Code smell: Duplicate endpoints
+app.get('/temperature/:city', async (req, res) => {
+    const { city } = req.params;
+    const weather = {
+        city: city,
+        temperature: Math.random() * 30 + 10
+    };
+    res.json(weather);
+});
 
-// Duplicate API calls
-export const fetchUsers = async () => {
-  const response = await apiClient.get('/users');
-  return response.data;
-};
+app.get('/condition/:city', async (req, res) => {
+    const { city } = req.params;
+    const weather = {
+        city: city,
+        condition: ['sunny', 'cloudy', 'rainy'][Math.floor(Math.random() * 3)]
+    };
+    res.json(weather);
+});
 
-export const getUsers = async () => {
-  // Duplicate of fetchUsers
-  const response = await apiClient.get('/users');
-  return response.data;
-};
+// Error handling that exposes internals
+app.use((err, req, res, next) => {
+    res.status(500).json({
+        error: err.message,
+        stack: err.stack  // Security issue: exposing stack trace
+    });
+});
 
-// No error handling
-export const createUser = async (userData) => {
-  const response = await apiClient.post('/users', userData);
-  return response.data;
-};
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => {
+    console.log(`Server running on port ${PORT}`);
+});
 
-// Exposing internal API structure
-export const debugAPI = () => {
-  console.log('API Configuration:', {
-    base: API_BASE,
-    key: API_KEY,
-    endpoints: ['/users', '/admin', '/config']
-  });
-};
+module.exports = app;
+""",
+            "test.js": """
+const request = require('supertest');
+const app = require('./index');
 
-export default apiClient;
+describe('Weather API', () => {
+    test('GET /weather/:city returns weather data', async () => {
+        const res = await request(app).get('/weather/London');
+        expect(res.statusCode).toBe(200);
+        expect(res.body).toHaveProperty('city', 'London');
+        expect(res.body).toHaveProperty('temperature');
+    });
+    
+    test('GET /weather/:city validates input', async () => {
+        // This test will fail - app doesn't validate input
+        const res = await request(app).get('/weather/');
+        expect(res.statusCode).toBe(400);
+    });
+    
+    test('Temperature is within valid range', async () => {
+        const res = await request(app).get('/weather/TestCity');
+        // This might fail randomly due to random temperature
+        expect(res.body.temperature).toBeGreaterThan(0);
+        expect(res.body.temperature).toBeLessThan(50);
+    });
+});
 """,
             "package.json": """{
-  "name": "dashboard-ui",
+  "name": "weather-service",
   "version": "1.0.0",
+  "description": "Weather API service",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "test": "jest --coverage",
+    "lint": "eslint ."
+  },
   "dependencies": {
-    "react": "17.0.2",
-    "react-dom": "17.0.2",
-    "axios": "0.21.1",
-    "react-router-dom": "5.2.0",
-    "lodash": "4.17.19",
-    "moment": "2.29.1"
+    "express": "^4.18.2"
   },
   "devDependencies": {
-    "react-scripts": "4.0.3",
-    "@testing-library/react": "11.2.7",
-    "@testing-library/jest-dom": "5.14.1"
+    "jest": "^29.5.0",
+    "supertest": "^6.3.3",
+    "eslint": "^8.42.0"
   },
-  "scripts": {
-    "start": "react-scripts start",
-    "build": "react-scripts build",
-    "test": "react-scripts test --watchAll=false",
-    "eject": "react-scripts eject"
-  },
-  "eslintConfig": {
-    "extends": ["react-app"]
-  },
-  "browserslist": {
-    "production": [">0.2%", "not dead", "not op_mini all"],
-    "development": ["last 1 chrome version", "last 1 firefox version"]
+  "jest": {
+    "testEnvironment": "node",
+    "coverageDirectory": "coverage",
+    "collectCoverageFrom": [
+      "index.js"
+    ]
   }
 }
 """,
-            "public/index.html": """<!DOCTYPE html>
-<html lang="en">
-  <head>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Dashboard</title>
-    <!-- Exposing internal info -->
-    <meta name="api-endpoint" content="https://api.example.com" />
-    <meta name="version" content="1.0.0-internal" />
-  </head>
-  <body>
-    <noscript>You need to enable JavaScript to run this app.</noscript>
-    <div id="root"></div>
-    <!-- Including API key in HTML -->
-    <script>
-      window.API_KEY = 'sk_live_1234567890';
-      window.DEBUG_MODE = true;
-    </script>
-  </body>
-</html>
-""",
-            "src/App.css": """/* Basic styles */
-.App {
-  text-align: center;
-  padding: 20px;
-}
-
-.api-status {
-  background: #f0f0f0;
-  padding: 10px;
-  margin: 10px;
-  /* Exposing sensitive info in CSS */
-  /* API endpoint: https://api.example.com */
-}
-
-.data-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
-  gap: 20px;
-  margin: 20px;
-}
-
-.card {
-  border: 1px solid #ddd;
-  padding: 15px;
-  border-radius: 8px;
-}
-
-/* Duplicate styles */
-.data-item {
-  border: 1px solid #ddd;
-  padding: 15px;
-  border-radius: 8px;
+            ".eslintrc.json": """{
+  "env": {
+    "node": true,
+    "es2021": true,
+    "jest": true
+  },
+  "extends": "eslint:recommended",
+  "parserOptions": {
+    "ecmaVersion": 12
+  },
+  "rules": {
+    "no-unused-vars": "error",
+    "no-console": "warn"
+  }
 }
 """,
-            "src/App.test.js": """import { render, screen } from '@testing-library/react';
-import App from './App';
-
-test('renders dashboard header', () => {
-  render(<App />);
-  const headerElement = screen.getByText(/Dashboard/i);
-  expect(headerElement).toBeInTheDocument();
-});
-
-// Missing security tests
-// Missing performance tests
-// Missing error handling tests
-""",
-            "Dockerfile": """FROM node:16-alpine AS build
-
+            "Dockerfile": """FROM node:16-alpine
 WORKDIR /app
-
-# Copying everything including secrets
+COPY package*.json ./
+RUN npm ci --only=production
 COPY . .
-RUN npm install
-RUN npm run build
-
-FROM nginx:alpine
-COPY --from=build /app/build /usr/share/nginx/html
-
-# No custom nginx config
-# No security headers
-# Running as root
-
-EXPOSE 80
-CMD ["nginx", "-g", "daemon off;"]
+EXPOSE 3000
+CMD ["node", "index.js"]
 """,
             ".gitlab-ci.yml": """include:
   - project: 'cicd-demo/shared-pipelines'
     ref: main
-    file: '/templates/react-complete.yml'
+    file: '/templates/nodejs.yml'
 """
         }
+    },
+
+    # 4. Python FastAPI - User Service (Build Failure)
+    "user-service": {
+        "description": "Python FastAPI service with missing dependency",
+        "language": "python",
+        "template": "python.yml",
+        "files": {
+            "main.py": """
+from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel
+from typing import List
+import bcrypt  # This is not in requirements.txt - will cause build failure
+
+app = FastAPI()
+
+# In-memory user storage
+users_db = {}
+
+class User(BaseModel):
+    username: str
+    email: str
+    password: str
+
+class UserResponse(BaseModel):
+    username: str
+    email: str
+
+@app.post("/users", response_model=UserResponse)
+def create_user(user: User):
+    # Check if user exists
+    if user.username in users_db:
+        raise HTTPException(status_code=400, detail="User already exists")
+    
+    # Hash password (bcrypt not installed - will fail)
+    hashed_password = bcrypt.hashpw(user.password.encode('utf-8'), bcrypt.gensalt())
+    
+    users_db[user.username] = {
+        'email': user.email,
+        'password': hashed_password
+    }
+    
+    return UserResponse(username=user.username, email=user.email)
+
+@app.get("/users", response_model=List[UserResponse])
+def get_users():
+    return [
+        UserResponse(username=username, email=data['email']) 
+        for username, data in users_db.items()
+    ]
+""",
+            "requirements.txt": """fastapi==0.100.0
+uvicorn==0.23.1
+pydantic==2.0.2
+# bcrypt is missing - will cause import error
+""",
+            "Dockerfile": """FROM python:3.9-slim
+WORKDIR /app
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+COPY . .
+EXPOSE 8000
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
+""",
+            ".gitlab-ci.yml": """include:
+  - project: 'cicd-demo/shared-pipelines'
+    ref: main
+    file: '/templates/python.yml'
+"""
+        }
+    },
+
+    # 5. Java Maven - Library Manager (Test Failure)
+    "library-manager": {
+        "description": "Java library management with failing tests",
+        "language": "java",
+        "template": "java-maven.yml",
+        "files": {
+            "src/main/java/com/demo/library/Book.java": """
+package com.demo.library;
+
+public class Book {
+    private String isbn;
+    private String title;
+    private String author;
+    private boolean available;
+    
+    public Book(String isbn, String title, String author) {
+        this.isbn = isbn;
+        this.title = title;
+        this.author = author;
+        this.available = true;
+    }
+    
+    // Getters and setters
+    public String getIsbn() { return isbn; }
+    public String getTitle() { return title; }
+    public String getAuthor() { return author; }
+    public boolean isAvailable() { return available; }
+    public void setAvailable(boolean available) { this.available = available; }
+}
+""",
+            "src/main/java/com/demo/library/Library.java": """
+package com.demo.library;
+
+import java.util.*;
+
+public class Library {
+    private Map<String, Book> books = new HashMap<>();
+    
+    public void addBook(Book book) {
+        // Bug: No null check
+        books.put(book.getIsbn(), book);
+    }
+    
+    public Book borrowBook(String isbn) {
+        Book book = books.get(isbn);
+        // Bug: No null check
+        if (book.isAvailable()) {
+            book.setAvailable(false);
+            return book;
+        }
+        throw new RuntimeException("Book not available");
+    }
+    
+    public void returnBook(String isbn) {
+        Book book = books.get(isbn);
+        // Bug: No null check
+        book.setAvailable(true);
+    }
+    
+    public List<Book> getAvailableBooks() {
+        List<Book> available = new ArrayList<>();
+        for (Book book : books.values()) {
+            if (book.isAvailable()) {
+                available.add(book);
+            }
+        }
+        return available;
+    }
+}
+""",
+            "src/test/java/com/demo/library/LibraryTest.java": """
+package com.demo.library;
+
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.BeforeEach;
+import static org.junit.jupiter.api.Assertions.*;
+
+public class LibraryTest {
+    private Library library;
+    
+    @BeforeEach
+    public void setUp() {
+        library = new Library();
+    }
+    
+    @Test
+    public void testAddBook() {
+        Book book = new Book("123", "Test Book", "Test Author");
+        library.addBook(book);
+        assertEquals(1, library.getAvailableBooks().size());
+    }
+    
+    @Test
+    public void testBorrowBook() {
+        Book book = new Book("123", "Test Book", "Test Author");
+        library.addBook(book);
+        
+        Book borrowed = library.borrowBook("123");
+        assertFalse(borrowed.isAvailable());
+        
+        // This will fail - trying to borrow again
+        assertThrows(RuntimeException.class, () -> {
+            library.borrowBook("123");
+        });
+    }
+    
+    @Test
+    public void testBorrowNonExistentBook() {
+        // This test will fail - app throws NullPointerException instead of proper error
+        assertThrows(BookNotFoundException.class, () -> {
+            library.borrowBook("999");
+        });
+    }
+    
+    @Test
+    public void testReturnBook() {
+        Book book = new Book("123", "Test Book", "Test Author");
+        library.addBook(book);
+        library.borrowBook("123");
+        
+        library.returnBook("123");
+        assertTrue(book.isAvailable());
     }
 }
 
-# Continuing from Part 1...
-
-# Enhanced shared CI/CD templates
-SHARED_TEMPLATES = {
-    "templates/base.yml": """
-# Base template with all stages
-variables:
-  DOCKER_DRIVER: overlay2
-  DOCKER_TLS_CERTDIR: ""
-  SONAR_USER_HOME: "${CI_PROJECT_DIR}/.sonar"
-  GIT_DEPTH: "0"
-  IMAGE_NAME: "${CI_PROJECT_NAME}"
-  IMAGE_TAG: "${CI_PROJECT_NAME}:${CI_COMMIT_SHORT_SHA}"
-
-stages:
-  - build
-  - test
-  - scan
-  - package
-  - security-scan
-  - deploy
-  - cleanup
-
-# Base job templates
-.base-rules:
-  rules:
-    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
-    - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
-
-.docker-base:
-  image: docker:24.0.5
-  services:
-    - docker:24.0.5-dind
-  before_script:
-    - docker info
-    - |
-      if [ "$SKIP_IMAGE_PUSH" != "true" ] && [ -n "$CI_REGISTRY" ]; then
-        echo "Logging in to registry $CI_REGISTRY"
-        echo "$CI_JOB_TOKEN" | docker login -u gitlab-ci-token --password-stdin $CI_REGISTRY || true
-      else
-        echo "Skipping registry login (SKIP_IMAGE_PUSH=true or no registry configured)"
-      fi
-
-# SonarQube scanner
-.sonar-scan:
-  image: sonarsource/sonar-scanner-cli:latest
-  stage: scan
-  cache:
-    key: "${CI_JOB_NAME}"
-    paths:
-      - .sonar/cache
-  script:
-    - |
-      sonar-scanner \
-        -Dsonar.projectKey=${SONAR_PROJECT_KEY:-$CI_PROJECT_NAME} \
-        -Dsonar.host.url=${SONAR_HOST_URL} \
-        -Dsonar.token=${SONAR_TOKEN} \
-        -Dsonar.sources=${SONAR_SOURCES:-.} \
-        -Dsonar.projectName=${CI_PROJECT_NAME} \
-        -Dsonar.projectVersion=${CI_COMMIT_SHORT_SHA} \
-        -Dsonar.qualitygate.wait=true
-  allow_failure: false
-
-# Container image scanning
-.container-scan:
-  stage: security-scan
-  image: aquasec/trivy:latest
-  services:
-    - docker:24.0.5-dind
-  before_script:
-    - |
-      # Wait for docker to be ready
-      for i in $(seq 1 30); do
-        if docker info >/dev/null 2>&1; then
-          echo "Docker is ready"
-          break
-        fi
-        echo "Waiting for docker... ($i/30)"
-        sleep 1
-      done
-  script:
-    - |
-      echo "Scanning image ${IMAGE_TAG}"
-      if [ -n "${IMAGE_TAG}" ] && docker image inspect ${IMAGE_TAG} >/dev/null 2>&1; then
-        trivy image --severity HIGH,CRITICAL --exit-code 0 ${IMAGE_TAG} || echo "Scan completed with findings"
-      else
-        echo "Image ${IMAGE_TAG} not found locally, skipping scan"
-      fi
-  allow_failure: true
-
-# Image cleanup
-.cleanup-image:
-  stage: cleanup
-  extends: .docker-base
-  script:
-    - |
-      echo "Starting cleanup for ${IMAGE_TAG}"
-      if [ -n "${IMAGE_TAG}" ]; then
-        docker rmi ${IMAGE_TAG} 2>/dev/null || echo "Image ${IMAGE_TAG} already removed or not found"
-      else
-        echo "No image tag specified, skipping cleanup"
-      fi
-      echo "Cleanup completed successfully"
-  when: always
-  allow_failure: true
+class BookNotFoundException extends RuntimeException {}
 """,
-
-    "templates/java-complete.yml": """
-include:
-  - local: '/templates/base.yml'
-
-# Build stage
-build:
-  stage: build
-  image: maven:3.8-openjdk-$JAVA_VERSION
-  extends: .base-rules
-  cache:
-    paths:
-      - .m2/repository
-  script:
-    - mvn clean compile
-  artifacts:
-    paths:
-      - target/
-
-# Test stage
-test:
-  stage: test
-  image: maven:3.8-openjdk-$JAVA_VERSION
-  extends: .base-rules
-  needs: ["build"]
-  script:
-    - mvn test
-  artifacts:
-    reports:
-      junit:
-        - target/surefire-reports/TEST-*.xml
-    paths:
-      - target/
-
-# SonarQube analysis (runs in parallel with tests)
-sonarqube-check:
-  extends: .sonar-scan
-  needs: ["build"]
-  variables:
-    SONAR_SOURCES: ${SONAR_SOURCES:-src/main/java}
-    SONAR_JAVA_BINARIES: ${SONAR_JAVA_BINARIES:-target/classes}
-    SONAR_JUNIT_REPORT_PATHS: target/surefire-reports
-
-# Package application
-package:
-  stage: package
-  image: maven:3.8-openjdk-$JAVA_VERSION
-  extends: .base-rules
-  needs: ["test"]
-  script:
-    - mvn package -DskipTests
-  artifacts:
-    paths:
-      - target/*.jar
-
-# Build Docker image
-build-image:
-  stage: package
-  extends: 
-    - .docker-base
-    - .base-rules
-  needs: ["package"]
-  script:
-    - |
-      echo "Building Docker image ${IMAGE_TAG}"
-      docker build -t ${IMAGE_TAG} .
-      if [ "$SKIP_IMAGE_PUSH" != "true" ]; then
-        echo "Pushing image to registry"
-        docker push ${IMAGE_TAG} || echo "Push failed, continuing anyway"
-      else
-        echo "Skipping image push (SKIP_IMAGE_PUSH=true)"
-      fi
-
-# Scan Docker image
-scan-image:
-  extends: .container-scan
-  needs: ["build-image"]
-
-# Deploy (dry-run)
-deploy:
-  stage: deploy
-  image: bitnami/kubectl:latest
-  extends: .base-rules
-  needs: ["scan-image"]
-  script:
-    - echo "Deploying ${SERVICE_NAME} version ${CI_COMMIT_SHORT_SHA}"
-    - kubectl version --client
-    - echo "kubectl apply -f k8s/ --dry-run=client"
-  environment:
-    name: production
-    url: https://${SERVICE_NAME}.example.com
-
-# Cleanup
-cleanup:
-  extends: .cleanup-image
-  needs: ["deploy"]
-  allow_failure: true
+            "pom.xml": """<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 
+         https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+    
+    <groupId>com.demo</groupId>
+    <artifactId>library-manager</artifactId>
+    <version>1.0.0</version>
+    
+    <properties>
+        <maven.compiler.source>11</maven.compiler.source>
+        <maven.compiler.target>11</maven.compiler.target>
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+    </properties>
+    
+    <dependencies>
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter</artifactId>
+            <version>5.9.2</version>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+    
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-surefire-plugin</artifactId>
+                <version>3.0.0-M9</version>
+            </plugin>
+        </plugins>
+    </build>
+</project>
 """,
-
-    "templates/python-complete.yml": """
-include:
-  - local: '/templates/base.yml'
-
-# Build dependencies
-build:
-  stage: build
-  image: python:$PYTHON_VERSION
-  extends: .base-rules
-  cache:
-    paths:
-      - .cache/pip
-      - venv/
-  script:
-    - python -m venv venv
-    - source venv/bin/activate
-    - pip install --upgrade pip
-    - pip install -r requirements.txt
-  artifacts:
-    paths:
-      - venv/
-
-# Run tests
-test:
-  stage: test
-  image: python:$PYTHON_VERSION
-  extends: .base-rules
-  needs: ["build"]
-  script:
-    - source venv/bin/activate
-    - pip install pytest pytest-cov
-    - pytest --cov=. --cov-report=xml --cov-report=term || true
-  artifacts:
-    reports:
-      coverage_report:
-        coverage_format: cobertura
-        path: coverage.xml
-    paths:
-      - coverage.xml
-
-# SonarQube analysis
-sonarqube-check:
-  extends: .sonar-scan
-  needs: ["build"]
-  variables:
-    SONAR_SOURCES: ${SONAR_SOURCES:-.}
-    SONAR_PYTHON_COVERAGE_REPORTPATHS: coverage.xml
-    SONAR_PYTHON_VERSION: $PYTHON_VERSION
-
-# Build Docker image
-build-image:
-  stage: package
-  extends:
-    - .docker-base
-    - .base-rules
-  needs: ["test"]
-  script:
-    - |
-      echo "Building Docker image ${IMAGE_TAG}"
-      docker build -t ${IMAGE_TAG} .
-      if [ "$SKIP_IMAGE_PUSH" != "true" ]; then
-        echo "Pushing image to registry"
-        docker push ${IMAGE_TAG} || echo "Push failed, continuing anyway"
-      else
-        echo "Skipping image push (SKIP_IMAGE_PUSH=true)"
-      fi
-
-# Security scanning
-security-scan:
-  stage: security-scan
-  image: python:$PYTHON_VERSION
-  extends: .base-rules
-  needs: ["build"]
-  script:
-    - source venv/bin/activate
-    - pip install safety bandit
-    - safety check || true
-    - bandit -r . -f json -o bandit-report.json || true
-  artifacts:
-    reports:
-      sast: bandit-report.json
-
-# Image scanning
-scan-image:
-  extends: .container-scan
-  needs: ["build-image"]
-
-# Deploy
-deploy:
-  stage: deploy
-  image: bitnami/kubectl:latest
-  extends: .base-rules
-  needs: ["scan-image"]
-  script:
-    - echo "Deploying ${SERVICE_NAME} version ${CI_COMMIT_SHORT_SHA}"
-    - echo "kubectl apply -f k8s/ --dry-run=client"
-
-# Cleanup
-cleanup:
-  extends: .cleanup-image
-  needs: ["deploy"]
-  allow_failure: true
+            "Dockerfile": """FROM openjdk:11-jre-slim
+WORKDIR /app
+COPY target/*.jar app.jar
+EXPOSE 8080
+CMD ["java", "-jar", "app.jar"]
 """,
-
-    "templates/nodejs-complete.yml": """
-include:
-  - local: '/templates/base.yml'
-
-# Install dependencies
-build:
-  stage: build
-  image: node:$NODE_VERSION
-  extends: .base-rules
-  cache:
-    paths:
-      - node_modules/
-      - .npm/
-  script:
-    - npm ci || npm install
-  artifacts:
-    paths:
-      - node_modules/
-
-# Run tests
-test:
-  stage: test
-  image: node:$NODE_VERSION
-  extends: .base-rules
-  needs: ["build"]
-  script:
-    - npm test -- --coverage --forceExit || true
-  coverage: '/Lines\\s+:\\s+(\\d+\\.?\\d*)%/'
-  artifacts:
-    reports:
-      junit: junit.xml
-      coverage_report:
-        coverage_format: cobertura
-        path: coverage/cobertura-coverage.xml
-    paths:
-      - coverage/
-
-# Lint code
-lint:
-  stage: test
-  image: node:$NODE_VERSION
-  extends: .base-rules
-  needs: ["build"]
-  script:
-    - npm run lint || true
-
-# SonarQube analysis
-sonarqube-check:
-  extends: .sonar-scan
-  needs: ["build"]
-  variables:
-    SONAR_SOURCES: ${SONAR_SOURCES:-src}
-    SONAR_JAVASCRIPT_LCOV_REPORTPATHS: coverage/lcov.info
-
-# Build application
-package:
-  stage: package
-  image: node:$NODE_VERSION
-  extends: .base-rules
-  needs: ["test"]
-  script:
-    - npm run build || echo "No build script"
-  artifacts:
-    paths:
-      - dist/
-      - build/
-
-# Build Docker image
-build-image:
-  stage: package
-  extends:
-    - .docker-base
-    - .base-rules
-  needs: ["package"]
-  script:
-    - |
-      echo "Building Docker image ${IMAGE_TAG}"
-      docker build -t ${IMAGE_TAG} .
-      if [ "$SKIP_IMAGE_PUSH" != "true" ]; then
-        echo "Pushing image to registry"
-        docker push ${IMAGE_TAG} || echo "Push failed, continuing anyway"
-      else
-        echo "Skipping image push (SKIP_IMAGE_PUSH=true)"
-      fi
-
-# Security audit
-security-scan:
-  stage: security-scan
-  image: node:$NODE_VERSION
-  extends: .base-rules
-  needs: ["build"]
-  script:
-    - npm audit --audit-level=moderate || true
-
-# Image scan
-scan-image:
-  extends: .container-scan
-  needs: ["build-image"]
-
-# Deploy
-deploy:
-  stage: deploy
-  extends: .base-rules
-  needs: ["scan-image"]
-  script:
-    - echo "Deploying ${SERVICE_NAME} version ${CI_COMMIT_SHORT_SHA}"
-
-# Cleanup
-cleanup:
-  extends: .cleanup-image
-  needs: ["deploy"]
-""",
-
-    "templates/react-complete.yml": """
-include:
-  - local: '/templates/nodejs-complete.yml'
-
-# Override for React specific build
-package:
-  stage: package
-  image: node:$NODE_VERSION
-  extends: .base-rules
-  needs: ["test"]
-  script:
-    - npm run build
-    - echo "Build size:"
-    - du -sh build | cut -f1
-  artifacts:
-    paths:
-      - build/
-
-# Deploy simulation for frontend
-deploy:
-  stage: deploy
-  image: alpine:latest
-  extends: .base-rules
-  needs: ["scan-image"]
-  script:
-    - echo "=== Simulating deployment of ${SERVICE_NAME} ==="
-    - echo "Target CDN bucket s3://frontend-${SERVICE_NAME}"
-    - echo "CloudFront distribution d1234567890.cloudfront.net"
-    - echo "Invalidating cache paths /*"
-    - echo "Deployment simulation completed successfully"
-  environment:
-    name: production
-    url: https://${SERVICE_NAME}.example.com
+            ".gitlab-ci.yml": """include:
+  - project: 'cicd-demo/shared-pipelines'
+    ref: main
+    file: '/templates/java-maven.yml'
 """
+        }
+    }
 }
 
 class GitLabSetup:
@@ -2286,8 +1129,7 @@ class GitLabSetup:
             groups = self.gl.groups.list(search=GROUP_NAME)
             if groups:
                 groups[0].delete()
-                info("Waiting for deletion to complete...")
-                time.sleep(5)
+                time.sleep(3)
             success("Cleanup complete")
         except Exception as e:
             warning(f"Cleanup warning: {e}")
@@ -2299,32 +1141,30 @@ class GitLabSetup:
         group = self.gl.groups.create({
             'name': GROUP_NAME,
             'path': GROUP_NAME,
-            'description': 'CI/CD demonstration environment with comprehensive failure scenarios'
+            'description': 'CI/CD demonstration with various failure scenarios'
         })
         
         # Set namespace-level CI/CD variables
         info("Setting namespace-level CI/CD variables...")
         for var in NAMESPACE_VARIABLES:
             try:
-                # Update sonar token if provided
                 if var['key'] == 'SONAR_TOKEN' and hasattr(self, 'sonar_token'):
                     var['value'] = self.sonar_token
-                    
                 group.variables.create(var)
                 info(f"  Added namespace variable: {var['key']}")
             except Exception as e:
                 warning(f"  Failed to add namespace variable {var['key']}: {e}")
         
-        # Create shared pipelines project
+        # Create shared pipelines project first
         info("Creating shared pipelines repository...")
         shared_project = self.gl.projects.create({
             'name': 'shared-pipelines',
             'namespace_id': group.id,
-            'description': 'Shared CI/CD pipeline templates with all lifecycle stages'
+            'description': 'Shared CI/CD pipeline templates'
         })
         
         # Commit shared templates
-        self._commit_files(shared_project, SHARED_TEMPLATES, "feat: comprehensive CI/CD templates for all languages")
+        self._commit_files(shared_project, SHARED_TEMPLATES, "feat: Add shared CI/CD templates")
         
         # Create application projects
         for project_name, config in PROJECTS.items():
@@ -2337,46 +1177,28 @@ class GitLabSetup:
             
             # Set project-specific variables
             info(f"  Setting project-level variables for {project_name}...")
-            
-            # Always set SONAR_PROJECT_KEY
-            project.variables.create({
-                'key': 'SONAR_PROJECT_KEY',
-                'value': project_name
-            })
-            
-            # Set project-specific variables
             if project_name in PROJECT_VARIABLES:
                 for var in PROJECT_VARIABLES[project_name]:
                     try:
                         project.variables.create(var)
-                        info(f"    Added variable: {var['key']} = {var['value']}")
+                        info(f"    Added variable: {var['key']}")
                     except Exception as e:
                         warning(f"    Failed to add variable {var['key']}: {e}")
             
-            # Create webhooks
-            webhooks = [
-                {
+            # Create webhook
+            try:
+                project.hooks.create({
                     'url': f"{AGENT_WEBHOOK_URL}/gitlab",
                     'pipeline_events': True,
-                    'push_events': True,
+                    'push_events': False,
                     'merge_requests_events': True
-                }
-            ]
+                })
+                info(f"  Added webhook for {project_name}")
+            except:
+                pass
             
-            for webhook in webhooks:
-                try:
-                    project.hooks.create(webhook)
-                    info(f"  Added webhook: {webhook['url']}")
-                except:
-                    pass
-            
-            # Commit project files
-            failure_types = ', '.join(config['failure_types'])
-            self._commit_files(
-                project, 
-                config['files'], 
-                f"feat: {config['language']} service with {failure_types} scenarios"
-            )
+            # Commit files
+            self._commit_files(project, config['files'], f"Initial commit: {config['language']} project")
             
         success(f"GitLab environment created: {group.web_url}")
         return group
@@ -2430,7 +1252,7 @@ class SonarQubeSetup:
         success("SonarQube cleanup complete")
         
     def create_quality_gate(self):
-        """Create comprehensive quality gate"""
+        """Create quality gate with reasonable thresholds"""
         info(f"Creating quality gate '{QUALITY_GATE_NAME}'...")
         
         # Create gate
@@ -2444,34 +1266,25 @@ class SonarQubeSetup:
         else:
             response.raise_for_status()
             
-        # Comprehensive conditions for different aspects
+        # Add conditions
         conditions = [
             # Coverage
-            {'metric': 'new_coverage', 'op': 'LT', 'error': '80'},
-            {'metric': 'new_line_coverage', 'op': 'LT', 'error': '80'},
-            {'metric': 'new_branch_coverage', 'op': 'LT', 'error': '70'},
+            {'metric': 'new_coverage', 'op': 'LT', 'error': '50'},
             
-            # Reliability (Bugs)
-            {'metric': 'new_reliability_rating', 'op': 'GT', 'error': '1'},
+            # Bugs
             {'metric': 'new_bugs', 'op': 'GT', 'error': '0'},
             
-            # Security (Vulnerabilities)
-            {'metric': 'new_security_rating', 'op': 'GT', 'error': '1'},
+            # Vulnerabilities
             {'metric': 'new_vulnerabilities', 'op': 'GT', 'error': '0'},
-            {'metric': 'new_security_hotspots_reviewed', 'op': 'LT', 'error': '100'},
             
-            # Maintainability (Code Smells)
-            {'metric': 'new_maintainability_rating', 'op': 'GT', 'error': '1'},
+            # Code Smells
             {'metric': 'new_code_smells', 'op': 'GT', 'error': '5'},
-            {'metric': 'new_technical_debt_ratio', 'op': 'GT', 'error': '5'},
             
             # Duplications
-            {'metric': 'new_duplicated_lines_density', 'op': 'GT', 'error': '3'},
-            {'metric': 'new_duplicated_blocks', 'op': 'GT', 'error': '1'},
+            {'metric': 'new_duplicated_lines_density', 'op': 'GT', 'error': '10'},
             
             # Complexity
-            {'metric': 'complexity', 'op': 'GT', 'error': '20'},
-            {'metric': 'cognitive_complexity', 'op': 'GT', 'error': '15'},
+            {'metric': 'complexity', 'op': 'GT', 'error': '50'},
         ]
         
         for condition in conditions:
@@ -2495,12 +1308,12 @@ class SonarQubeSetup:
             params={'name': QUALITY_GATE_NAME}
         )
         
-        success("Comprehensive quality gate created")
+        success("Quality gate created")
         
     def create_projects(self):
         """Create SonarQube projects"""
-        for project_name, config in PROJECTS.items():
-            info(f"Creating SonarQube project '{project_name}' ({config['language']})...")
+        for project_name in PROJECTS:
+            info(f"Creating SonarQube project '{project_name}'...")
             
             # Create project
             response = self.session.post(
@@ -2511,7 +1324,7 @@ class SonarQubeSetup:
                 }
             )
             
-            if response.status_code != 400:  # 400 = already exists
+            if response.status_code != 400:
                 response.raise_for_status()
                 
             # Create webhook
@@ -2524,130 +1337,85 @@ class SonarQubeSetup:
                 }
             )
             
-            # Set project-specific settings based on language
-            language_settings = {
-                'java': {'sonar.java.source': '11'},
-                'python': {'sonar.python.version': '3.9'},
-                'nodejs': {'sonar.javascript.node.maxspace': '4096'},
-                'javascript': {'sonar.javascript.environments': 'browser'}
-            }
-            
-            if config['language'] in language_settings:
-                for key, value in language_settings[config['language']].items():
-                    self.session.post(
-                        f"{self.url}/api/settings/set",
-                        params={
-                            'component': project_name,
-                            'key': key,
-                            'value': value
-                        }
-                    )
-            
-        success("SonarQube projects created with language-specific settings")
+        success("SonarQube projects created")
 
 def print_summary():
-    """Print summary of created projects and their failure scenarios"""
+    """Print summary of created projects"""
     print("\n" + "="*80)
-    success("Environment setup complete! Created projects with various failure scenarios:")
+    success("Demo environment created successfully!")
     
-    print("\n📦 JAVA PROJECTS:")
-    print("  • payment-gateway: Spring Boot payment service")
-    print("    - Build failure: Missing H2 dependency (intentional)")
-    print("    - Quality issues: SQL injection, weak encryption, hardcoded secrets")
-    print("    - Code smells: Duplicate code, magic numbers")
+    print("\n📦 PROJECTS CREATED:")
+    print("\n🔵 JAVA PROJECTS:")
+    print("  • calculator-service: REST API with division by zero bug and failing tests")
+    print("  • library-manager: Library system with null pointer bugs and test failures")
     
-    print("\n  • auth-service: Spring Boot authentication service")
-    print("    - Security vulnerabilities: Plain text passwords, SQL injection")
-    print("    - Quality issues: Mass assignment, timing attacks")
-    print("    - Dependencies: Vulnerable Log4j version")
+    print("\n🟢 PYTHON PROJECTS:")
+    print("  • todo-api: Flask API with validation bugs and test failures")
+    print("  • user-service: FastAPI with missing dependency (build failure)")
     
-    print("\n🐍 PYTHON PROJECTS:")
-    print("  • user-service: FastAPI user management")
-    print("    - Test failures: SQL injection tests, authentication tests")
-    print("    - Security: MD5 hashing, hardcoded admin credentials")
-    print("    - Quality: Duplicate code, N+1 queries")
+    print("\n🟡 JAVASCRIPT PROJECTS:")
+    print("  • weather-service: Express API with memory leak and quality issues")
     
-    print("\n  • notification-api: Django notification service")
-    print("    - Quality issues: Template injection, path traversal")
-    print("    - Performance: No pagination, blocking I/O")
-    print("    - Security: CSRF disabled, debug mode enabled")
+    print("\n📚 SHARED PIPELINES:")
+    print("  • Templates for Java (Maven), Python, and Node.js projects")
+    print("  • Centralized CI/CD configuration")
+    print("  • Consistent stages across all projects")
     
-    print("\n📗 NODE.JS PROJECTS:")
-    print("  • inventory-api: Express.js inventory management")
-    print("    - Quality gate failures: NoSQL injection, memory leaks")
-    print("    - Security: JWT weak secret, hardcoded credentials")
-    print("    - Code smells: Duplicate code, no validation")
+    print("\n🔧 CI/CD VARIABLES:")
+    print("  • Group-level: Docker, SonarQube, and language defaults")
+    print("  • Project-level: Service names, language versions, SonarQube keys")
     
-    print("\n⚛️ REACT PROJECTS:")
-    print("  • dashboard-ui: React dashboard application")
-    print("    - Build issues: Missing optimizations")
-    print("    - Security: XSS vulnerabilities, exposed API keys")
-    print("    - Quality: Memory leaks, duplicate components")
+    print("\n🚨 EXPECTED FAILURES:")
+    print("  • Build failures: user-service (missing bcrypt dependency)")
+    print("  • Test failures: calculator-service, todo-api, library-manager")
+    print("  • Quality gate failures: All projects (code smells, coverage)")
+    print("  • Security scan failures: Possible in docker images")
     
-    print("\n🔑 CI/CD VARIABLES:")
-    print("  Namespace-level variables set at group level")
-    print("  Project-specific variables set for each service")
-    
-    print("\n🚀 CI/CD PIPELINE STAGES:")
-    print("  1. Build - Compile/install dependencies")
-    print("  2. Test - Run unit tests with coverage")
-    print("  3. Scan - SonarQube analysis (parallel with tests)")
-    print("  4. Package - Create artifacts/build images")
-    print("  5. Security Scan - Container vulnerability scanning")
-    print("  6. Deploy - Simulated deployment (dry-run)")
-    print("  7. Cleanup - Remove temporary images")
-    
-    print("\n🔍 SONARQUBE QUALITY GATE:")
-    print("  • Coverage: 80% minimum")
-    print("  • Bugs: 0 allowed")
-    print("  • Vulnerabilities: 0 allowed")
-    print("  • Code Smells: Maximum 5")
-    print("  • Security Hotspots: 100% reviewed")
-    print("  • Duplications: < 3%")
+    print("\n✅ ALL PIPELINES SHOULD RUN WITHOUT CI/CD ERRORS")
+    print("   (failures are in the application code, not the pipeline config)")
     print("\n" + "="*80)
 
 if __name__ == "__main__":
-    print("=== Enhanced CI/CD Failure Analysis Environment Setup ===\n")
+    print("=== CI/CD Demo Environment Setup ===\n")
     
     # Get credentials
     gitlab_url = input("GitLab URL [http://localhost:8080]: ").strip() or "http://localhost:8080"
-    gitlab_token = getpass.getpass("GitLab Token (api scope): ")
+    gitlab_token = getpass.getpass("GitLab Token (with api scope): ")
     sonar_url = input("SonarQube URL [http://localhost:9001]: ").strip() or "http://localhost:9001"
     sonar_token = getpass.getpass("SonarQube Token: ")
     
-    print("\nThis script will:")
-    print(f"- Create GitLab group '{GROUP_NAME}' with shared pipeline templates")
-    print(f"- Create {len(PROJECTS)} projects: 2 Java, 2 Python, 1 Node.js, 1 React")
-    print(f"- Configure comprehensive CI/CD pipelines with all stages")
-    print(f"- Set up namespace and project-level CI/CD variables")
-    print(f"- Create strict SonarQube quality gate '{QUALITY_GATE_NAME}'")
-    print("- Set up webhooks for automated failure analysis")
-    print("\nAll projects will have realistic codebases with various failure scenarios.")
+    print(f"\nThis script will create:")
+    print(f"- GitLab group '{GROUP_NAME}'")
+    print(f"- Shared pipeline templates repository")
+    print(f"- 5 projects with various failure scenarios")
+    print(f"- Group and project-level CI/CD variables")
+    print(f"- SonarQube quality gate '{QUALITY_GATE_NAME}'")
+    print(f"- Webhook integrations")
     
     if input("\nProceed? (yes/no): ").lower() != 'yes':
         print("Cancelled")
         sys.exit(0)
         
     try:
-        # Initialize managers
+        # Initialize
         gitlab_manager = GitLabSetup(gitlab_url, gitlab_token)
-        gitlab_manager.sonar_token = sonar_token  # Pass sonar token
+        gitlab_manager.sonar_token = sonar_token
         sonar_manager = SonarQubeSetup(sonar_url, sonar_token)
         
         # Cleanup
         gitlab_manager.cleanup()
         sonar_manager.cleanup()
         
-        # Create environment
+        # Create
         sonar_manager.create_quality_gate()
         sonar_manager.create_projects()
         group = gitlab_manager.create_environment()
         
-        # Print summary
+        # Summary
         print_summary()
         
-        print(f"\n🌐 Access your projects at: {group.web_url}")
-        print(f"📊 View quality gates at: {sonar_url}/projects")
+        print(f"\n🌐 GitLab projects: {group.web_url}")
+        print(f"📊 SonarQube: {sonar_url}/projects")
         
     except Exception as e:
         error(f"Setup failed: {e}")

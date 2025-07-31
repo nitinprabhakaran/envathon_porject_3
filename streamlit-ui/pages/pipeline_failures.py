@@ -27,6 +27,28 @@ if "failure_groups" not in st.session_state:
 if "show_chat" not in st.session_state:
     st.session_state.show_chat = {}
 
+def calculate_time_remaining(expires_at):
+    """Calculate time remaining until session expires"""
+    if isinstance(expires_at, str):
+        expires_at = datetime.fromisoformat(expires_at.replace('Z', '+00:00'))
+    
+    now = datetime.utcnow()
+    if expires_at.tzinfo:
+        expires_at = expires_at.replace(tzinfo=None)
+    
+    remaining = expires_at - now
+    
+    if remaining.total_seconds() <= 0:
+        return "Expired"
+    
+    hours = int(remaining.total_seconds() // 3600)
+    minutes = int((remaining.total_seconds() % 3600) // 60)
+    
+    if hours > 0:
+        return f"{hours}h {minutes}m"
+    else:
+        return f"{minutes}m"
+
 # Header
 st.title("🚀 Pipeline Failures")
 
@@ -102,7 +124,17 @@ with col1:
                     for session in sessions:
                         # Get job name or use fallback
                         job_name = session.get('job_name') or session.get('failed_stage') or 'Unknown Job'
-                        button_label = f"{job_name}"
+                        time_remaining = calculate_time_remaining(session.get('expires_at'))
+                        
+                        # Color code based on time remaining
+                        if time_remaining == "Expired":
+                            time_color = "🔴"
+                        elif "m" in time_remaining and not "h" in time_remaining:
+                            time_color = "🟡"
+                        else:
+                            time_color = "🟢"
+                        
+                        button_label = f"{job_name}\n{time_color} {time_remaining}"
                         
                         if st.button(
                             button_label,
@@ -127,6 +159,15 @@ with col2:
         try:
             full_session = asyncio.run(st.session_state.api_client.get_session(session_id))
             messages = full_session.get("conversation_history", [])
+            
+            # Show expiration timer at top
+            time_remaining = calculate_time_remaining(full_session.get('expires_at'))
+            if time_remaining == "Expired":
+                st.error(f"⏰ This session has expired and will be cleaned up")
+            elif "m" in time_remaining and not "h" in time_remaining:
+                st.warning(f"⏰ Session expires in: {time_remaining}")
+            else:
+                st.info(f"⏰ Session expires in: {time_remaining}")
             
             # Display latest analysis
             st.markdown("### 📋 Latest Analysis")
@@ -225,6 +266,7 @@ with col2:
                 for job_name, job_sessions in job_groups.items():
                     latest_session = max(job_sessions, key=lambda x: x.get("created_at", ""))
                     status = latest_session.get("status", "active")
+                    time_remaining = calculate_time_remaining(latest_session.get('expires_at'))
                     
                     # Create card
                     with st.container():
@@ -234,12 +276,21 @@ with col2:
                             status_emoji = "🔴" if status == "active" else "🟢" if status == "resolved" else "🟡"
                             status_text = "Failed" if status == "active" else "Fixed" if status == "resolved" else "Analyzing"
                             
+                            # Color for time
+                            if time_remaining == "Expired":
+                                time_emoji = "🔴"
+                            elif "m" in time_remaining and not "h" in time_remaining:
+                                time_emoji = "🟡"
+                            else:
+                                time_emoji = "🟢"
+                            
                             st.markdown(f"""
                             **{status_emoji} {job_name}** - {status_text}
                             
                             Stage: {latest_session.get("failed_stage", "Unknown")} | 
                             {len(job_sessions)} occurrence(s) | 
-                            Last: {datetime.fromisoformat(latest_session.get("created_at", datetime.now().isoformat())).strftime("%b %d, %H:%M")}
+                            Last: {datetime.fromisoformat(latest_session.get("created_at", datetime.now().isoformat())).strftime("%b %d, %H:%M")} |
+                            {time_emoji} Expires: {time_remaining}
                             """)
                         
                         with col_action:
@@ -263,6 +314,19 @@ with col3:
         st.caption(f"Pipeline: #{session.get('pipeline_id', 'N/A')}")
         st.caption(f"Stage: {session.get('failed_stage', 'N/A')}")
         st.caption(f"Job: {session.get('job_name', 'N/A')}")
+        
+        # Session timing
+        st.markdown("**Session Info:**")
+        created_at = session.get('created_at')
+        if created_at:
+            created_time = datetime.fromisoformat(created_at.replace('Z', '+00:00'))
+            st.caption(f"Created: {created_time.strftime('%b %d, %H:%M')}")
+        
+        time_remaining = calculate_time_remaining(session.get('expires_at'))
+        if time_remaining == "Expired":
+            st.caption("⏰ Status: Expired")
+        else:
+            st.caption(f"⏰ Expires in: {time_remaining}")
         
         if url := session.get('pipeline_url'):
             st.link_button("View in GitLab", url, use_container_width=True)

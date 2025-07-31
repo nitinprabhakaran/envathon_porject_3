@@ -221,6 +221,7 @@ services:
       - SONAR_TOKEN=${SONAR_TOKEN}
       - SESSION_TIMEOUT_MINUTES=${SESSION_TIMEOUT_MINUTES:-180}
       - LOG_LEVEL=INFO
+      - MODEL_ID=${MODEL_ID:-claude-3-haiku-20240307}
     ports:
       - "8000:8000"
     volumes:

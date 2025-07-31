@@ -6,6 +6,9 @@ from datetime import datetime
 from utils.logger import log
 from config import settings
 
+# Maximum log size to prevent token limit issues
+MAX_LOG_SIZE = 60000
+
 async def get_gitlab_client():
     """Create GitLab API client"""
     headers = {"PRIVATE-TOKEN": settings.gitlab_token} if settings.gitlab_token else {}
@@ -14,6 +17,23 @@ async def get_gitlab_client():
         headers=headers, 
         timeout=30.0
     )
+
+def truncate_log(log_content: str, max_size: int = MAX_LOG_SIZE) -> str:
+    """Truncate log content if too large, keeping beginning and end"""
+    if len(log_content) <= max_size:
+        return log_content
+    
+    # Keep first 40% and last 40% of allowed size
+    start_size = int(max_size * 0.4)
+    end_size = int(max_size * 0.4)
+    
+    truncated = (
+        log_content[:start_size] + 
+        f"\n\n... [TRUNCATED - Log too large, showing first {start_size} and last {end_size} characters] ...\n\n" + 
+        log_content[-end_size:]
+    )
+    
+    return truncated
 
 @tool
 async def get_pipeline_jobs(pipeline_id: str, project_id: str) -> List[Dict[str, Any]]:
@@ -40,23 +60,37 @@ async def get_pipeline_jobs(pipeline_id: str, project_id: str) -> List[Dict[str,
             return [{"error": str(e)}]
 
 @tool
-async def get_job_logs(job_id: str, project_id: str) -> str:
+async def get_job_logs(job_id: str, project_id: str, max_size: Optional[int] = None) -> str:
     """Get logs for a specific pipeline job
     
     Args:
         job_id: GitLab job ID
         project_id: GitLab project ID
+        max_size: Maximum log size in characters (default: 50000)
     
     Returns:
-        Job log content as text
+        Job log content as text (truncated if too large)
     """
     log.info(f"Getting logs for job {job_id} in project {project_id}")
+    
+    if max_size is None:
+        max_size = MAX_LOG_SIZE
     
     async with await get_gitlab_client() as client:
         try:
             response = await client.get(f"/projects/{project_id}/jobs/{job_id}/trace")
             response.raise_for_status()
-            return response.text
+            
+            log_content = response.text
+            original_size = len(log_content)
+            
+            # Truncate if too large
+            if original_size > max_size:
+                log.warning(f"Log size ({original_size} chars) exceeds limit ({max_size} chars), truncating...")
+                log_content = truncate_log(log_content, max_size)
+            
+            return log_content
+            
         except Exception as e:
             log.error(f"Failed to get job logs: {e}")
             return f"Error getting job logs: {str(e)}"

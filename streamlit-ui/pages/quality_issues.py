@@ -2,7 +2,7 @@
 import streamlit as st
 import asyncio
 import json
-from datetime import datetime
+from datetime import datetime, timedelta
 from utils.api_client import APIClient
 from utils.logger import setup_logger
 
@@ -24,6 +24,28 @@ if "quality_messages" not in st.session_state:
     st.session_state.quality_messages = {}
 if "show_quality_chat" not in st.session_state:
     st.session_state.show_quality_chat = {}
+
+def calculate_time_remaining(expires_at):
+    """Calculate time remaining until session expires"""
+    if isinstance(expires_at, str):
+        expires_at = datetime.fromisoformat(expires_at.replace('Z', '+00:00'))
+    
+    now = datetime.utcnow()
+    if expires_at.tzinfo:
+        expires_at = expires_at.replace(tzinfo=None)
+    
+    remaining = expires_at - now
+    
+    if remaining.total_seconds() <= 0:
+        return "Expired"
+    
+    hours = int(remaining.total_seconds() // 3600)
+    minutes = int((remaining.total_seconds() % 3600) // 60)
+    
+    if hours > 0:
+        return f"{hours}h {minutes}m"
+    else:
+        return f"{minutes}m"
 
 # Header
 st.title("📊 Quality Issues")
@@ -63,9 +85,18 @@ with col1:
                 project_name = session.get("project_name", "Unknown")
                 gate_status = session.get("quality_gate_status", "ERROR")
                 total_issues = session.get("total_issues", 0)
+                time_remaining = calculate_time_remaining(session.get('expires_at'))
+                
+                # Color code based on time remaining
+                if time_remaining == "Expired":
+                    time_color = "🔴"
+                elif "m" in time_remaining and not "h" in time_remaining:
+                    time_color = "🟡"
+                else:
+                    time_color = "🟢"
                 
                 # Session button
-                button_label = f"🚨 {project_name}\n{total_issues} issues"
+                button_label = f"🚨 {project_name}\n{total_issues} issues\n{time_color} {time_remaining}"
                 
                 if st.button(button_label, key=f"session_{session_id}", use_container_width=True):
                     st.session_state.selected_quality_session = session_id
@@ -90,6 +121,15 @@ with col2:
             
             # Session header
             st.subheader(f"Quality Analysis - {session.get('project_name')}")
+            
+            # Show expiration timer at top
+            time_remaining = calculate_time_remaining(session.get('expires_at'))
+            if time_remaining == "Expired":
+                st.error(f"⏰ This session has expired and will be cleaned up")
+            elif "m" in time_remaining and not "h" in time_remaining:
+                st.warning(f"⏰ Session expires in: {time_remaining}")
+            else:
+                st.info(f"⏰ Session expires in: {time_remaining}")
             
             # Get metrics
             metrics = session.get("webhook_data", {}).get("quality_metrics", {})
@@ -235,6 +275,19 @@ with col3:
     if st.session_state.selected_quality_session:
         st.subheader("Project Info")
         
-        # Additional project details could go here
+        # Session timing
+        st.markdown("**Session Info:**")
+        created_at = session.get('created_at')
+        if created_at:
+            created_time = datetime.fromisoformat(created_at.replace('Z', '+00:00'))
+            st.caption(f"Created: {created_time.strftime('%b %d, %H:%M')}")
+        
+        time_remaining = calculate_time_remaining(session.get('expires_at'))
+        if time_remaining == "Expired":
+            st.caption("⏰ Status: Expired")
+        else:
+            st.caption(f"⏰ Expires in: {time_remaining}")
+        
+        # Additional project details
         st.markdown("**SonarQube Details:**")
         st.caption("View detailed reports in SonarQube dashboard")

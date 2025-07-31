@@ -77,7 +77,7 @@ class PipelineAgent:
             )
         else:
             self.model = AnthropicModel(
-                model_id=os.getenv("MODEL_ID", "claude-3-5-sonnet-20241022"),
+                model_id=os.getenv("MODEL_ID", "claude-3-haiku-20240307"),
                 api_key=os.getenv("ANTHROPIC_API_KEY"),
                 temperature=0.3,
                 max_tokens=4096
