@@ -5,6 +5,7 @@ from strands import tool
 from datetime import datetime
 from utils.logger import log
 from config import settings
+from urllib.parse import quote
 
 # Maximum log size to prevent token limit issues
 MAX_LOG_SIZE = 60000
@@ -111,7 +112,7 @@ async def get_file_content(file_path: str, project_id: str, ref: str = "HEAD") -
     
     async with await get_gitlab_client() as client:
         try:
-            encoded_path = file_path.replace("/", "%2F")
+            encoded_path = quote(file_path, safe='')
             response = await client.get(
                 f"/projects/{project_id}/repository/files/{encoded_path}/raw",
                 params={"ref": ref}

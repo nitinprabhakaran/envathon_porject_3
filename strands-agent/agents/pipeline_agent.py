@@ -70,9 +70,9 @@ class PipelineAgent:
             self.model = BedrockModel(
                 model_id=os.getenv("MODEL_ID", "us.anthropic.claude-sonnet-4-20250514-v1:0"),
                 region=os.getenv("AWS_REGION", "us-east-2"),
-                temperature=0.3,
+                temperature=0.1,
                 streaming=True,
-                max_tokens=4096,
+                max_tokens=8000,
                 top_p=0.8
             )
         else:
