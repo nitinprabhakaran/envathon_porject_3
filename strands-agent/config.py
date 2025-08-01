@@ -11,6 +11,8 @@ class Settings(BaseSettings):
     aws_region: str = "us-west-2"
     aws_access_key_id: Optional[str] = None
     aws_secret_access_key: Optional[str] = None
+    aws_session_token: Optional[str] = None
+    max_log_size: int = 30000
     
     # Database
     database_url: str = "postgresql://cicd_user:secure_password@postgres-assistant:5432/cicd_assistant"

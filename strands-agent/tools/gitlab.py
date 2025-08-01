@@ -7,9 +7,6 @@ from utils.logger import log
 from config import settings
 from urllib.parse import quote
 
-# Maximum log size to prevent token limit issues
-MAX_LOG_SIZE = 60000
-
 async def get_gitlab_client():
     """Create GitLab API client"""
     headers = {"PRIVATE-TOKEN": settings.gitlab_token} if settings.gitlab_token else {}
@@ -19,7 +16,7 @@ async def get_gitlab_client():
         timeout=30.0
     )
 
-def truncate_log(log_content: str, max_size: int = MAX_LOG_SIZE) -> str:
+def truncate_log(log_content: str, max_size: int = settings.max_log_size) -> str:
     """Truncate log content if too large, keeping beginning and end"""
     if len(log_content) <= max_size:
         return log_content
@@ -75,7 +72,7 @@ async def get_job_logs(job_id: str, project_id: str, max_size: Optional[int] = N
     log.info(f"Getting logs for job {job_id} in project {project_id}")
     
     if max_size is None:
-        max_size = MAX_LOG_SIZE
+        max_size = settings.max_log_size
     
     async with await get_gitlab_client() as client:
         try:
