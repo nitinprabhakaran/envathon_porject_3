@@ -225,26 +225,68 @@ Remember: Do NOT create a merge request. Only analyze and propose solutions."""
             return result.message
         return str(result)
     
-    async def handle_user_message(
-        self,
-        session_id: str,
-        message: str,
-        conversation_history: List[Dict[str, Any]],
-        context: SessionContext
-    ) -> str:
-        """Handle user message with full context"""
+    async def handle_user_message(self, session_id: str, message: str, conversation_history: List[Dict[str, Any]], context: SessionContext) -> str:
+        """Handle user message with iterative fix support"""
         log.info(f"Handling message for pipeline session {session_id}")
-        
-        # Check for MR creation request
+
+        # Check if this is a retry after failed fix
+        is_retry = "still failing" in message.lower() or "same error" in message.lower() or "try again" in message.lower()
         is_mr_request = "create" in message.lower() and ("mr" in message.lower() or "merge request" in message.lower())
-        
-        # Build context prompt - keep it concise
+
+        # Check iteration limit
+        session_manager = SessionManager()
+        fix_attempts = await session_manager.get_fix_attempts(session_id)
+
+        if is_retry or (is_mr_request and len(fix_attempts) > 0):
+            if await session_manager.check_iteration_limit(session_id):
+                return """### ❌ Iteration Limit Reached
+
+I've attempted to fix this issue 5 times but the pipeline continues to fail. This suggests:
+
+1. **Multiple interrelated issues** that require comprehensive analysis
+2. **Environmental problems** not visible in truncated logs
+3. **Complex dependencies** that need manual investigation
+
+### 🔍 Recommended Actions:
+1. Review the full pipeline logs in GitLab (not truncated)
+2. Check the merge requests created for partial fixes
+3. Run the pipeline locally to debug
+4. Consider breaking the problem into smaller, testable changes
+
+### 📋 Fix Attempts Made:
+        """ + "\n".join([f"- MR #{att['mr_id']} on branch `{att['branch']}`" for att in fix_attempts])
+    
+        # Check if we have an existing fix branch
+        existing_fix_branch = None
+        existing_mr_id = None
+        if fix_attempts:
+            # Get the most recent fix attempt
+            latest_attempt = fix_attempts[-1]
+            existing_fix_branch = latest_attempt.get('branch')
+            existing_mr_id = latest_attempt.get('mr_id')
+
+        # Build context with previous attempts
         context_prompt = f"""
 Session Context:
 - Project: {context.project_name} (ID: {context.project_id})
 - Pipeline: #{context.pipeline_id}
 - Branch: {context.branch}
 - Failed Job: {context.job_name} in stage {context.failed_stage}
+- Fix Attempts: {len(fix_attempts)}
+- Existing Fix Branch: {existing_fix_branch or 'None'}
+"""
+    
+        if fix_attempts and (is_retry or is_mr_request):
+            context_prompt += f"""
+
+IMPORTANT: Previous fixes were attempted but the pipeline still fails.
+Previous MRs: {', '.join([f"#{att['mr_id']}" for att in fix_attempts])}
+
+You must:
+1. Get the LATEST pipeline logs (the error might have changed)
+2. Identify what wasn't fixed in previous attempts
+3. Create a NEW fix that addresses remaining issues
+4. Consider if the truncated logs are hiding critical errors
 """
         
         # Add only the most recent analysis summary

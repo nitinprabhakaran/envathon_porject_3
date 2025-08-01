@@ -599,3 +599,43 @@ async def get_gitlab_project_id(sonarqube_key: str) -> Optional[str]:
         except Exception as e:
             log.error(f"Error looking up GitLab project: {e}")
             return None
+
+@router.post("/gitlab/pipeline-status")
+async def handle_pipeline_status_webhook(request: Request):
+    """Handle pipeline status updates to track fix effectiveness"""
+    data = await request.json()
+    
+    if data.get("object_kind") != "pipeline":
+        return {"status": "ignored"}
+    
+    # Check if this is a feature branch pipeline
+    ref = data.get("object_attributes", {}).get("ref", "")
+    if not ref.startswith("fix/"):
+        return {"status": "ignored"}
+    
+    # Find the related session
+    project_id = str(data.get("project", {}).get("id"))
+    status = data.get("object_attributes", {}).get("status")
+    
+    # Update fix attempt status
+    sessions = await session_manager.get_active_sessions()
+    for session in sessions:
+        if session.get("project_id") == project_id:
+            fix_attempts = session.get("webhook_data", {}).get("fix_attempts", [])
+            for attempt in fix_attempts:
+                if attempt["branch"] == ref:
+                    attempt["status"] = status
+                    await session_manager.update_session_metadata(
+                        session["id"], 
+                        {"webhook_data": session["webhook_data"]}
+                    )
+                    
+                    # If still failed, prepare for next iteration
+                    if status == "failed":
+                        await session_manager.add_message(
+                            session["id"],
+                            "system",
+                            f"Fix attempt on branch {ref} failed. Pipeline still has issues."
+                        )
+    
+    return {"status": "processed"}

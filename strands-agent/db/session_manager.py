@@ -301,3 +301,40 @@ class SessionManager:
             count = int(result.split()[-1])
             if count > 0:
                 log.info(f"Marked {count} sessions as expired")
+    
+    async def track_fix_attempt(self, session_id: str, mr_id: str, branch_name: str, fix_content: Dict[str, str]):
+        """Track a fix attempt for iterative resolution"""
+        async with self.get_connection() as conn:
+            # Get current fix attempts
+            current = await conn.fetchval(
+                "SELECT webhook_data FROM sessions WHERE id = $1",
+                session_id
+            )
+            
+            webhook_data = json.loads(current) if current else {}
+            fix_attempts = webhook_data.get('fix_attempts', [])
+            
+            fix_attempts.append({
+                'mr_id': mr_id,
+                'branch': branch_name,
+                'timestamp': datetime.utcnow().isoformat(),
+                'files_changed': list(fix_content.keys()),
+                'status': 'pending'
+            })
+            
+            webhook_data['fix_attempts'] = fix_attempts
+            
+            await conn.execute(
+                "UPDATE sessions SET webhook_data = $2::jsonb WHERE id = $1",
+                session_id, json.dumps(webhook_data)
+            )
+
+    async def get_fix_attempts(self, session_id: str) -> List[Dict[str, Any]]:
+        """Get all fix attempts for a session"""
+        session = await self.get_session(session_id)
+        return session.get('webhook_data', {}).get('fix_attempts', [])
+
+    async def check_iteration_limit(self, session_id: str, limit: int = 5) -> bool:
+        """Check if we've reached the iteration limit"""
+        attempts = await self.get_fix_attempts(session_id)
+        return len(attempts) >= limit

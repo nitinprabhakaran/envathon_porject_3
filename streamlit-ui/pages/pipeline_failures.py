@@ -126,6 +126,9 @@ with col1:
                         job_name = session.get('job_name') or session.get('failed_stage') or 'Unknown Job'
                         time_remaining = calculate_time_remaining(session.get('expires_at'))
                         
+                        # Get fix attempts count
+                        fix_attempts = session.get("webhook_data", {}).get("fix_attempts", [])
+                        
                         # Color code based on time remaining
                         if time_remaining == "Expired":
                             time_color = "🔴"
@@ -135,6 +138,8 @@ with col1:
                             time_color = "🟢"
                         
                         button_label = f"{job_name}\n{time_color} {time_remaining}"
+                        if fix_attempts:
+                            button_label += f"\n🔄 {len(fix_attempts)} fix(es)"
                         
                         if st.button(
                             button_label,
@@ -159,6 +164,7 @@ with col2:
         try:
             full_session = asyncio.run(st.session_state.api_client.get_session(session_id))
             messages = full_session.get("conversation_history", [])
+            fix_attempts = full_session.get("webhook_data", {}).get("fix_attempts", [])
             
             # Show expiration timer at top
             time_remaining = calculate_time_remaining(full_session.get('expires_at'))
@@ -168,6 +174,19 @@ with col2:
                 st.warning(f"⏰ Session expires in: {time_remaining}")
             else:
                 st.info(f"⏰ Session expires in: {time_remaining}")
+            
+            # Show fix iteration info if applicable
+            if fix_attempts:
+                col_iter1, col_iter2 = st.columns([3, 1])
+                with col_iter1:
+                    st.warning(f"🔄 Fix Iterations: {len(fix_attempts)}/5")
+                with col_iter2:
+                    with st.expander("Fix History"):
+                        for i, attempt in enumerate(fix_attempts):
+                            status_icon = "✅" if attempt.get("status") == "success" else "❌" if attempt.get("status") == "failed" else "⏳"
+                            st.text(f"{status_icon} Attempt {i+1}: MR #{attempt['mr_id']}")
+                            st.caption(f"Branch: {attempt['branch']}")
+                            st.caption(f"Status: {attempt.get('status', 'pending')}")
             
             # Display latest analysis
             st.markdown("### 📋 Latest Analysis")
@@ -185,13 +204,30 @@ with col2:
             
             st.divider()
             
-            # Action buttons
+            # Action buttons - Smart logic based on fix attempts
             col_btn1, col_btn2, col_btn3 = st.columns([1, 1, 2])
             
             mr_url = full_session.get("merge_request_url")
             
             with col_btn1:
-                if not mr_url:
+                # Check if we've hit iteration limit
+                if len(fix_attempts) >= 5:
+                    st.error("❌ Max attempts reached")
+                elif len(fix_attempts) > 0 and not mr_url:
+                    # Show retry button for subsequent attempts
+                    if st.button("🔄 Try Another Fix", use_container_width=True):
+                        with st.spinner("Analyzing latest logs and creating additional fixes..."):
+                            response = asyncio.run(
+                                st.session_state.api_client.send_message(
+                                    session_id, 
+                                    "The pipeline is still failing with the same error. Please analyze the latest logs and create another fix targeting any remaining issues."
+                                )
+                            )
+                            if response.get("merge_request_url"):
+                                st.success(f"✅ Additional fixes added to MR")
+                            st.rerun()
+                elif not mr_url:
+                    # First attempt - create MR button
                     if st.button("🔀 Create MR", use_container_width=True):
                         with st.spinner("Creating merge request..."):
                             response = asyncio.run(
@@ -267,6 +303,7 @@ with col2:
                     latest_session = max(job_sessions, key=lambda x: x.get("created_at", ""))
                     status = latest_session.get("status", "active")
                     time_remaining = calculate_time_remaining(latest_session.get('expires_at'))
+                    fix_attempts = latest_session.get("webhook_data", {}).get("fix_attempts", [])
                     
                     # Create card
                     with st.container():
@@ -289,6 +326,7 @@ with col2:
                             
                             Stage: {latest_session.get("failed_stage", "Unknown")} | 
                             {len(job_sessions)} occurrence(s) | 
+                            Fixes: {len(fix_attempts)} |
                             Last: {datetime.fromisoformat(latest_session.get("created_at", datetime.now().isoformat())).strftime("%b %d, %H:%M")} |
                             {time_emoji} Expires: {time_remaining}
                             """)
@@ -314,6 +352,13 @@ with col3:
         st.caption(f"Pipeline: #{session.get('pipeline_id', 'N/A')}")
         st.caption(f"Stage: {session.get('failed_stage', 'N/A')}")
         st.caption(f"Job: {session.get('job_name', 'N/A')}")
+        
+        # Fix attempts info
+        fix_attempts = session.get("webhook_data", {}).get("fix_attempts", [])
+        if fix_attempts:
+            st.markdown("**Fix Information:**")
+            st.caption(f"Iterations: {len(fix_attempts)}/5")
+            st.caption(f"Current Branch: {fix_attempts[-1]['branch']}")
         
         # Session timing
         st.markdown("**Session Info:**")

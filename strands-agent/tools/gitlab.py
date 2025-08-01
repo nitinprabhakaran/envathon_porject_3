@@ -152,71 +152,51 @@ async def create_merge_request(
     files: Dict[str, str],
     project_id: str,
     source_branch: str,
-    target_branch: str = "main"
+    target_branch: str = "main",
+    update_mode: bool = False
 ) -> Dict[str, Any]:
-    """Create a merge request with file changes
-    
-    Args:
-        title: MR title
-        description: MR description
-        files: Dictionary of file paths to new content
-        project_id: GitLab project ID
-        source_branch: Source branch name
-        target_branch: Target branch name
-    
-    Returns:
-        Created merge request details
-    """
-    log.info(f"Creating MR '{title}' in project {project_id}")
+    """Create or update a merge request with file changes"""
     
     async with await get_gitlab_client() as client:
         try:
-            # Create branch
-            log.debug(f"Creating branch {source_branch}")
-            await client.post(
-                f"/projects/{project_id}/repository/branches",
-                json={"branch": source_branch, "ref": target_branch}
-            )
+            if not update_mode:
+                # Create new branch from target
+                await client.post(
+                    f"/projects/{project_id}/repository/branches",
+                    json={"branch": source_branch, "ref": target_branch}
+                )
             
-            # Create commits
-            actions = []
-            for file_path, content in files.items():
-                actions.append({
-                    "action": "update",
-                    "file_path": file_path,
-                    "content": content
-                })
+            # Commit changes (works for both new and existing branches)
+            actions = [
+                {"action": "update", "file_path": fp, "content": c}
+                for fp, c in files.items()
+            ]
             
-            log.debug(f"Committing {len(actions)} file changes")
             await client.post(
                 f"/projects/{project_id}/repository/commits",
                 json={
                     "branch": source_branch,
-                    "commit_message": title,
+                    "commit_message": f"Iteration fix: {title}",
                     "actions": actions
                 }
             )
             
-            # Create MR
-            log.debug("Creating merge request")
-            response = await client.post(
-                f"/projects/{project_id}/merge_requests",
-                json={
-                    "source_branch": source_branch,
-                    "target_branch": target_branch,
-                    "title": title,
-                    "description": description,
-                    "remove_source_branch": True
-                }
-            )
-            response.raise_for_status()
-            mr = response.json()
-            log.info(f"Created MR: {mr.get('web_url')}")
-            return mr
-            
-        except Exception as e:
-            log.error(f"Failed to create merge request: {e}")
-            return {"error": str(e)}
+            if not update_mode:
+                # Create new MR
+                response = await client.post(
+                    f"/projects/{project_id}/merge_requests",
+                    json={
+                        "source_branch": source_branch,
+                        "target_branch": target_branch,
+                        "title": title,
+                        "description": description,
+                        "remove_source_branch": True
+                    }
+                )
+                return response.json()
+            else:
+                # Return existing MR info
+                return {"message": "Added commits to existing branch", "branch": source_branch}
 
 @tool
 async def get_project_info(project_id: str) -> Dict[str, Any]:
