@@ -197,6 +197,9 @@ async def create_merge_request(
             else:
                 # Return existing MR info
                 return {"message": "Added commits to existing branch", "branch": source_branch}
+        except Exception as e:
+            log.error(f"Failed to create merge request: {e}")
+            return {"error": str(e)}
 
 @tool
 async def get_project_info(project_id: str) -> Dict[str, Any]:

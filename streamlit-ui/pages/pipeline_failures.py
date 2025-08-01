@@ -210,9 +210,26 @@ with col2:
             mr_url = full_session.get("merge_request_url")
             
             with col_btn1:
+                # Check if current branch is a fix branch created by our system
+                current_branch = full_session.get("branch", "")
+                is_fix_branch = current_branch.startswith("fix/pipeline_")
+                
                 # Check if we've hit iteration limit
                 if len(fix_attempts) >= 5:
                     st.error("❌ Max attempts reached")
+                elif is_fix_branch and not mr_url:
+                    # This is analyzing a failure on OUR fix branch - show Apply Fix
+                    if st.button("🔧 Apply Fix", use_container_width=True):
+                        with st.spinner("Applying fix to the existing branch..."):
+                            response = asyncio.run(
+                                st.session_state.api_client.send_message(
+                                    session_id, 
+                                    "Apply the fixes to the current feature branch. This is an iteration on our existing fix branch, so update the same branch with additional commits."
+                                )
+                            )
+                            if response.get("merge_request_url"):
+                                st.success(f"✅ Fix applied to existing MR")
+                            st.rerun()
                 elif len(fix_attempts) > 0 and not mr_url:
                     # Show retry button for subsequent attempts
                     if st.button("🔄 Try Another Fix", use_container_width=True):

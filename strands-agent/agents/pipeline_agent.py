@@ -26,7 +26,7 @@ Analyze pipeline failures and provide actionable solutions. Every analysis must 
 3. Confidence score for your analysis
 
 ## Important: Log Size Management
-When retrieving job logs, ALWAYS specify max_size parameter (e.g., 100000 characters) to prevent context overflow.
+When retrieving job logs, ALWAYS specify max_size parameter (e.g., 30000 characters) to prevent context overflow.
 If logs are truncated, focus your analysis on the available portions.
 
 ## Special Case: Quality Gate Failures
@@ -66,7 +66,7 @@ Use this exact format for your responses:
 - Show actual code/config changes, not just descriptions
 - Branch names should be: fix/pipeline_[job_name]_[timestamp]
 - When creating MR, ALWAYS include the full MR URL in your response
-- When calling get_job_logs, ALWAYS use max_size parameter (recommended: 100000)"""
+- When calling get_job_logs, ALWAYS use max_size parameter (recommended: 30000)"""
 
 class PipelineAgent:
     def __init__(self):
@@ -181,7 +181,7 @@ Stage: {quality_gate_job.get('stage', 'unknown')}
 IMPORTANT: This appears to be a SonarQube quality gate failure.
 
 Use the available tools to:
-1. Get the job logs (use max_size=100000 to prevent overflow)
+1. Get the job logs (use max_size=30000 to prevent overflow)
 2. If confirmed, provide a brief summary and recommend using the Quality Issues tab
 3. Do NOT attempt to fix quality issues here - they should be handled in the Quality Issues tab
 
@@ -197,13 +197,13 @@ Failure Reason: {failed_job.get('failure_reason', 'unknown')}
 
 Use the available tools to:
 1. Get the pipeline jobs and identify all failures
-2. Get logs for the failed job(s) - IMPORTANT: use max_size=100000 parameter
+2. Get logs for the failed job(s) - IMPORTANT: use max_size=30000 parameter
 3. Analyze the error and determine root cause
 4. If needed, examine relevant files (CI config, dependencies, etc.)
 5. Provide a solution following the specified format
 
 Note: 
-- Always use max_size=100000 when calling get_job_logs to prevent context overflow
+- Always use max_size=30000 when calling get_job_logs to prevent context overflow
 - If logs are truncated, focus on the available portions
 - If you need to check shared pipeline templates, they are in a separate project
 
@@ -225,19 +225,30 @@ Remember: Do NOT create a merge request. Only analyze and propose solutions."""
             return result.message
         return str(result)
     
-    async def handle_user_message(self, session_id: str, message: str, conversation_history: List[Dict[str, Any]], context: SessionContext) -> str:
-        """Handle user message with iterative fix support"""
+    async def handle_user_message(
+        self,
+        session_id: str,
+        message: str,
+        conversation_history: List[Dict[str, Any]],
+        context: SessionContext
+    ) -> str:
+        """Handle user message with full context"""
         log.info(f"Handling message for pipeline session {session_id}")
-
-        # Check if this is a retry after failed fix
+        
+        # Check message intent
         is_retry = "still failing" in message.lower() or "same error" in message.lower() or "try again" in message.lower()
         is_mr_request = "create" in message.lower() and ("mr" in message.lower() or "merge request" in message.lower())
-
-        # Check iteration limit
+        is_apply_fix = "apply" in message.lower() and "fix" in message.lower()
+        
+        # Check if current branch is a fix branch
+        is_fix_branch = context.branch and context.branch.startswith("fix/pipeline_")
+        
+        # Get fix attempts
         session_manager = SessionManager()
         fix_attempts = await session_manager.get_fix_attempts(session_id)
-
-        if is_retry or (is_mr_request and len(fix_attempts) > 0):
+        
+        # Check iteration limit
+        if is_retry or is_apply_fix or (is_mr_request and len(fix_attempts) > 0):
             if await session_manager.check_iteration_limit(session_id):
                 return """### ❌ Iteration Limit Reached
 
@@ -254,65 +265,90 @@ I've attempted to fix this issue 5 times but the pipeline continues to fail. Thi
 4. Consider breaking the problem into smaller, testable changes
 
 ### 📋 Fix Attempts Made:
-        """ + "\n".join([f"- MR #{att['mr_id']} on branch `{att['branch']}`" for att in fix_attempts])
-    
-        # Check if we have an existing fix branch
-        existing_fix_branch = None
-        existing_mr_id = None
-        if fix_attempts:
-            # Get the most recent fix attempt
-            latest_attempt = fix_attempts[-1]
-            existing_fix_branch = latest_attempt.get('branch')
-            existing_mr_id = latest_attempt.get('mr_id')
-
-        # Build context with previous attempts
+""" + "\n".join([f"- MR #{att['mr_id']} on branch `{att['branch']}`" for att in fix_attempts])
+        
+        # Build context prompt - keep it concise
         context_prompt = f"""
 Session Context:
 - Project: {context.project_name} (ID: {context.project_id})
 - Pipeline: #{context.pipeline_id}
 - Branch: {context.branch}
 - Failed Job: {context.job_name} in stage {context.failed_stage}
+- Is Fix Branch: {is_fix_branch}
 - Fix Attempts: {len(fix_attempts)}
-- Existing Fix Branch: {existing_fix_branch or 'None'}
-"""
-    
-        if fix_attempts and (is_retry or is_mr_request):
-            context_prompt += f"""
-
-IMPORTANT: Previous fixes were attempted but the pipeline still fails.
-Previous MRs: {', '.join([f"#{att['mr_id']}" for att in fix_attempts])}
-
-You must:
-1. Get the LATEST pipeline logs (the error might have changed)
-2. Identify what wasn't fixed in previous attempts
-3. Create a NEW fix that addresses remaining issues
-4. Consider if the truncated logs are hiding critical errors
 """
         
-        # Add only the most recent analysis summary
-        if conversation_history and len(conversation_history) > 0:
-            # Limit conversation history to last 3 exchanges to save tokens
-            recent_history = conversation_history[-6:] if len(conversation_history) > 6 else conversation_history
-            
-            for msg in reversed(recent_history):
-                if msg["role"] == "assistant" and "Proposed Solution" in msg.get("content", ""):
-                    # Extract just the solution part
-                    content = msg['content']
-                    if "### 💡 Proposed Solution" in content:
-                        solution_part = content.split("### 💡 Proposed Solution")[1]
-                        if "### " in solution_part:
-                            solution_part = solution_part.split("### ")[0]
-                        context_prompt += f"\n\nPrevious Solution Summary:\n{solution_part[:500]}..."
-                    break
+        # Get existing branch info if available
+        existing_fix_branch = None
+        existing_mr_id = None
+        if fix_attempts:
+            latest_attempt = fix_attempts[-1]
+            existing_fix_branch = latest_attempt.get('branch')
+            existing_mr_id = latest_attempt.get('mr_id')
         
-        # Prepare final prompt
-        if is_mr_request:
-            timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
-            branch_name = f"fix/pipeline_{context.job_name}_{timestamp}".replace(" ", "_").lower()
-            
+        # Prepare final prompt based on context
+        if is_apply_fix and is_fix_branch:
+            # Applying fix to existing fix branch
             final_prompt = f"""{context_prompt}
 
+The user wants to apply fixes to the existing feature branch.
+
+CONTEXT: This pipeline failure is on branch {context.branch} which is a fix branch we created.
+We need to add commits to this same branch to fix the new issues.
+
+Previous Conversation:
+{self._format_conversation_history(conversation_history)}
+
+CRITICAL INSTRUCTIONS:
+1. Analyze the latest failure on this fix branch
+2. Use the get_job_logs tool with max_size=30000
+3. Apply fixes by updating files on the SAME branch: {context.branch}
+4. Use create_merge_request with update_mode=True
+5. DO NOT create a new branch or new MR
+
+Use these parameters:
+- Project ID: {context.project_id}
+- Source Branch: {context.branch} (EXISTING)
+- Update Mode: True
+- Add commits to fix the new issues found
+
+Analyze and apply the fix now."""
+        
+        elif is_mr_request and not is_fix_branch:
+            # Creating new MR from main branch
+            if existing_fix_branch and len(fix_attempts) > 0:
+                # Reuse existing branch for iterations
+                final_prompt = f"""{context_prompt}
+
+The user wants to update the existing merge request with additional fixes.
+
+Previous Conversation:
+{self._format_conversation_history(conversation_history)}
+
+CRITICAL INSTRUCTIONS:
+1. Use the existing branch: {existing_fix_branch}
+2. Add NEW commits to fix remaining issues
+3. The MR #{existing_mr_id} already exists - just add commits
+4. Use create_merge_request with update_mode=True
+
+Use these parameters:
+- Project ID: {context.project_id}
+- Source Branch: {existing_fix_branch} (EXISTING)
+- Target Branch: {context.branch or 'main'}
+- Update Mode: True
+
+Create additional fixes on the same branch."""
+            else:
+                # First fix - create new branch
+                timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+                branch_name = f"fix/pipeline_{context.job_name}_{timestamp}".replace(" ", "_").lower()
+                
+                final_prompt = f"""{context_prompt}
+
 The user wants to create a merge request with the fixes.
+
+Previous Conversation:
+{self._format_conversation_history(conversation_history)}
 
 CRITICAL INSTRUCTIONS:
 1. Use the create_merge_request tool with the exact file changes from the previous analysis
@@ -320,7 +356,7 @@ CRITICAL INSTRUCTIONS:
 3. Format your response to clearly show:
    - What files were changed
    - The branch name created
-   - **The full merge request URL** (e.g., https://gitlab.example.com/group/project/-/merge_requests/123)
+   - **The full merge request URL**
 
 Use these parameters:
 - Project ID: {context.project_id}
@@ -331,7 +367,14 @@ Use these parameters:
 
 Create the merge request now."""
         else:
-            final_prompt = f"{context_prompt}\n\nUser Question: {message}\n\nNote: When retrieving logs, always use max_size=100000 to prevent overflow."
+            final_prompt = f"""{context_prompt}
+
+Previous Conversation:
+{self._format_conversation_history(conversation_history)}
+
+User Question: {message}
+
+Note: When retrieving logs, always use max_size=30000 to prevent overflow."""
         
         # Create agent with tools
         agent = Agent(
@@ -345,3 +388,27 @@ Create the merge request now."""
         
         # Return the message directly
         return result.message if hasattr(result, 'message') else str(result)
+    
+    def _format_conversation_history(self, conversation_history: List[Dict[str, Any]], max_messages: int = 6) -> str:
+        """Format conversation history for context, limiting to recent messages"""
+        if not conversation_history:
+            return "No previous conversation."
+        
+        # Take only the last N messages to avoid token overflow
+        recent_history = conversation_history[-max_messages:]
+        
+        formatted = []
+        for msg in recent_history:
+            role = msg.get("role", "unknown")
+            content = msg.get("content", "")
+            
+            if role == "system":
+                continue  # Skip system messages
+            
+            # Truncate very long messages
+            if len(content) > 1000:
+                content = content[:900] + "... [truncated]"
+            
+            formatted.append(f"{role.upper()}: {content}")
+        
+        return "\n\n".join(formatted)
