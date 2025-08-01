@@ -68,8 +68,8 @@ class PipelineAgent:
         # Initialize LLM based on provider
         if settings.llm_provider == "bedrock":
             self.model = BedrockModel(
-                model_id=os.getenv("MODEL_ID", "us.anthropic.claude-3-5-sonnet-20241022-v2:0"),
-                region=os.getenv("AWS_REGION", "us-west-2"),
+                model_id=os.getenv("MODEL_ID", "us.anthropic.claude-sonnet-4-20250514-v1:0"),
+                region=os.getenv("AWS_REGION", "us-east-2"),
                 temperature=0.3,
                 streaming=True,
                 max_tokens=4096,

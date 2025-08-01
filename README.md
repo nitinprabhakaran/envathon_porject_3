@@ -165,7 +165,7 @@ cicd-failure-assistant/
 docker exec -it gitlab-runner gitlab-runner register \
   --non-interactive \
   --url "http://gitlab:80" \
-  --registration-token "1FKfcPPeEmn945zXaTu6" \
+  --registration-token "" \
   --description "colima-docker-runner" \
   --tag-list "docker,python,java,javascript" \
   --run-untagged="true" \
@@ -174,6 +174,6 @@ docker exec -it gitlab-runner gitlab-runner register \
   --description "Host IP Runner" \
   --docker-image "alpine:latest" \
   --docker-privileged=true \
-  --docker-network-mode "envathon_project_setup_devops-network"
+  --docker-network-mode "envathon_porject_3_devops-network"
 
 ```

@@ -162,7 +162,7 @@ stages:
 # Build stage
 build:
   stage: build
-  image: maven:3.8-openjdk-${JAVA_VERSION:-11}
+  image: maven:3.8-openjdk-11
   extends: 
     - .base-rules
     - .maven-cache
@@ -176,7 +176,7 @@ build:
 # Test stage
 test:
   stage: test
-  image: maven:3.8-openjdk-${JAVA_VERSION:-11}
+  image: maven:3.8-openjdk-11
   extends: 
     - .base-rules
     - .maven-cache
@@ -194,7 +194,7 @@ test:
 # SonarQube analysis
 sonarqube-check:
   stage: quality
-  image: maven:3.8-openjdk-${JAVA_VERSION:-11}
+  image: maven:3.8-openjdk-11
   extends: 
     - .base-rules
     - .maven-cache
@@ -210,7 +210,7 @@ sonarqube-check:
 # Package application
 package:
   stage: package
-  image: maven:3.8-openjdk-${JAVA_VERSION:-11}
+  image: maven:3.8-openjdk-11
   extends: 
     - .base-rules
     - .maven-cache
@@ -248,7 +248,7 @@ scan-image:
   allow_failure: true
 """,
 
-    "templates/python.yml": """
+    "templates/python.yml": r"""
 include:
   - local: '/templates/base.yml'
 
@@ -262,7 +262,7 @@ stages:
 # Build dependencies
 build:
   stage: build
-  image: python:${PYTHON_VERSION:-3.9}
+  image: python:3.9
   extends: 
     - .base-rules
     - .pip-cache
@@ -280,7 +280,7 @@ build:
 # Run tests
 test:
   stage: test
-  image: python:${PYTHON_VERSION:-3.9}
+  image: python:3.9
   extends: 
     - .base-rules
     - .pip-cache
@@ -301,7 +301,7 @@ test:
 # Code quality checks
 lint:
   stage: quality
-  image: python:${PYTHON_VERSION:-3.9}
+  image: python:3.9
   extends: .base-rules
   needs: ["build"]
   script:
@@ -355,7 +355,7 @@ scan-image:
   allow_failure: true
 """,
 
-    "templates/nodejs.yml": """
+    "templates/nodejs.yml": r"""
 include:
   - local: '/templates/base.yml'
 
@@ -369,7 +369,7 @@ stages:
 # Install dependencies
 build:
   stage: build
-  image: node:${NODE_VERSION:-16}
+  image: node:16
   extends: 
     - .base-rules
     - .npm-cache
@@ -383,14 +383,14 @@ build:
 # Run tests
 test:
   stage: test
-  image: node:${NODE_VERSION:-16}
+  image: node:16
   extends: 
     - .base-rules
     - .npm-cache
   needs: ["build"]
   script:
     - npm test -- --coverage --coverageReporters=cobertura || true
-  coverage: '/Lines\\s*:\\s*(\\d+\\.?\\d*)%/'
+  coverage: '/Lines\s*:\s*(\d+\.?\d*)%/'
   artifacts:
     reports:
       junit: junit.xml
@@ -404,7 +404,7 @@ test:
 # Lint code
 lint:
   stage: quality
-  image: node:${NODE_VERSION:-16}
+  image: node:16
   extends: .base-rules
   needs: ["build"]
   script:
@@ -414,7 +414,7 @@ lint:
 # Security audit
 security-scan:
   stage: quality
-  image: node:${NODE_VERSION:-16}
+  image: node:16
   extends: .base-rules
   needs: ["build"]
   script:
