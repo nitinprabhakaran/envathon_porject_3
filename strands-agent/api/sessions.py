@@ -65,14 +65,6 @@ async def send_message(session_id: str, request: MessageRequest):
         session = await session_manager.get_session(session_id)
         conversation_history = session.get("conversation_history", [])
         
-        # Check for similar historical fixes (for pipeline failures)
-        similar_fixes = []
-        if context.session_type == "pipeline" and session.get("error_signature"):
-            similar_fixes = await session_manager.get_similar_fixes(
-                session["error_signature"], 
-                limit=3
-            )
-        
         # Route to appropriate agent
         if context.session_type == "quality":
             response = await quality_agent.handle_user_message(
@@ -83,8 +75,8 @@ async def send_message(session_id: str, request: MessageRequest):
                 session_id, request.message, conversation_history, context
             )
         
-        # Extract response text
-        response_text = extract_response_text(response)
+        # Generic response extraction
+        response_text = extract_text_from_response(response)
         
         # Extract and store MR URL if present
         mr_url = None
@@ -93,7 +85,6 @@ async def send_message(session_id: str, request: MessageRequest):
             mr_url = mr_url_match.group(0)
             mr_id = mr_url.split('/')[-1]
             
-            # Update session with MR info
             await session_manager.update_session_metadata(
                 session_id,
                 {
@@ -101,16 +92,6 @@ async def send_message(session_id: str, request: MessageRequest):
                     "merge_request_id": mr_id
                 }
             )
-            
-            # Extract files changed if mentioned in response
-            files_changed = extract_files_from_response(response_text)
-            if files_changed:
-                await session_manager.store_fix_result(
-                    session_id, 
-                    mr_url, 
-                    mr_id,
-                    files_changed
-                )
         
         # Add agent response
         await session_manager.add_message(session_id, "assistant", response_text)
@@ -119,8 +100,7 @@ async def send_message(session_id: str, request: MessageRequest):
         
         return {
             "response": response_text,
-            "merge_request_url": mr_url,
-            "similar_fixes": similar_fixes
+            "merge_request_url": mr_url
         }
         
     except HTTPException:
@@ -128,6 +108,32 @@ async def send_message(session_id: str, request: MessageRequest):
     except Exception as e:
         log.error(f"Failed to process message: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
+
+def extract_text_from_response(response):
+    """Extract text from any response format"""
+    if isinstance(response, str):
+        return response
+    
+    if hasattr(response, 'message'):
+        return response.message
+    
+    if isinstance(response, dict):
+        # Try content field
+        if "content" in response:
+            content = response["content"]
+            if isinstance(content, list):
+                texts = []
+                for item in content:
+                    if isinstance(item, dict) and "text" in item:
+                        texts.append(item["text"])
+                return "".join(texts)
+            elif isinstance(content, str):
+                return content
+        # Try message field
+        elif "message" in response:
+            return response["message"]
+    
+    return str(response)
 
 @router.post("/{session_id}/create-mr")
 async def create_merge_request(session_id: str):
@@ -158,61 +164,37 @@ async def create_merge_request(session_id: str):
 
 def extract_response_text(response) -> str:
     """Extract text from various response formats"""
-    response_text = ""
-    
-    # Handle string response first
     if isinstance(response, str):
         return response
     
-    # Handle Strands agent response objects
     if hasattr(response, 'message') and isinstance(response.message, str):
         return response.message
     
-    # Handle dict response (from agent)
+    if hasattr(response, 'content') and isinstance(response.content, str):
+        return response.content
+    
     if isinstance(response, dict):
-        # Check for direct message field
-        if "message" in response:
-            return response["message"]
-        
-        # Check for content field (Anthropic format)
+        # Handle content array format
         if "content" in response:
             content = response["content"]
-            if isinstance(content, str):
-                return content
-            elif isinstance(content, list):
+            if isinstance(content, list):
                 texts = []
                 for item in content:
                     if isinstance(item, dict) and "text" in item:
                         texts.append(item["text"])
                 return "".join(texts)
-        
-        # Check for role/content structure
-        if "role" in response and response.get("role") == "assistant":
-            content = response.get("content", [])
-            if isinstance(content, str):
-                return content
-            elif isinstance(content, list):
-                texts = []
-                for item in content:
-                    if isinstance(item, dict) and "text" in item:
-                        texts.append(item["text"])
-                return "".join(texts)
+            return str(content)
+        elif "message" in response:
+            return response["message"]
     
-    # Handle messages list format
-    if hasattr(response, 'messages') and response.messages:
-        for msg in response.messages:
-            if isinstance(msg, dict) and msg.get('role') == 'assistant':
-                content = msg.get('content', [])
-                if isinstance(content, str):
-                    return content
-                elif isinstance(content, list):
-                    texts = []
-                    for item in content:
-                        if isinstance(item, dict) and 'text' in item:
-                            texts.append(item['text'])
-                    return "".join(texts)
+    # Handle response with nested structure
+    if hasattr(response, '__dict__'):
+        for attr in ['message', 'content', 'text']:
+            if hasattr(response, attr):
+                val = getattr(response, attr)
+                if isinstance(val, str):
+                    return val
     
-    # Fallback to string conversion
     return str(response)
 
 def extract_files_from_response(response_text: str) -> Dict[str, str]:

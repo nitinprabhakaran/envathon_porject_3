@@ -123,11 +123,33 @@ class PipelineAgent:
                 max_tokens=4096
             )
         
-        # Store tools for reuse
+        # Session storage for tracking files
+        self.session_files = {}
+        self._current_session_id = None
+        
+        # Create wrapped get_file_content to track accessed files
+        original_get_file_content = get_file_content
+        
+        @tool
+        async def tracked_get_file_content(file_path: str, project_id: str, ref: str = "HEAD") -> str:
+            """Get content of a file from GitLab repository"""
+            result = await original_get_file_content(file_path, project_id, ref)
+            
+            # Track successful file access
+            if self._current_session_id and "Error getting file content" not in result:
+                if self._current_session_id not in self.session_files:
+                    self.session_files[self._current_session_id] = []
+                if file_path not in self.session_files[self._current_session_id]:
+                    self.session_files[self._current_session_id].append(file_path)
+                    log.debug(f"Tracked file: {file_path} for session {self._current_session_id}")
+            
+            return result
+        
+        # Store tools
         self.tools = [
             get_pipeline_jobs,
             get_job_logs,
-            get_file_content,
+            tracked_get_file_content,
             get_recent_commits,
             create_merge_request,
             get_project_info
@@ -144,6 +166,9 @@ class PipelineAgent:
     ) -> str:
         """Analyze pipeline failure and return findings"""
         log.info(f"Analyzing pipeline {pipeline_id} failure for session {session_id}")
+        
+        # Set current session for file tracking
+        self._current_session_id = session_id
         
         # Extract failure info from webhook
         failed_jobs = [
@@ -235,80 +260,50 @@ Remember: Do NOT create a merge request. Only analyze and propose solutions."""
         if not isinstance(result_text, str):
             result_text = str(result_text)
         
-        # Extract and store file changes from the analysis
-        await self._extract_and_store_file_changes(session_id, result_text)
+        # Store tracked files and analysis
+        await self._store_analysis_data(session_id, result_text)
+        
+        # Clear current session
+        self._current_session_id = None
         
         # Return the text
         return result_text
     
-    async def _extract_and_store_file_changes(self, session_id: str, result_text: str):
+    async def _store_analysis_data(self, session_id: str, result_text: str):
+        """Store tracked files and analysis data"""
         import re
         
-        # Extract file paths mentioned in the analysis
-        """Extract code changes from analysis result"""
-        file_patterns = [
-            r'File:\s*`?([^\s`]+)`?',  # File: path/to/file
-            r'//\s*([^\s]+\.java)',     # Comments with file paths
-            r'src/[^\s]+\.java',        # Java files
-            r'src/[^\s]+\.py',          # Python files
-            r'[^\s]+\.yml',             # YAML files
-            r'[^\s]+\.xml',             # XML files
-        ]
+        # Get tracked files for this session
+        tracked_files = self.session_files.get(session_id, [])
         
-        files_mentioned = []
-        for pattern in file_patterns:
-            matches = re.findall(pattern, result_text)
-            files_mentioned.extend(matches)
-        
-        # Remove duplicates while preserving order
-        seen = set()
-        files_mentioned = [x for x in files_mentioned if not (x in seen or seen.add(x))]
-        
-        # Extract code blocks with their language
-        code_blocks = []
+        # Extract code blocks
         code_pattern = r'```(?:java|python|javascript|yaml|xml)?\n(.*?)\n```'
-        matches = re.findall(code_pattern, result_text, re.DOTALL)
+        code_blocks = re.findall(code_pattern, result_text, re.DOTALL)
         
-        # Map files to code blocks
-        file_changes = {}
-        
-        # Look for file paths in comments within code blocks
-        for code in matches:
-            # Check for file path comment at the beginning
-            file_comment_match = re.match(r'//\s*([^\n]+\.java)', code)
-            if file_comment_match:
-                file_path = file_comment_match.group(1).strip()
-                # Remove the comment line from the code
-                code_without_comment = '\n'.join(code.split('\n')[1:])
-                file_changes[file_path] = code_without_comment
-            else:
-                # Try to match based on class names
-                for file_path in files_mentioned:
-                    file_name = os.path.basename(file_path)
-                    class_name = file_name.replace('.java', '').replace('.py', '')
-                    
-                    if f'class {class_name}' in code or f'public class {class_name}' in code:
-                        file_changes[file_path] = code
-                        break
-        
-        # Store the analysis data
+        # Store analysis data
         analysis_data = {
-            'files': files_mentioned,
-            'changes': file_changes,
+            'tracked_files': tracked_files,
+            'code_blocks': code_blocks,
             'full_message': result_text,
             'timestamp': datetime.utcnow().isoformat()
         }
         
-        log.info(f"Storing file changes for session {session_id}:")
-        log.info(f"  Files mentioned: {files_mentioned}")
-        log.info(f"  File changes mapped: {list(file_changes.keys())}")
+        log.info(f"Storing analysis data for session {session_id}:")
+        log.info(f"  Tracked files: {tracked_files}")
+        log.info(f"  Code blocks found: {len(code_blocks)}")
         
         # Store in database
         try:
             session_manager = SessionManager()
             await session_manager.store_analyzed_files(session_id, analysis_data)
+            
+            # Also update session metadata with tracked files
+            await session_manager.update_session_metadata(
+                session_id,
+                {"tracked_files": tracked_files}
+            )
         except Exception as e:
-            log.error(f"Failed to store analyzed files: {e}")
+            log.error(f"Failed to store analysis data: {e}")
     
     async def handle_user_message(
         self,
@@ -352,7 +347,7 @@ I've attempted to fix this issue 5 times but the pipeline continues to fail. Thi
 ### 📋 Fix Attempts Made:
 """ + "\n".join([f"- MR #{att['mr_id']} on branch `{att['branch']}`" for att in fix_attempts])
         
-        # Build context prompt - keep it concise
+        # Build context prompt
         context_prompt = f"""
 Session Context:
 - Project: {context.project_name} (ID: {context.project_id})
@@ -363,52 +358,64 @@ Session Context:
 - Fix Attempts: {len(fix_attempts)}
 """
         
-        # Get existing branch info if available
-        existing_fix_branch = None
-        existing_mr_id = None
-        if fix_attempts:
-            latest_attempt = fix_attempts[-1]
-            existing_fix_branch = latest_attempt.get('branch')
-            existing_mr_id = latest_attempt.get('mr_id')
-        
         # Prepare final prompt based on context
         if is_mr_request and not is_fix_branch:
-            # First fix - create new branch
+            # Get tracked files and previous analysis
+            session = await session_manager.get_session(session_id)
+            tracked_files = session.get("tracked_files", [])
+            
+            # Get previous analysis from conversation
+            previous_analysis = ""
+            proposed_code = {}
+            
+            for msg in reversed(conversation_history):
+                if msg["role"] == "assistant" and "Failure Analysis" in msg.get("content", ""):
+                    previous_analysis = msg["content"]
+                    # Extract code blocks from analysis
+                    import re
+                    code_pattern = r'```(?:java|python|javascript|yaml|xml)?\n(.*?)\n```'
+                    code_blocks = re.findall(code_pattern, previous_analysis, re.DOTALL)
+                    if code_blocks and tracked_files:
+                        # Map first code block to first tracked file (Library.java)
+                        for f in tracked_files:
+                            if 'Library.java' in f and code_blocks:
+                                proposed_code[f] = code_blocks[0]
+                                break
+                    break
+            
             timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
             branch_name = f"fix/pipeline_{context.job_name}_{timestamp}".replace(" ", "_").lower()
-            
-            # Get analyzed files from database
-            analyzed_data = await session_manager.get_analyzed_files(session_id)
-            
-            # Extract the proposed solution from previous analysis
-            full_message = analyzed_data.get('full_message', '')
             
             final_prompt = f"""{context_prompt}
 
 The user wants to create a merge request with the fixes discussed.
 
-Previous Analysis Summary:
-{full_message[:1500]}...
+Files to modify: {tracked_files}
+
+Previous analysis identified these files need changes. The proposed fix for Library.java was:
+```java
+{proposed_code.get(tracked_files[0], '') if tracked_files else ''}
+```
 
 CRITICAL INSTRUCTIONS:
-1. First, use get_file_content to retrieve the actual content of files that need to be modified
-2. Apply the fixes discussed in the analysis
-3. Create a merge request with the complete fixed files
+1. First retrieve the current content of: {tracked_files}
+2. Apply the fixes from the analysis (add null checks, throw BookNotFoundException)
+3. Create the merge request with the complete file content using the 'files' parameter
 4. Include the complete MR URL in your response
 
-For the Library.java issue, you need to:
-- Add null checks in borrowBook method
-- Add BookNotFoundException handling
-- Fix the returnBook and addBook methods
+Example of correct create_merge_request call:
+create_merge_request(
+    title="Fix test failure",
+    description="Description",
+    files={{
+        "src/main/java/com/demo/library/Library.java": "complete fixed file content here"
+    }},
+    project_id="{context.project_id}",
+    source_branch="{branch_name}",
+    target_branch="{context.branch or 'main'}"
+)
 
-Use these parameters:
-- Project ID: {context.project_id}
-- Source Branch: {branch_name}
-- Target Branch: {context.branch or 'main'}
-- Title: Fix {context.failed_stage} failure in {context.job_name}
-- Description: Automated fix for pipeline failure #{context.pipeline_id}
-
-Retrieve the files and create the merge request now."""
+Create the merge request now with the actual file content."""
         else:
             final_prompt = f"""{context_prompt}
 
@@ -419,6 +426,9 @@ User Question: {message}
 
 Note: When retrieving logs, always use max_size=30000 to prevent overflow."""
         
+        # Set current session for file tracking if needed
+        self._current_session_id = session_id
+        
         # Create agent with tools
         agent = Agent(
             model=self.model,
@@ -428,6 +438,9 @@ Note: When retrieving logs, always use max_size=30000 to prevent overflow."""
         
         result = await agent.invoke_async(final_prompt)
         log.debug(f"Generated response for session {session_id}")
+        
+        # Clear current session
+        self._current_session_id = None
         
         # Return the message directly
         return result.message if hasattr(result, 'message') else str(result)
