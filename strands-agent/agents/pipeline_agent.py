@@ -286,40 +286,42 @@ Remember: Do NOT create a merge request. Only analyze and propose solutions."""
         """Store tracked files and analysis data"""
         # Get tracked files and content for this session
         tracked_files_content = self.session_files.get(session_id, {})
-        
-        # Extract code blocks
-        code_pattern = r'```(?:java|python|javascript|yaml|xml)?\n(.*?)\n```'
-        code_blocks = re.findall(code_pattern, result_text, re.DOTALL)
-        
+
+        # Extract all code blocks from the analysis
+        code_blocks = []
+
+        # Pattern for triple backtick code blocks
+        triple_pattern = r'```(?:\w+)?\n(.*?)\n```'
+        triple_matches = re.findall(triple_pattern, result_text, re.DOTALL)
+
+        # Pattern for single backtick code blocks
+        single_pattern = r'`(?:\w+)?\n(.*?)\n`'
+        single_matches = re.findall(single_pattern, result_text, re.DOTALL)
+
+        code_blocks.extend(triple_matches)
+        code_blocks.extend(single_matches)
+
         # Get current session data
         session = await self._session_manager.get_session(session_id)
         webhook_data = session.get('webhook_data', {})
-        
+
         # Initialize file_analysis
         if 'file_analysis' not in webhook_data:
             webhook_data['file_analysis'] = {}
-        
-        # Map code blocks to files
+
+        # Store all tracked files with their original content
         for file_path, original_content in tracked_files_content.items():
-            # Find the code block for this file
-            proposed_change = None
-            
-            if 'Library.java' in file_path and code_blocks:
-                # Find the code block with Library class
-                for code in code_blocks:
-                    if 'public class Library' in code and 'borrowBook' in code:
-                        proposed_change = code
-                        break
-            
-            if proposed_change:
-                # Store in webhook_data
-                webhook_data['file_analysis'][file_path] = {
-                    'original_content': original_content,
-                    'proposed_changes': proposed_change,
-                    'timestamp': datetime.utcnow().isoformat()
-                }
-        
-        # Update session with file analysis
+            webhook_data['file_analysis'][file_path] = {
+                'original_content': original_content,
+                'proposed_changes': None,  # Will be determined by LLM during MR creation
+                'timestamp': datetime.utcnow().isoformat()
+            }
+
+        # Store the full analysis result for later use
+        webhook_data['analysis_result'] = result_text
+        webhook_data['code_blocks'] = code_blocks
+
+        # Update session
         await self._session_manager.update_session_metadata(
             session_id,
             {
@@ -327,9 +329,9 @@ Remember: Do NOT create a merge request. Only analyze and propose solutions."""
                 "tracked_files": list(tracked_files_content.keys())
             }
         )
-        
-        log.info(f"Stored analysis for {len(tracked_files_content)} files")
-    
+
+        log.info(f"Stored analysis data with {len(tracked_files_content)} tracked files and {len(code_blocks)} code blocks")
+
     async def handle_user_message(
         self,
         session_id: str,
@@ -396,9 +398,12 @@ The user wants to create a merge request with the fixes discussed.
 
 INSTRUCTIONS:
 1. First, call get_stored_file_analysis() to retrieve the file analysis from the session
-2. For each file in the analysis, use the proposed_changes to create the fixed version
-3. Create a merge request with ALL files that have proposed changes
-4. Include the complete MR URL in your response
+2. Review the previous analysis in the conversation to understand what fixes are needed
+3. For each file that was tracked:
+   - If it needs changes based on the analysis, determine the complete fixed content
+   - If it's a new file that needs to be created (like BookNotFoundException), create it
+4. Create a merge request with ALL necessary files
+5. Include the complete MR URL in your response
 
 Use these parameters for create_merge_request:
 - Project ID: {context.project_id}
@@ -407,7 +412,8 @@ Use these parameters for create_merge_request:
 - Title: Fix {context.failed_stage} failure in {context.job_name}
 - Description: Automated fix for pipeline failure #{context.pipeline_id}
 
-IMPORTANT: The files parameter should be a dictionary mapping file paths to their complete fixed content."""
+The files parameter should be a dictionary mapping file paths to their complete content.
+Review the conversation history to understand what changes are needed."""
         else:
             final_prompt = f"""{context_prompt}
 

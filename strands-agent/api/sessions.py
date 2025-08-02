@@ -75,25 +75,8 @@ async def send_message(session_id: str, request: MessageRequest):
                 session_id, request.message, conversation_history, context
             )
         
-        # Generic response extraction
-        response_text = ""
-        if isinstance(response, str):
-            response_text = response
-        elif hasattr(response, 'message'):
-            response_text = response.message
-        elif hasattr(response, 'content'):
-            response_text = response.content
-        elif isinstance(response, dict):
-            if "content" in response:
-                content = response["content"]
-                if isinstance(content, list):
-                    for item in content:
-                        if isinstance(item, dict) and "text" in item:
-                            response_text += item["text"]
-                elif isinstance(content, str):
-                    response_text = content
-            elif "message" in response:
-                response_text = response["message"]
+        # Extract text from response - handle Strands agent response format
+        response_text = extract_text_from_response(response)
         
         if not response_text:
             response_text = str(response)
@@ -113,7 +96,7 @@ async def send_message(session_id: str, request: MessageRequest):
                 }
             )
         
-        # Add agent response
+        # Add agent response - store only the text, not the full structure
         await session_manager.add_message(session_id, "assistant", response_text)
         
         log.info(f"Generated response for session {session_id}, MR URL: {mr_url}")

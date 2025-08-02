@@ -109,13 +109,28 @@ async def get_file_content(file_path: str, project_id: str, ref: str = "HEAD") -
     
     async with await get_gitlab_client() as client:
         try:
+            # URL encode the file path - replace / with %2F
             encoded_path = quote(file_path, safe='')
-            response = await client.get(
-                f"/projects/{project_id}/repository/files/{encoded_path}/raw",
-                params={"ref": ref}
-            )
+            
+            # Try raw endpoint first
+            url = f"/projects/{project_id}/repository/files/{encoded_path}/raw"
+            response = await client.get(url, params={"ref": ref})
+            
+            if response.status_code == 404:
+                # Try alternative API endpoint
+                url = f"/projects/{project_id}/repository/files/{encoded_path}"
+                response = await client.get(url, params={"ref": ref})
+                
+                if response.status_code == 200:
+                    # Decode base64 content
+                    import base64
+                    data = response.json()
+                    content = base64.b64decode(data['content']).decode('utf-8')
+                    return content
+            
             response.raise_for_status()
             return response.text
+            
         except Exception as e:
             log.error(f"Failed to get file content: {e}")
             return f"Error getting file content: {str(e)}"

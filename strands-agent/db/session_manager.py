@@ -180,34 +180,44 @@ class SessionManager:
                 else:
                     metadata["webhook_data"] = json.dumps(new_webhook_data)
             
+            # Handle tracked_files specially - merge into webhook_data
+            if "tracked_files" in metadata:
+                current = await conn.fetchval(
+                    "SELECT webhook_data FROM sessions WHERE id = $1",
+                    session_id
+                )
+                webhook_data = json.loads(current) if current else {}
+                webhook_data["tracked_files"] = metadata.pop("tracked_files")  # Remove from metadata
+                
+                # If webhook_data was already in metadata, update it
+                if "webhook_data" in metadata:
+                    existing_webhook = json.loads(metadata["webhook_data"])
+                    existing_webhook["tracked_files"] = webhook_data["tracked_files"]
+                    metadata["webhook_data"] = json.dumps(existing_webhook)
+                else:
+                    metadata["webhook_data"] = json.dumps(webhook_data)
+            
             # Build update query
             updates = []
             params = [session_id]
             param_num = 2
             
             for key, value in metadata.items():
-                if key == "tracked_files":
-                    # Store tracked_files in webhook_data
-                    current = await conn.fetchval(
-                        "SELECT webhook_data FROM sessions WHERE id = $1",
-                        session_id
-                    )
-                    webhook_data = json.loads(current) if current else {}
-                    webhook_data["tracked_files"] = value
-                    updates.append(f"webhook_data = ${param_num}::jsonb")
-                    params.append(json.dumps(webhook_data))
-                elif key == "webhook_data":
+                if key == "webhook_data":
                     updates.append(f"webhook_data = ${param_num}::jsonb")
                     params.append(value)
-                else:
-                    field_mapping = {
-                        "merge_request_url": "merge_request_url",
-                        "merge_request_id": "merge_request_id",
-                        "fixes_applied": "fixes_applied"
-                    }
-                    if key in field_mapping:
-                        updates.append(f"{field_mapping[key]} = ${param_num}")
-                        params.append(value)
+                elif key == "merge_request_url":
+                    updates.append(f"merge_request_url = ${param_num}")
+                    params.append(value)
+                elif key == "merge_request_id":
+                    updates.append(f"merge_request_id = ${param_num}")
+                    params.append(value)
+                elif key == "fixes_applied":
+                    updates.append(f"fixes_applied = ${param_num}::jsonb")
+                    params.append(json.dumps(value) if isinstance(value, (dict, list)) else value)
+                elif key == "session_type":
+                    updates.append(f"session_type = ${param_num}")
+                    params.append(value)
                 param_num += 1
             
             if updates:
@@ -218,7 +228,7 @@ class SessionManager:
                 """
                 await conn.execute(query, *params)
                 log.debug(f"Updated metadata for session {session_id}")
-    
+        
     async def update_quality_metrics(self, session_id: str, metrics: Dict[str, Any]):
         """Update quality metrics for a session"""
         async with self.get_connection() as conn:

@@ -272,8 +272,19 @@ with col2:
                 for msg in messages:
                     if msg["role"] != "system":
                         with st.chat_message(msg["role"]):
-                            st.write(msg.get("content", ""))
-                
+                            content = msg.get("content", "")
+                            # Handle both string and dict content
+                            if isinstance(content, dict):
+                                # Extract text from dict format
+                                if "text" in content:
+                                    st.markdown(content["text"])
+                                elif "message" in content:
+                                    st.markdown(content["message"])
+                                else:
+                                    st.markdown(str(content))
+                            else:
+                                st.markdown(content)
+                                
                 # Chat input
                 if prompt := st.chat_input("Ask about this failure..."):
                     # Add user message
