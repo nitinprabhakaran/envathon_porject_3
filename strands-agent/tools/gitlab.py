@@ -185,10 +185,6 @@ async def create_merge_request(
                     json={"branch": source_branch, "ref": target_branch}
                 )
             
-            # Check which files exist on the SOURCE branch (not target)
-            actions = []
-            files_processed = []
-            
             # Process updates and creates based on LLM instructions
             files_to_process = []
             
@@ -206,29 +202,29 @@ async def create_merge_request(
                 for file_path, content in files.items():
                     files_to_process.append(("update", file_path, content))
             
-            # Now check each file's actual existence on the source branch
+            actions = []
+            files_processed = []
+            
+            # Now check each file's actual existence
             for intended_action, file_path, content in files_to_process:
                 encoded_path = quote(file_path, safe='')
                 
-                # Check if file exists on source branch
+                # For new branches, check against target branch since source doesn't have files yet
+                check_ref = target_branch if not update_mode else source_branch
+                
+                # Check if file exists
                 try:
                     check_response = await client.get(
                         f"/projects/{project_id}/repository/files/{encoded_path}",
-                        params={"ref": source_branch}
+                        params={"ref": check_ref}
                     )
-                    # File exists on source branch - always update
+                    # File exists - update it
                     actions.append({"action": "update", "file_path": file_path, "content": content})
                     files_processed.append(f"UPDATE: {file_path}")
                 except:
-                    # File doesn't exist on source branch
-                    if intended_action == "create" or update_mode:
-                        # LLM said to create it, or we're in update mode
-                        actions.append({"action": "create", "file_path": file_path, "content": content})
-                        files_processed.append(f"CREATE: {file_path}")
-                    else:
-                        # LLM said update but file doesn't exist - create it
-                        actions.append({"action": "create", "file_path": file_path, "content": content})
-                        files_processed.append(f"CREATE: {file_path} (was marked for update but doesn't exist)")
+                    # File doesn't exist - create it
+                    actions.append({"action": "create", "file_path": file_path, "content": content})
+                    files_processed.append(f"CREATE: {file_path}")
             
             if not actions:
                 return {
