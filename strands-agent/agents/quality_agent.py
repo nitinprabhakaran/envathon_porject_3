@@ -134,53 +134,7 @@ class QualityAgent:
                 max_tokens=4096
             )
         
-        # Session storage for tracking files
-        self.session_files = {}
-        self._current_session_id = None
         self._session_manager = SessionManager()
-        
-        # Create wrapped get_file_content to track accessed files
-        original_get_file_content = get_file_content
-        
-        @tool
-        async def tracked_get_file_content(file_path: str, project_id: str, ref: str = "HEAD") -> str:
-            """Get content of a file from GitLab repository"""
-            result = await original_get_file_content(file_path, project_id, ref)
-            
-            # Track and store successful file access
-            if self._current_session_id and "Error getting file content" not in result:
-                if self._current_session_id not in self.session_files:
-                    self.session_files[self._current_session_id] = {}
-                
-                # Store both path and content
-                self.session_files[self._current_session_id][file_path] = result
-                log.debug(f"Tracked and stored content for: {file_path}")
-            
-            return result
-        
-        # Tool to get stored file analysis
-        @tool
-        async def get_stored_file_analysis() -> Dict[str, Any]:
-            """Get stored file analysis for current session"""
-            if self._current_session_id:
-                session = await self._session_manager.get_session(self._current_session_id)
-                if session:
-                    return session.get('webhook_data', {}).get('file_analysis', {})
-            return {}
-        
-        # Store tools
-        self.tools = [
-            get_project_quality_gate_status,
-            get_project_issues,
-            get_project_metrics,
-            get_issue_details,
-            get_rule_description,
-            tracked_get_file_content,
-            create_merge_request,
-            get_project_info,
-            get_stored_file_analysis
-        ]
-        
         log.info("Quality agent initialized")
     
     async def analyze_quality_issues(
@@ -192,9 +146,6 @@ class QualityAgent:
     ) -> str:
         """Analyze quality gate failure and return findings"""
         log.info(f"Analyzing quality issues for {project_key} in session {session_id}")
-        
-        # Set current session for file tracking
-        self._current_session_id = session_id
         
         # Check if issues are already fetched
         total_issues = 0
@@ -225,34 +176,61 @@ Important:
 - If files cannot be retrieved, acknowledge this and provide conceptual fixes
 - Do NOT create a merge request unless you have actual file content to work with"""
         
+        # Create wrapped get_file_content that stores files immediately
+        original_get_file_content = get_file_content
+        
+        @tool
+        async def tracked_get_file_content(file_path: str, project_id: str, ref: str = "HEAD") -> Dict[str, Any]:
+            """Get content of a file from GitLab repository"""
+            result = await original_get_file_content(file_path, project_id, ref)
+            
+            # Store file immediately in database
+            if isinstance(result, dict):
+                await self._session_manager.store_tracked_file(
+                    session_id,
+                    file_path,
+                    result.get("content") if result.get("status") == "success" else None,
+                    result.get("status", "error")
+                )
+            
+            return result
+        
+        # Create tools list with tracked version
+        tools = [
+            get_project_quality_gate_status,
+            get_project_issues,
+            get_project_metrics,
+            get_issue_details,
+            get_rule_description,
+            tracked_get_file_content,
+            get_project_info
+        ]
+        
         # Create fresh agent for analysis
         agent = Agent(
             model=self.model,
             system_prompt=QUALITY_SYSTEM_PROMPT,
-            tools=self.tools
+            tools=tools
         )
         
         result = await agent.invoke_async(prompt)
         log.info(f"Quality analysis complete for session {session_id}")
         
-        # Store tracked files and analysis
-        await self._store_analysis_data(session_id, str(result))
-        
-        # Clear current session
-        self._current_session_id = None
-        
         # Extract text from result
         if hasattr(result, 'message'):
-            return result.message
-        return str(result)
+            result_text = result.message
+        else:
+            result_text = str(result)
+            
+        # Store analysis data
+        await self._store_analysis_data(session_id, result_text)
+        
+        return result_text
     
     async def _store_analysis_data(self, session_id: str, result_text: str):
-        """Store tracked files and analysis data"""
+        """Store analysis data"""
         import re
         
-        # Get tracked files and content for this session
-        tracked_files_content = self.session_files.get(session_id, {})
-
         # Extract all code blocks from the analysis
         code_blocks = []
 
@@ -267,36 +245,18 @@ Important:
         code_blocks.extend(triple_matches)
         code_blocks.extend(single_matches)
 
-        # Get current session data
-        session = await self._session_manager.get_session(session_id)
-        webhook_data = session.get('webhook_data', {})
-
-        # Initialize file_analysis
-        if 'file_analysis' not in webhook_data:
-            webhook_data['file_analysis'] = {}
-
-        # Store all tracked files with their original content
-        for file_path, original_content in tracked_files_content.items():
-            webhook_data['file_analysis'][file_path] = {
-                'original_content': original_content,
-                'proposed_changes': None,  # Will be determined by LLM during MR creation
-                'timestamp': datetime.utcnow().isoformat()
-            }
-
-        # Store the full analysis result for later use
-        webhook_data['analysis_result'] = result_text
-        webhook_data['code_blocks'] = code_blocks
-
-        # Update session
+        # Store the analysis result and code blocks
         await self._session_manager.update_session_metadata(
             session_id,
             {
-                "webhook_data": webhook_data,
-                "tracked_files": list(tracked_files_content.keys())
+                "webhook_data": {
+                    "analysis_result": result_text,
+                    "code_blocks": code_blocks
+                }
             }
         )
 
-        log.info(f"Stored analysis data with {len(tracked_files_content)} tracked files and {len(code_blocks)} code blocks")
+        log.info(f"Stored analysis data with {len(code_blocks)} code blocks")
     
     async def handle_user_message(
         self,
@@ -308,24 +268,34 @@ Important:
         """Handle user message in conversation"""
         log.info(f"Handling user message for quality session {session_id}")
         
-        # Set current session for file tracking
-        self._current_session_id = session_id
+        # Create a tool to get stored analysis and files for THIS session
+        @tool
+        async def get_session_data() -> Dict[str, Any]:
+            """Get stored analysis and tracked files from the current session"""
+            session_data = await self._session_manager.get_session(session_id)
+            tracked_files = await self._session_manager.get_tracked_files(session_id)
+            
+            return {
+                'analysis_result': session_data.get('webhook_data', {}).get('analysis_result', ''),
+                'code_blocks': session_data.get('webhook_data', {}).get('code_blocks', []),
+                'tracked_files': tracked_files,
+                'current_fix_branch': session_data.get('current_fix_branch'),
+                'fix_iteration': session_data.get('fix_iteration', 0)
+            }
         
         # Check message intent
         is_retry = "still failing" in message.lower() or "same error" in message.lower() or "try again" in message.lower()
         is_mr_request = "create" in message.lower() and ("mr" in message.lower() or "merge request" in message.lower())
         is_apply_fix = "apply" in message.lower() and "fix" in message.lower()
         
-        # Check if current branch is a fix branch
-        is_fix_branch = context.branch and context.branch.startswith("fix/sonarqube_")
-        
-        # Get fix attempts
+        # Get session data to check current state
+        session_data = await self._session_manager.get_session(session_id)
+        current_fix_branch = session_data.get('current_fix_branch')
         fix_attempts = await self._session_manager.get_fix_attempts(session_id)
         
         # Check iteration limit
         if is_retry or is_apply_fix or (is_mr_request and len(fix_attempts) > 0):
             if await self._session_manager.check_iteration_limit(session_id):
-                self._current_session_id = None
                 return """### ❌ Iteration Limit Reached
 
 I've attempted to fix quality issues 5 times but the quality gate continues to fail. This suggests:
@@ -341,7 +311,7 @@ I've attempted to fix quality issues 5 times but the quality gate continues to f
 4. Consider breaking fixes into smaller, focused MRs
 
 ### 📋 Fix Attempts Made:
-""" + "\n".join([f"- MR #{att['mr_id']} on branch `{att['branch']}`" for att in fix_attempts])
+""" + "\n".join([f"- Attempt #{att['attempt_number']}: {att['branch_name']} - {att['status']}" for att in fix_attempts])
         
         # Build context prompt
         context_prompt = f"""
@@ -351,6 +321,8 @@ Session Context:
 - GitLab Project ID: {context.gitlab_project_id}
 - Quality Gate Status: {context.quality_gate_status}
 - Session ID: {session_id}
+- Current Fix Branch: {current_fix_branch or 'None'}
+- Fix Iteration: {len(fix_attempts)}
 """
         
         # Add conversation summary (last analysis)
@@ -361,20 +333,44 @@ Session Context:
                     break
         
         # Prepare final prompt based on context
-        if is_mr_request and not is_fix_branch:
-            timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
-            branch_name = f"fix/sonarqube_{timestamp}"
-            
-            final_prompt = f"""{context_prompt}
+        if is_mr_request:
+            if current_fix_branch and len(fix_attempts) > 0:
+                # Update existing branch
+                final_prompt = f"""{context_prompt}
+
+The user wants to apply additional fixes to the existing branch.
+
+INSTRUCTIONS:
+1. Use available tools to get stored analysis and tracked files
+2. Review what changes were already made
+3. Apply additional fixes to the same branch
+4. Update the existing merge request
+
+Use these parameters for create_merge_request:
+- Project ID: {context.gitlab_project_id}
+- Source Branch: {current_fix_branch}
+- Target Branch: {context.branch or 'main'}
+- Title: Additional quality fixes (Iteration {len(fix_attempts) + 1})
+- Description: Iterative fix for quality gate failures
+- update_mode: true
+
+CRITICAL: Set update_mode=true since we're updating an existing branch."""
+            else:
+                # Create new branch and MR
+                timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+                branch_name = f"fix/sonarqube_{timestamp}"
+                
+                final_prompt = f"""{context_prompt}
 
 The user wants to create a merge request with the quality fixes.
 
 INSTRUCTIONS:
-1. First, call get_stored_file_analysis() to retrieve the file analysis from the session
-2. Review the previous analysis in the conversation to understand what fixes are needed
-3. For each file that was tracked:
-   - If it needs changes based on the analysis, determine the complete fixed content
+1. Use available tools to get stored analysis and tracked files
+2. Review the previous analysis to understand what fixes are needed
+3. For each file that needs changes:
+   - If it was tracked and retrieved, use the stored content
    - If it's a new file that needs to be created, create it
+   - Apply the fixes that were discussed in the analysis
 4. Create a merge request with ALL necessary files
 5. Include the complete MR URL in your response
 
@@ -385,7 +381,7 @@ Use these parameters for create_merge_request:
 - Title: Fix SonarQube quality gate failures
 - Description: Automated fixes for bugs, vulnerabilities, and code smells
 
-CRITICAL: The files parameter must be a dictionary with this EXACT structure:
+The files parameter must be a dictionary with this structure:
 {{
     "updates": {{
         "path/to/existing/file.ext": "complete file content here"
@@ -393,56 +389,87 @@ CRITICAL: The files parameter must be a dictionary with this EXACT structure:
     "creates": {{
         "path/to/new/file.ext": "complete file content here"
     }}
-}}
-
-IMPORTANT RULES:
-- Check which files you retrieved successfully with get_file_content
-- Files that returned content go in "updates" 
-- Files that returned "Error getting file content" or don't exist go in "creates"
-- Include the COMPLETE content for each file, not just the changes"""
-        elif is_apply_fix or (is_mr_request and is_fix_branch):
-            # Applying fix to existing branch
-            final_prompt = f"""{context_prompt}
-
-The user wants to apply additional fixes to the existing feature branch: {context.branch}
-
-INSTRUCTIONS:
-1. Review the latest failure and previous attempts
-2. Identify what additional fixes are needed
-3. Apply fixes to the same branch by updating or creating files as needed
-
-Use these parameters for create_merge_request:
-- Project ID: {context.gitlab_project_id}
-- Source Branch: {context.branch}
-- Target Branch: main
-- Title: Additional quality fixes
-- Description: Iterative fix for quality gate failures
-- update_mode: true
-
-CRITICAL: Set update_mode=true since we're updating an existing branch.
-The files parameter must use the same structure:
-{{
-    "updates": {{}},
-    "creates": {{}}
 }}"""
         else:
             final_prompt = f"{context_prompt}\n\nUser Question: {message}"
+        
+        # Create wrapped get_file_content for this session
+        original_get_file_content = get_file_content
+        
+        @tool
+        async def tracked_get_file_content(file_path: str, project_id: str, ref: str = "HEAD") -> Dict[str, Any]:
+            """Get content of a file from GitLab repository"""
+            # Use current fix branch if available
+            if current_fix_branch and ref == "HEAD":
+                ref = current_fix_branch
+                
+            result = await original_get_file_content(file_path, project_id, ref)
+            
+            # Store file immediately in database
+            if isinstance(result, dict):
+                await self._session_manager.store_tracked_file(
+                    session_id,
+                    file_path,
+                    result.get("content") if result.get("status") == "success" else None,
+                    result.get("status", "error")
+                )
+            
+            return result
+        
+        # Create tools list including session-specific tool
+        tools = [
+            get_project_quality_gate_status,
+            get_project_issues,
+            get_project_metrics,
+            get_issue_details,
+            get_rule_description,
+            tracked_get_file_content,
+            create_merge_request,
+            get_project_info,
+            get_session_data
+        ]
         
         # Create fresh agent and invoke
         agent = Agent(
             model=self.model,
             system_prompt=QUALITY_SYSTEM_PROMPT,
-            tools=self.tools
+            tools=tools
         )
         
         result = await agent.invoke_async(final_prompt)
+        
+        # Check if MR was created/updated
+        result_text = result.message if hasattr(result, 'message') else str(result)
+        
+        # Track fix attempt if MR was created
+        if is_mr_request and "web_url" in result_text:
+            import re
+            # Extract branch name from result
+            branch_match = re.search(r'Source Branch: ([^\s]+)', result_text)
+            if branch_match:
+                branch_name = branch_match.group(1)
+                attempt_num = await self._session_manager.create_fix_attempt(
+                    session_id,
+                    branch_name,
+                    []  # Files will be updated later
+                )
+                
+                # Extract MR URL and ID
+                mr_url_match = re.search(r'https?://[^\s<>"{}|\\^`\[\]]+/merge_requests/\d+', result_text)
+                if mr_url_match:
+                    mr_url = mr_url_match.group(0)
+                    mr_id = mr_url.split('/')[-1]
+                    await self._session_manager.update_fix_attempt(
+                        session_id,
+                        attempt_num,
+                        "pending",
+                        mr_id,
+                        mr_url
+                    )
+        
         log.debug(f"Generated response for session {session_id}")
         
-        # Clear current session
-        self._current_session_id = None
-        
-        # Return the message directly
-        return result.message if hasattr(result, 'message') else str(result)
+        return result_text
     
     def _format_conversation_history(self, conversation_history: List[Dict[str, Any]], max_messages: int = 6) -> str:
         """Format conversation history for context, limiting to recent messages"""

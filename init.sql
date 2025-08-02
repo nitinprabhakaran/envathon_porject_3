@@ -37,7 +37,41 @@ CREATE TABLE IF NOT EXISTS sessions (
     webhook_data JSONB DEFAULT '{}',
     merge_request_url TEXT,
     merge_request_id VARCHAR(255),
-    fixes_applied JSONB DEFAULT '[]'
+    fixes_applied JSONB DEFAULT '[]',
+    
+    -- Fix tracking fields
+    current_fix_branch VARCHAR(255),
+    fix_iteration INTEGER DEFAULT 0
+);
+
+-- Create tracked files table for better file management
+CREATE TABLE IF NOT EXISTS tracked_files (
+    id SERIAL PRIMARY KEY,
+    session_id UUID REFERENCES sessions(id) ON DELETE CASCADE,
+    file_path TEXT NOT NULL,
+    original_content TEXT,
+    tracked_content TEXT,
+    status VARCHAR(20) NOT NULL, -- 'success', 'not_found', 'error'
+    tracked_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    last_modified TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    metadata JSONB DEFAULT '{}',
+    UNIQUE(session_id, file_path)
+);
+
+-- Create fix attempts table for tracking iterations
+CREATE TABLE IF NOT EXISTS fix_attempts (
+    id SERIAL PRIMARY KEY,
+    session_id UUID REFERENCES sessions(id) ON DELETE CASCADE,
+    attempt_number INTEGER NOT NULL,
+    branch_name VARCHAR(255) NOT NULL,
+    merge_request_id VARCHAR(255),
+    merge_request_url TEXT,
+    status VARCHAR(20) DEFAULT 'pending', -- 'pending', 'success', 'failed'
+    files_changed JSONB DEFAULT '[]',
+    error_details TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    completed_at TIMESTAMP,
+    UNIQUE(session_id, attempt_number)
 );
 
 -- Create historical fixes table
@@ -60,6 +94,10 @@ CREATE INDEX IF NOT EXISTS idx_sessions_project ON sessions(project_id);
 CREATE INDEX IF NOT EXISTS idx_sessions_created ON sessions(created_at);
 CREATE INDEX IF NOT EXISTS idx_sessions_expires ON sessions(expires_at);
 CREATE INDEX IF NOT EXISTS idx_sessions_quality_gate ON sessions(quality_gate_status);
+CREATE INDEX IF NOT EXISTS idx_sessions_fix_branch ON sessions(current_fix_branch);
+CREATE INDEX IF NOT EXISTS idx_tracked_files_session ON tracked_files(session_id);
+CREATE INDEX IF NOT EXISTS idx_tracked_files_path ON tracked_files(session_id, file_path);
+CREATE INDEX IF NOT EXISTS idx_fix_attempts_session ON fix_attempts(session_id, attempt_number);
 CREATE INDEX IF NOT EXISTS idx_historical_fixes_signature ON historical_fixes(error_signature_hash);
 CREATE INDEX IF NOT EXISTS idx_historical_fixes_session ON historical_fixes(session_id);
 
@@ -76,3 +114,18 @@ CREATE TRIGGER update_sessions_last_activity
 BEFORE UPDATE ON sessions
 FOR EACH ROW
 EXECUTE FUNCTION update_last_activity();
+
+-- Add migration for existing sessions
+DO $$
+BEGIN
+    -- Add columns if they don't exist
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
+                   WHERE table_name = 'sessions' AND column_name = 'current_fix_branch') THEN
+        ALTER TABLE sessions ADD COLUMN current_fix_branch VARCHAR(255);
+    END IF;
+    
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
+                   WHERE table_name = 'sessions' AND column_name = 'fix_iteration') THEN
+        ALTER TABLE sessions ADD COLUMN fix_iteration INTEGER DEFAULT 0;
+    END IF;
+END $$;

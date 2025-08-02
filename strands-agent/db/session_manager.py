@@ -57,7 +57,7 @@ class SessionManager:
                 metadata.get("failed_stage"),
                 metadata.get("quality_gate_status"),
                 json.dumps(metadata.get("webhook_data", {})),
-                expires_at  # Set expires_at based on config
+                expires_at
             )
             log.info(f"Created {session_type} session {session_id} with {settings.session_timeout_minutes} minute timeout")
             return dict(session)
@@ -100,7 +100,7 @@ class SessionManager:
             job_name=session.get('job_name'),
             sonarqube_key=session.get('webhook_data', {}).get('project', {}).get('key'),
             quality_gate_status=session.get('quality_gate_status'),
-            gitlab_project_id=session.get('project_id'),  # For quality sessions
+            gitlab_project_id=session.get('project_id'),
             created_at=session.get('created_at'),
             webhook_data=session.get('webhook_data', {})
         )
@@ -158,8 +158,134 @@ class SessionManager:
             )
             log.debug(f"Added {role} message to session {session_id}")
     
-    # Add this method to session_manager.py
-
+    async def store_tracked_file(self, session_id: str, file_path: str, content: Optional[str], status: str = "success"):
+        """Store a tracked file in the database"""
+        async with self.get_connection() as conn:
+            await conn.execute(
+                """
+                INSERT INTO tracked_files (session_id, file_path, tracked_content, status, metadata)
+                VALUES ($1, $2, $3, $4, $5)
+                ON CONFLICT (session_id, file_path) 
+                DO UPDATE SET 
+                    tracked_content = $3,
+                    status = $4,
+                    last_modified = CURRENT_TIMESTAMP,
+                    metadata = $5
+                """,
+                session_id, file_path, content, status, json.dumps({})
+            )
+            log.info(f"Stored tracked file {file_path} (status: {status}) for session {session_id}")
+    
+    async def get_tracked_files(self, session_id: str) -> Dict[str, Any]:
+        """Get all tracked files for a session"""
+        async with self.get_connection() as conn:
+            files = await conn.fetch(
+                """
+                SELECT file_path, tracked_content, status, tracked_at, metadata
+                FROM tracked_files
+                WHERE session_id = $1
+                ORDER BY tracked_at DESC
+                """,
+                session_id
+            )
+            
+            result = {}
+            for file in files:
+                result[file['file_path']] = {
+                    'content': file['tracked_content'],
+                    'status': file['status'],
+                    'tracked_at': file['tracked_at'].isoformat() if file['tracked_at'] else None,
+                    'metadata': json.loads(file['metadata']) if file['metadata'] else {}
+                }
+            return result
+    
+    async def create_fix_attempt(self, session_id: str, branch_name: str, files_changed: List[str]) -> int:
+        """Create a new fix attempt record"""
+        async with self.get_connection() as conn:
+            # Get current fix iteration
+            current_iteration = await conn.fetchval(
+                "SELECT COALESCE(MAX(attempt_number), 0) FROM fix_attempts WHERE session_id = $1",
+                session_id
+            )
+            
+            new_attempt = current_iteration + 1
+            
+            # Create fix attempt
+            await conn.execute(
+                """
+                INSERT INTO fix_attempts (session_id, attempt_number, branch_name, files_changed, status)
+                VALUES ($1, $2, $3, $4, 'pending')
+                """,
+                session_id, new_attempt, branch_name, json.dumps(files_changed)
+            )
+            
+            # Update session
+            await conn.execute(
+                """
+                UPDATE sessions 
+                SET current_fix_branch = $2, fix_iteration = $3
+                WHERE id = $1
+                """,
+                session_id, branch_name, new_attempt
+            )
+            
+            log.info(f"Created fix attempt #{new_attempt} for session {session_id}")
+            return new_attempt
+    
+    async def update_fix_attempt(self, session_id: str, attempt_number: int, status: str, 
+                                mr_id: Optional[str] = None, mr_url: Optional[str] = None,
+                                error_details: Optional[str] = None):
+        """Update fix attempt status"""
+        async with self.get_connection() as conn:
+            await conn.execute(
+                """
+                UPDATE fix_attempts
+                SET status = $3, 
+                    merge_request_id = $4,
+                    merge_request_url = $5,
+                    error_details = $6,
+                    completed_at = CASE WHEN $3 IN ('success', 'failed') THEN CURRENT_TIMESTAMP ELSE NULL END
+                WHERE session_id = $1 AND attempt_number = $2
+                """,
+                session_id, attempt_number, status, mr_id, mr_url, error_details
+            )
+            
+            # Update session MR info if successful
+            if status == "success" and mr_url:
+                await conn.execute(
+                    """
+                    UPDATE sessions 
+                    SET merge_request_url = $2, merge_request_id = $3
+                    WHERE id = $1
+                    """,
+                    session_id, mr_url, mr_id
+                )
+    
+    async def get_fix_attempts(self, session_id: str) -> List[Dict[str, Any]]:
+        """Get all fix attempts for a session"""
+        async with self.get_connection() as conn:
+            attempts = await conn.fetch(
+                """
+                SELECT * FROM fix_attempts
+                WHERE session_id = $1
+                ORDER BY attempt_number ASC
+                """,
+                session_id
+            )
+            
+            results = []
+            for attempt in attempts:
+                result = dict(attempt)
+                if result.get('files_changed'):
+                    result['files_changed'] = json.loads(result['files_changed'])
+                results.append(result)
+            return results
+    
+    async def check_iteration_limit(self, session_id: str, limit: int = 5) -> bool:
+        """Check if we've reached the iteration limit"""
+        attempts = await self.get_fix_attempts(session_id)
+        return len(attempts) >= limit
+    
     async def update_session_metadata(self, session_id: str, metadata: Dict[str, Any]):
         """Update session metadata"""
         async with self.get_connection() as conn:
@@ -179,23 +305,6 @@ class SessionManager:
                     metadata["webhook_data"] = json.dumps(current_data)
                 else:
                     metadata["webhook_data"] = json.dumps(new_webhook_data)
-            
-            # Handle tracked_files specially - merge into webhook_data
-            if "tracked_files" in metadata:
-                current = await conn.fetchval(
-                    "SELECT webhook_data FROM sessions WHERE id = $1",
-                    session_id
-                )
-                webhook_data = json.loads(current) if current else {}
-                webhook_data["tracked_files"] = metadata.pop("tracked_files")  # Remove from metadata
-                
-                # If webhook_data was already in metadata, update it
-                if "webhook_data" in metadata:
-                    existing_webhook = json.loads(metadata["webhook_data"])
-                    existing_webhook["tracked_files"] = webhook_data["tracked_files"]
-                    metadata["webhook_data"] = json.dumps(existing_webhook)
-                else:
-                    metadata["webhook_data"] = json.dumps(webhook_data)
             
             # Build update query
             updates = []
@@ -218,6 +327,12 @@ class SessionManager:
                 elif key == "session_type":
                     updates.append(f"session_type = ${param_num}")
                     params.append(value)
+                elif key == "current_fix_branch":
+                    updates.append(f"current_fix_branch = ${param_num}")
+                    params.append(value)
+                elif key == "fix_iteration":
+                    updates.append(f"fix_iteration = ${param_num}")
+                    params.append(value)
                 param_num += 1
             
             if updates:
@@ -228,7 +343,7 @@ class SessionManager:
                 """
                 await conn.execute(query, *params)
                 log.debug(f"Updated metadata for session {session_id}")
-        
+    
     async def update_quality_metrics(self, session_id: str, metrics: Dict[str, Any]):
         """Update quality metrics for a session"""
         async with self.get_connection() as conn:
@@ -266,60 +381,6 @@ class SessionManager:
             )
             log.info(f"Updated quality metrics for session {session_id}")
     
-    async def store_fix_result(self, session_id: str, mr_url: str, mr_id: str, files_changed: Dict[str, str]):
-        """Store successful fix information"""
-        async with self.get_connection() as conn:
-            # Update session with MR info
-            await conn.execute(
-                """
-                UPDATE sessions 
-                SET merge_request_url = $2, 
-                    merge_request_id = $3,
-                    fixes_applied = $4::jsonb
-                WHERE id = $1
-                """,
-                session_id, mr_url, mr_id, json.dumps(files_changed)
-            )
-            
-            # Store in historical fixes
-            session = await self.get_session(session_id)
-            error_signature = session.get('error_signature', '')
-            
-            if error_signature:
-                await conn.execute(
-                    """
-                    INSERT INTO historical_fixes 
-                    (session_id, error_signature_hash, fix_description, fix_type, success_confirmed, project_context)
-                    VALUES ($1, $2, $3, $4, $5, $6)
-                    """,
-                    session_id, 
-                    hashlib.sha256(error_signature.encode()).hexdigest(),
-                    f"MR: {mr_url}",
-                    session['session_type'],
-                    False,  # Will be updated when pipeline passes
-                    json.dumps({'files': list(files_changed.keys())})
-                )
-
-    async def get_similar_fixes(self, error_signature: str, limit: int = 5) -> List[Dict[str, Any]]:
-        """Get similar historical fixes"""
-        async with self.get_connection() as conn:
-            signature_hash = hashlib.sha256(error_signature.encode()).hexdigest()
-            
-            fixes = await conn.fetch(
-                """
-                SELECT h.*, s.project_name, s.created_at as fix_date
-                FROM historical_fixes h
-                JOIN sessions s ON h.session_id = s.id
-                WHERE h.error_signature_hash = $1
-                AND h.success_confirmed = true
-                ORDER BY h.applied_at DESC
-                LIMIT $2
-                """,
-                signature_hash, limit
-            )
-            
-            return [dict(fix) for fix in fixes]
-    
     async def mark_session_resolved(self, session_id: str):
         """Mark session as resolved"""
         async with self.get_connection() as conn:
@@ -344,86 +405,26 @@ class SessionManager:
             if count > 0:
                 log.info(f"Marked {count} sessions as expired")
     
-    async def track_fix_attempt(self, session_id: str, mr_id: str, branch_name: str, fix_content: Dict[str, str]):
-        """Track a fix attempt for iterative resolution"""
+    async def get_similar_fixes(self, error_signature: str, limit: int = 5) -> List[Dict[str, Any]]:
+        """Get similar historical fixes"""
         async with self.get_connection() as conn:
-            # Get current fix attempts
-            current = await conn.fetchval(
-                "SELECT webhook_data FROM sessions WHERE id = $1",
-                session_id
-            )
+            signature_hash = hashlib.sha256(error_signature.encode()).hexdigest()
             
-            webhook_data = json.loads(current) if current else {}
-            fix_attempts = webhook_data.get('fix_attempts', [])
-            
-            fix_attempts.append({
-                'mr_id': mr_id,
-                'branch': branch_name,
-                'timestamp': datetime.utcnow().isoformat(),
-                'files_changed': list(fix_content.keys()),
-                'status': 'pending'
-            })
-            
-            webhook_data['fix_attempts'] = fix_attempts
-            
-            await conn.execute(
-                "UPDATE sessions SET webhook_data = $2::jsonb WHERE id = $1",
-                session_id, json.dumps(webhook_data)
-            )
-
-    async def get_fix_attempts(self, session_id: str) -> List[Dict[str, Any]]:
-        """Get all fix attempts for a session"""
-        session = await self.get_session(session_id)
-        return session.get('webhook_data', {}).get('fix_attempts', [])
-
-    async def check_iteration_limit(self, session_id: str, limit: int = 5) -> bool:
-        """Check if we've reached the iteration limit"""
-        attempts = await self.get_fix_attempts(session_id)
-        return len(attempts) >= limit
-    
-    async def store_analyzed_files(self, session_id: str, file_changes: Dict[str, Any]):
-        """Store analyzed file paths and proposed changes"""
-        async with self.get_connection() as conn:
-            # Get current webhook data
-            current = await conn.fetchval(
-                "SELECT webhook_data FROM sessions WHERE id = $1",
-                session_id
-            )
-
-            webhook_data = json.loads(current) if current else {}
-            webhook_data['analyzed_files'] = {
-                'timestamp': datetime.utcnow().isoformat(),
-                'files': file_changes.get('files', []),
-                'changes': file_changes.get('changes', {})
-            }
-
-            await conn.execute(
-                "UPDATE sessions SET webhook_data = $2::jsonb WHERE id = $1",
-                session_id, json.dumps(webhook_data)
-            )
-            log.info(f"Stored analyzed files for session {session_id}: {file_changes.get('files', [])}")
-
-    async def get_analyzed_files(self, session_id: str) -> Dict[str, Any]:
-        """Get stored analyzed file information"""
-        session = await self.get_session(session_id)
-        if session:
-            return session.get('webhook_data', {}).get('analyzed_files', {})
-        return {}
-    
-    async def mark_session_resolved(self, session_id: str):
-        """Mark session as resolved when fix is successfully applied"""
-        async with self.get_connection() as conn:
-            await conn.execute(
+            fixes = await conn.fetch(
                 """
-                UPDATE sessions 
-                SET status = 'resolved',
-                    last_activity = CURRENT_TIMESTAMP
-                WHERE id = $1
+                SELECT h.*, s.project_name, s.created_at as fix_date
+                FROM historical_fixes h
+                JOIN sessions s ON h.session_id = s.id
+                WHERE h.error_signature_hash = $1
+                AND h.success_confirmed = true
+                ORDER BY h.applied_at DESC
+                LIMIT $2
                 """,
-                session_id
+                signature_hash, limit
             )
-            log.info(f"Marked session {session_id} as resolved")
-
+            
+            return [dict(fix) for fix in fixes]
+    
     async def get_sessions_by_mr(self, project_id: str, mr_id: str) -> List[Dict[str, Any]]:
         """Get sessions associated with a specific MR"""
         async with self.get_connection() as conn:

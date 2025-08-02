@@ -94,7 +94,7 @@ async def get_job_logs(job_id: str, project_id: str, max_size: Optional[int] = N
             return f"Error getting job logs: {str(e)}"
 
 @tool
-async def get_file_content(file_path: str, project_id: str, ref: str = "HEAD") -> str:
+async def get_file_content(file_path: str, project_id: str, ref: str = "HEAD") -> Dict[str, Any]:
     """Get content of a file from GitLab repository
     
     Args:
@@ -103,7 +103,7 @@ async def get_file_content(file_path: str, project_id: str, ref: str = "HEAD") -
         ref: Git reference (branch, tag, or commit SHA)
     
     Returns:
-        File content as text
+        Dictionary with 'status' and either 'content' or 'error'
     """
     log.info(f"Getting file {file_path} from project {project_id} at ref {ref}")
     
@@ -117,23 +117,53 @@ async def get_file_content(file_path: str, project_id: str, ref: str = "HEAD") -
             response = await client.get(url, params={"ref": ref})
             
             if response.status_code == 404:
-                # Try alternative API endpoint
-                url = f"/projects/{project_id}/repository/files/{encoded_path}"
-                response = await client.get(url, params={"ref": ref})
+                # File doesn't exist
+                log.info(f"File {file_path} not found in project {project_id}")
+                return {
+                    "status": "not_found",
+                    "error": f"File '{file_path}' does not exist in the repository",
+                    "file_path": file_path
+                }
+            
+            if response.status_code == 200:
+                return {
+                    "status": "success",
+                    "content": response.text,
+                    "file_path": file_path
+                }
+            
+            # Try alternative API endpoint
+            url = f"/projects/{project_id}/repository/files/{encoded_path}"
+            response = await client.get(url, params={"ref": ref})
+            
+            if response.status_code == 404:
+                log.info(f"File {file_path} not found in project {project_id}")
+                return {
+                    "status": "not_found",
+                    "error": f"File '{file_path}' does not exist in the repository",
+                    "file_path": file_path
+                }
                 
-                if response.status_code == 200:
-                    # Decode base64 content
-                    import base64
-                    data = response.json()
-                    content = base64.b64decode(data['content']).decode('utf-8')
-                    return content
+            if response.status_code == 200:
+                # Decode base64 content
+                import base64
+                data = response.json()
+                content = base64.b64decode(data['content']).decode('utf-8')
+                return {
+                    "status": "success",
+                    "content": content,
+                    "file_path": file_path
+                }
             
             response.raise_for_status()
-            return response.text
             
         except Exception as e:
             log.error(f"Failed to get file content: {e}")
-            return f"Error getting file content: {str(e)}"
+            return {
+                "status": "error",
+                "error": str(e),
+                "file_path": file_path
+            }
 
 @tool
 async def get_recent_commits(project_id: str, limit: int = 10) -> List[Dict[str, Any]]:
@@ -315,10 +345,3 @@ async def get_project_info(project_id: str) -> Dict[str, Any]:
         except Exception as e:
             log.error(f"Failed to get project info: {e}")
             return {"error": str(e)}
-
-@tool
-async def get_stored_file_analysis(session_id: str) -> Dict[str, Any]:
-    """Get stored file analysis for a session"""
-    from db.session_manager import SessionManager
-    session_manager = SessionManager()
-    return await session_manager.get_file_analysis(session_id)
