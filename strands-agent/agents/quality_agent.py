@@ -328,7 +328,7 @@ Session Context:
         # Add conversation summary (last analysis)
         if conversation_history:
             for msg in reversed(conversation_history):
-                if msg["role"] == "assistant" and "Proposed Fixes" in msg.get("content", ""):
+                if msg["role"] == "assistant" and msg.get("content"):
                     context_prompt += f"\n\nPrevious Analysis:\n{msg['content']}"
                     break
         
@@ -397,12 +397,8 @@ The files parameter must be a dictionary with this structure:
         original_get_file_content = get_file_content
         
         @tool
-        async def tracked_get_file_content(file_path: str, project_id: str, ref: str = "HEAD") -> Dict[str, Any]:
+        async def tracked_get_file_content(file_path: str, project_id: str, ref: str = "HEAD") -> str:
             """Get content of a file from GitLab repository"""
-            # Use current fix branch if available
-            if current_fix_branch and ref == "HEAD":
-                ref = current_fix_branch
-                
             result = await original_get_file_content(file_path, project_id, ref)
             
             # Store file immediately in database
@@ -413,8 +409,15 @@ The files parameter must be a dictionary with this structure:
                     result.get("content") if result.get("status") == "success" else None,
                     result.get("status", "error")
                 )
+                
+                # Return appropriate string based on status
+                if result.get("status") == "success":
+                    return result.get("content", "")
+                else:
+                    return f"Error: {result.get('error', 'Failed to get file content')}"
             
-            return result
+            # If result is already a string, return it
+            return str(result)
         
         # Create tools list including session-specific tool
         tools = [

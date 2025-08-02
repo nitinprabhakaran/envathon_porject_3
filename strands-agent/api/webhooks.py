@@ -415,7 +415,7 @@ async def analyze_pipeline_failure(session_id: str, project_id: str, pipeline_id
         if "EventLoopException" in type(e).__name__:
             error_msg = error_msg.replace("{", "{{").replace("}", "}}")
         
-        log.error(f"Pipeline analysis failed: {error_msg}", exc_info=True)
+        log.error(f"Pipeline/Quality analysis failed: {error_msg}", exc_info=True)
         
         # Check if it's a token limit error
         if "prompt is too long" in error_msg:
