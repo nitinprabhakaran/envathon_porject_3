@@ -2,7 +2,7 @@
 from typing import Dict, Any, List
 from datetime import datetime
 from strands import Agent
-import os
+import os, json
 from strands.models.bedrock import BedrockModel
 from strands.models.anthropic import AnthropicModel
 from utils.logger import log
@@ -395,6 +395,10 @@ Create additional fixes on the same branch."""
                 timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
                 branch_name = f"fix/pipeline_{context.job_name}_{timestamp}".replace(" ", "_").lower()
                 
+                # Get analyzed files from database
+                session_manager = SessionManager()
+                analyzed_data = await session_manager.get_analyzed_files(session_id)
+                
                 final_prompt = f"""{context_prompt}
 
 The user wants to create a merge request with the fixes.
@@ -402,13 +406,15 @@ The user wants to create a merge request with the fixes.
 Previous Conversation:
 {self._format_conversation_history(conversation_history)}
 
+ANALYZED FILES AND CHANGES:
+Files retrieved during analysis: {analyzed_data.get('files', [])}
+Proposed changes: {json.dumps(analyzed_data.get('changes', {}), indent=2)}
+
 CRITICAL INSTRUCTIONS:
-1. Use the create_merge_request tool with the exact file changes from the previous analysis
-2. After creating the MR, you MUST include the complete MR URL in your response
-3. Format your response to clearly show:
-   - What files were changed
-   - The branch name created
-   - **The full merge request URL**
+1. Use ONLY the file paths from "Files retrieved during analysis" above
+2. Apply the changes from "Proposed changes" to those exact files
+3. Do NOT modify the file paths or package names
+4. Include the complete MR URL in your response
 
 Use these parameters:
 - Project ID: {context.project_id}
@@ -417,7 +423,7 @@ Use these parameters:
 - Title: Fix {context.failed_stage} failure in {context.job_name}
 - Description: Automated fix for pipeline failure #{context.pipeline_id}
 
-Create the merge request now."""
+Create the merge request now with the exact files and changes shown above."""
         else:
             final_prompt = f"""{context_prompt}
 

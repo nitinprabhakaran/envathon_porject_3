@@ -338,3 +338,32 @@ class SessionManager:
         """Check if we've reached the iteration limit"""
         attempts = await self.get_fix_attempts(session_id)
         return len(attempts) >= limit
+    
+    async def store_analyzed_files(self, session_id: str, file_changes: Dict[str, Any]):
+        """Store analyzed file paths and proposed changes"""
+        async with self.get_connection() as conn:
+            # Get current webhook data
+            current = await conn.fetchval(
+                "SELECT webhook_data FROM sessions WHERE id = $1",
+                session_id
+            )
+
+            webhook_data = json.loads(current) if current else {}
+            webhook_data['analyzed_files'] = {
+                'timestamp': datetime.utcnow().isoformat(),
+                'files': file_changes.get('files', []),
+                'changes': file_changes.get('changes', {})
+            }
+
+            await conn.execute(
+                "UPDATE sessions SET webhook_data = $2::jsonb WHERE id = $1",
+                session_id, json.dumps(webhook_data)
+            )
+            log.info(f"Stored analyzed files for session {session_id}: {file_changes.get('files', [])}")
+
+    async def get_analyzed_files(self, session_id: str) -> Dict[str, Any]:
+        """Get stored analyzed file information"""
+        session = await self.get_session(session_id)
+        if session:
+            return session.get('webhook_data', {}).get('analyzed_files', {})
+        return {}
