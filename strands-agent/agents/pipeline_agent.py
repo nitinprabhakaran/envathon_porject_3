@@ -8,6 +8,7 @@ from strands.models.anthropic import AnthropicModel
 from utils.logger import log
 from config import settings
 from db.models import SessionContext
+from db.session_manager import SessionManager
 from tools.gitlab import (
     get_pipeline_jobs,
     get_job_logs,
@@ -136,6 +137,9 @@ class PipelineAgent:
             get_project_info
         ]
         
+        # Store file changes from analysis
+        self.analyzed_file_changes = {}
+        
         log.info("Pipeline agent initialized")
     
     async def analyze_failure(
@@ -202,6 +206,11 @@ Use the available tools to:
 4. If needed, examine relevant files (CI config, dependencies, etc.)
 5. Provide a solution following the specified format
 
+CRITICAL: When you identify files that need changes:
+- Store the EXACT file paths you checked (from get_file_content)
+- Save the COMPLETE fixed content for each file
+- Remember these for when the user requests an MR
+
 Note: 
 - Always use max_size=30000 when calling get_job_logs to prevent context overflow
 - If logs are truncated, focus on the available portions
@@ -220,10 +229,53 @@ Remember: Do NOT create a merge request. Only analyze and propose solutions."""
         result = await agent.invoke_async(prompt)
         log.info(f"Analysis complete for session {session_id}")
         
-        # Extract text from result
+        # Extract text from result first
         if hasattr(result, 'message'):
-            return result.message
-        return str(result)
+            result_text = result.message
+        elif isinstance(result, dict) and 'content' in result:
+            result_text = result['content']
+        else:
+            result_text = str(result)
+        
+        # Extract and store file changes from the analysis
+        self._extract_file_changes(session_id, result_text)
+        
+        # Return the text
+        return result_text
+    
+    def _extract_file_changes(self, session_id: str, result):
+        """Extract file changes from agent's analysis"""
+        # Parse the result to find file paths and changes
+        message = result.message if hasattr(result, 'message') else str(result)
+        
+        # Look for file paths and code blocks
+        import re
+        
+        # Find all file paths mentioned
+        file_patterns = [
+            r'`([^`]+\.[a-zA-Z]+)`',  # Files in backticks
+            r'File:\s*`?([^\s`]+\.[a-zA-Z]+)`?',  # File: declarations
+            r'src/[^\s]+\.[a-zA-Z]+',  # Direct src paths
+        ]
+        
+        files_mentioned = set()
+        for pattern in file_patterns:
+            matches = re.findall(pattern, message)
+            files_mentioned.update(matches)
+        
+        # Extract code blocks with their content
+        code_blocks = re.findall(r'```(?:java|python|javascript|yaml|xml)?\n(.*?)\n```', message, re.DOTALL)
+        
+        # Store for this session
+        self.analyzed_file_changes[session_id] = {
+            'files': list(files_mentioned),
+            'code_blocks': code_blocks,
+            'full_message': message
+        }
+        
+        log.info(f"Extracted file changes for session {session_id}:")
+        log.info(f"  Files mentioned: {files_mentioned}")
+        log.info(f"  Code blocks found: {len(code_blocks)}")
     
     async def handle_user_message(
         self,
