@@ -273,17 +273,25 @@ with col2:
                     if msg["role"] != "system":
                         with st.chat_message(msg["role"]):
                             content = msg.get("content", "")
-                            # Handle both string and dict content
-                            if isinstance(content, dict):
-                                # Extract text from dict format
-                                if "text" in content:
-                                    st.markdown(content["text"])
-                                elif "message" in content:
-                                    st.markdown(content["message"])
-                                else:
-                                    st.markdown(str(content))
-                            else:
-                                st.markdown(content)
+
+                            # Try to parse JSON string if it looks like JSON
+                            if isinstance(content, str) and content.strip().startswith('{'):
+                                try:
+                                    parsed = json.loads(content)
+                                    if isinstance(parsed, dict):
+                                        if "text" in parsed:
+                                            content = parsed["text"]
+                                        elif "message" in parsed:
+                                            content = parsed["message"]
+                                        elif "content" in parsed:
+                                            if isinstance(parsed["content"], list):
+                                                content = parsed["content"][0].get("text", str(parsed))
+                                            else:
+                                                content = parsed["content"]
+                                except json.JSONDecodeError:
+                                    pass
+                                    
+                            st.markdown(content)
                                 
                 # Chat input
                 if prompt := st.chat_input("Ask about this failure..."):

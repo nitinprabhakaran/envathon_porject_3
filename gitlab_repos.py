@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """
-CI/CD Demo Environment Setup Script
-Creates GitLab projects with various failure scenarios
-Includes shared pipeline templates and CI/CD variables
+Enhanced CI/CD Demo Environment Setup Script
+Creates GitLab projects with various failure scenarios including:
+- SonarQube quality gate failures (bugs, vulnerabilities, code smells)
+- Pipeline failures at different stages (build, test, package, docker)
+- Similar error patterns for vector DB demonstration
 """
 
 import gitlab
@@ -16,7 +18,7 @@ from datetime import datetime
 
 # Configuration
 GROUP_NAME = "cicd-demo"
-QUALITY_GATE_NAME = "demo-quality-gate"
+QUALITY_GATE_NAME = "strict-quality-gate"
 AGENT_WEBHOOK_URL = "http://strands-agent:8000/webhooks"
 
 # Color codes for output
@@ -61,45 +63,44 @@ NAMESPACE_VARIABLES = [
     {'key': 'GIT_DEPTH', 'value': '0'},
     {'key': 'FF_USE_FASTZIP', 'value': 'true'},
     {'key': 'ARTIFACT_COMPRESSION_LEVEL', 'value': 'fast'},
-    {'key': 'SKIP_IMAGE_PUSH', 'value': 'true'},
 ]
 
 # Project-specific variables
 PROJECT_VARIABLES = {
-    "calculator-service": [
-        {'key': 'SERVICE_NAME', 'value': 'calculator-service'},
+    "payment-service": [
+        {'key': 'SERVICE_NAME', 'value': 'payment-service'},
         {'key': 'JAVA_VERSION', 'value': '11'},
-        {'key': 'MAVEN_OPTS', 'value': '-Xmx1024m'},
-        {'key': 'SONAR_SOURCES', 'value': 'src/main/java'},
-        {'key': 'SONAR_JAVA_BINARIES', 'value': 'target/classes'},
-        {'key': 'SONAR_PROJECT_KEY', 'value': 'calculator-service'},
+        {'key': 'SONAR_PROJECT_KEY', 'value': 'payment-service'},
     ],
-    "todo-api": [
-        {'key': 'SERVICE_NAME', 'value': 'todo-api'},
+    "auth-api": [
+        {'key': 'SERVICE_NAME', 'value': 'auth-api'},
         {'key': 'PYTHON_VERSION', 'value': '3.9'},
-        {'key': 'SONAR_SOURCES', 'value': '.'},
-        {'key': 'SONAR_PYTHON_VERSION', 'value': '3.9'},
-        {'key': 'SONAR_PROJECT_KEY', 'value': 'todo-api'},
+        {'key': 'SONAR_PROJECT_KEY', 'value': 'auth-api'},
     ],
-    "weather-service": [
-        {'key': 'SERVICE_NAME', 'value': 'weather-service'},
+    "notification-service": [
+        {'key': 'SERVICE_NAME', 'value': 'notification-service'},
         {'key': 'NODE_VERSION', 'value': '16'},
-        {'key': 'SONAR_SOURCES', 'value': '.'},
-        {'key': 'NPM_CONFIG_CACHE', 'value': '.npm'},
-        {'key': 'SONAR_PROJECT_KEY', 'value': 'weather-service'},
+        {'key': 'SONAR_PROJECT_KEY', 'value': 'notification-service'},
     ],
-    "user-service": [
-        {'key': 'SERVICE_NAME', 'value': 'user-service'},
+    "order-service": [
+        {'key': 'SERVICE_NAME', 'value': 'order-service'},
         {'key': 'PYTHON_VERSION', 'value': '3.9'},
-        {'key': 'SONAR_SOURCES', 'value': '.'},
-        {'key': 'SONAR_PROJECT_KEY', 'value': 'user-service'},
+        {'key': 'SONAR_PROJECT_KEY', 'value': 'order-service'},
     ],
-    "library-manager": [
-        {'key': 'SERVICE_NAME', 'value': 'library-manager'},
+    "inventory-api": [
+        {'key': 'SERVICE_NAME', 'value': 'inventory-api'},
         {'key': 'JAVA_VERSION', 'value': '11'},
-        {'key': 'SONAR_SOURCES', 'value': 'src/main/java'},
-        {'key': 'SONAR_JAVA_BINARIES', 'value': 'target/classes'},
-        {'key': 'SONAR_PROJECT_KEY', 'value': 'library-manager'},
+        {'key': 'SONAR_PROJECT_KEY', 'value': 'inventory-api'},
+    ],
+    "report-generator": [
+        {'key': 'SERVICE_NAME', 'value': 'report-generator'},
+        {'key': 'NODE_VERSION', 'value': '16'},
+        {'key': 'SONAR_PROJECT_KEY', 'value': 'report-generator'},
+    ],
+    "shipping-service": [
+        {'key': 'SERVICE_NAME', 'value': 'shipping-service'},
+        {'key': 'PYTHON_VERSION', 'value': '3.9'},
+        {'key': 'SONAR_PROJECT_KEY', 'value': 'shipping-service'},
     ],
 }
 
@@ -157,7 +158,7 @@ stages:
   - test
   - quality
   - package
-  - scan
+  - deploy
 
 # Build stage
 build:
@@ -224,7 +225,7 @@ package:
 
 # Build Docker image
 docker-build:
-  stage: package
+  stage: deploy
   extends: 
     - .docker-base
     - .base-rules
@@ -232,17 +233,6 @@ docker-build:
   script:
     - docker build -t ${SERVICE_NAME:-$CI_PROJECT_NAME}:$CI_COMMIT_SHORT_SHA .
     - echo "Docker image built successfully"
-  allow_failure: true
-
-# Scan Docker image
-scan-image:
-  stage: scan
-  image: aquasec/trivy:latest
-  extends: .base-rules
-  needs: ["docker-build"]
-  script:
-    - echo "Image scanning skipped for demo"
-  allow_failure: true
 """,
 
     "templates/python.yml": r"""
@@ -254,7 +244,7 @@ stages:
   - test
   - quality
   - package
-  - scan
+  - deploy
 
 # Build dependencies
 build:
@@ -327,26 +317,28 @@ sonarqube-check:
       -Dsonar.qualitygate.wait=true
   allow_failure: false
 
+# Package application
+package:
+  stage: package
+  image: python:3.9
+  extends: .base-rules
+  needs: ["test"]
+  script:
+    - python setup.py sdist bdist_wheel || echo "No setup.py found"
+  artifacts:
+    paths:
+      - dist/
+    expire_in: 1 day
+
 # Build Docker image
 docker-build:
-  stage: package
+  stage: deploy
   extends: 
     - .docker-base
     - .base-rules
   script:
     - docker build -t ${SERVICE_NAME:-$CI_PROJECT_NAME}:$CI_COMMIT_SHORT_SHA .
     - echo "Docker image built successfully"
-  allow_failure: true
-
-# Scan Docker image
-scan-image:
-  stage: scan
-  image: aquasec/trivy:latest
-  extends: .base-rules
-  needs: ["docker-build"]
-  script:
-    - echo "Image scanning skipped for demo"
-  allow_failure: true
 """,
 
     "templates/nodejs.yml": r"""
@@ -358,7 +350,7 @@ stages:
   - test
   - quality
   - package
-  - scan
+  - deploy
 
 # Install dependencies
 build:
@@ -383,7 +375,7 @@ test:
     - .npm-cache
   needs: ["build"]
   script:
-    - npm test -- --coverage --coverageReporters=cobertura || true
+    - npm test -- --watchAll=false --coverage --coverageReporters=cobertura || true
   coverage: '/Lines\s*:\s*(\d+\.?\d*)%/'
   artifacts:
     reports:
@@ -405,16 +397,6 @@ lint:
     - npm run lint || true
   allow_failure: true
 
-# Security audit
-security-scan:
-  stage: quality
-  image: node:16
-  extends: .base-rules
-  needs: ["build"]
-  script:
-    - npm audit --audit-level=moderate || true
-  allow_failure: true
-
 # SonarQube analysis
 sonarqube-check:
   stage: quality
@@ -431,122 +413,156 @@ sonarqube-check:
       -Dsonar.qualitygate.wait=true
   allow_failure: false
 
+# Package application
+package:
+  stage: package
+  image: node:16
+  extends: .base-rules
+  needs: ["test"]
+  script:
+    - npm run build || echo "No build script found"
+    - npm pack
+  artifacts:
+    paths:
+      - "*.tgz"
+      - dist/
+      - build/
+    expire_in: 1 day
+
 # Build Docker image
 docker-build:
-  stage: package
+  stage: deploy
   extends: 
     - .docker-base
     - .base-rules
   script:
     - docker build -t ${SERVICE_NAME:-$CI_PROJECT_NAME}:$CI_COMMIT_SHORT_SHA .
-    - docker save ${SERVICE_NAME:-$CI_PROJECT_NAME}:$CI_COMMIT_SHORT_SHA > image.tar
-  artifacts:
-    paths:
-      - image.tar
-    expire_in: 1 hour
-
-# Scan Docker image
-scan-image:
-  stage: scan
-  image: aquasec/trivy:latest
-  extends: .base-rules
-  needs: ["docker-build"]
-  script:
-    - trivy image --input image.tar --exit-code 1 --severity HIGH,CRITICAL
-  allow_failure: true
+    - echo "Docker image built successfully"
 """
 }
 
-# Project definitions with simple codebases
+# Project definitions
 PROJECTS = {
-    # 1. Java Spring Boot - Calculator Service
-    "calculator-service": {
-        "description": "Java Spring Boot calculator with intentional issues",
+    # 1. Java - Payment Service (SonarQube quality gate failures)
+    "payment-service": {
+        "description": "Payment service with multiple SonarQube issues",
         "language": "java",
         "template": "java-maven.yml",
         "files": {
-            "src/main/java/com/demo/calculator/CalculatorApplication.java": """
-package com.demo.calculator;
+            "src/main/java/com/demo/payment/PaymentService.java": """
+package com.demo.payment;
 
-import org.springframework.boot.SpringApplication;
-import org.springframework.boot.autoconfigure.SpringBootApplication;
+import java.sql.*;
+import java.util.Random;
 
-@SpringBootApplication
-public class CalculatorApplication {
-    public static void main(String[] args) {
-        SpringApplication.run(CalculatorApplication.class, args);
-    }
-}
-""",
-            "src/main/java/com/demo/calculator/controller/CalculatorController.java": """
-package com.demo.calculator.controller;
-
-import org.springframework.web.bind.annotation.*;
-import java.util.Map;
-import java.util.HashMap;
-
-@RestController
-@RequestMapping("/api/calculator")
-public class CalculatorController {
+public class PaymentService {
+    private static final String PASSWORD = "admin123"; // Security vulnerability
     
-    // Bug: Division by zero not handled
-    @GetMapping("/divide/{a}/{b}")
-    public Map<String, Object> divide(@PathVariable double a, @PathVariable double b) {
-        Map<String, Object> result = new HashMap<>();
-        result.put("result", a / b);  // Will throw ArithmeticException if b is 0
-        return result;
+    // Bug: SQL Injection vulnerability
+    public boolean processPayment(String userId, double amount) throws SQLException {
+        String query = "SELECT balance FROM users WHERE id = '" + userId + "'";
+        Connection conn = DriverManager.getConnection("jdbc:h2:mem:test", "sa", PASSWORD);
+        Statement stmt = conn.createStatement();
+        ResultSet rs = stmt.executeQuery(query);
+        
+        // Bug: Resources not closed (memory leak)
+        if (rs.next()) {
+            double balance = rs.getDouble("balance");
+            if (balance >= amount) {
+                // Code smell: Empty if statement
+                if (amount > 1000) {
+                    // TODO: Add fraud check
+                }
+                return true;
+            }
+        }
+        return false;
     }
     
     // Code smell: Duplicate code
-    @GetMapping("/add/{a}/{b}")
-    public Map<String, Object> add(@PathVariable double a, @PathVariable double b) {
-        Map<String, Object> result = new HashMap<>();
-        result.put("operation", "add");
-        result.put("a", a);
-        result.put("b", b);
-        result.put("result", a + b);
-        return result;
+    public double calculateFee(double amount) {
+        if (amount < 100) {
+            return amount * 0.02;
+        } else if (amount < 1000) {
+            return amount * 0.015;
+        } else {
+            return amount * 0.01;
+        }
     }
     
-    @GetMapping("/subtract/{a}/{b}")
-    public Map<String, Object> subtract(@PathVariable double a, @PathVariable double b) {
-        Map<String, Object> result = new HashMap<>();
-        result.put("operation", "subtract");
-        result.put("a", a);
-        result.put("b", b);
-        result.put("result", a - b);
-        return result;
+    public double calculateTax(double amount) {
+        if (amount < 100) {
+            return amount * 0.02;
+        } else if (amount < 1000) {
+            return amount * 0.015;
+        } else {
+            return amount * 0.01;
+        }
     }
     
-    // Security issue: eval-like behavior
-    @PostMapping("/eval")
-    public Map<String, Object> evaluate(@RequestBody String expression) {
-        // Bad practice: parsing user input as code
-        Map<String, Object> result = new HashMap<>();
-        result.put("expression", expression);
-        result.put("result", "Not implemented - security risk!");
-        return result;
+    // Security: Weak random number generator
+    public String generateTransactionId() {
+        Random rand = new Random();
+        return "TXN" + rand.nextInt(10000);
+    }
+    
+    // Unused method (code smell)
+    private void oldMethod() {
+        System.out.println("This method is never used");
     }
 }
 """,
-            "src/test/java/com/demo/calculator/CalculatorApplicationTests.java": """
-package com.demo.calculator;
+            "src/main/java/com/demo/payment/CreditCardValidator.java": """
+package com.demo.payment;
+
+public class CreditCardValidator {
+    
+    // Bug: Null pointer potential
+    public boolean validateCard(String cardNumber) {
+        if (cardNumber.length() != 16) { // NPE if cardNumber is null
+            return false;
+        }
+        
+        // Security: Logging sensitive data
+        System.out.println("Validating card: " + cardNumber);
+        
+        // Code smell: Complex condition
+        if (cardNumber.startsWith("4") || cardNumber.startsWith("5") || 
+            cardNumber.startsWith("37") || cardNumber.startsWith("6")) {
+            return true;
+        }
+        
+        return false;
+    }
+    
+    // Bug: Array index out of bounds potential
+    public String getMaskedNumber(String cardNumber) {
+        char[] masked = new char[16];
+        for (int i = 0; i < 16; i++) {
+            masked[i] = cardNumber.charAt(i); // Crash if cardNumber is shorter
+        }
+        return new String(masked);
+    }
+}
+""",
+            "src/test/java/com/demo/payment/PaymentServiceTest.java": """
+package com.demo.payment;
 
 import org.junit.jupiter.api.Test;
-import org.springframework.boot.test.context.SpringBootTest;
 import static org.junit.jupiter.api.Assertions.*;
 
-@SpringBootTest
-class CalculatorApplicationTests {
-
+class PaymentServiceTest {
+    
     @Test
-    void contextLoads() {
+    void testCalculateFee() {
+        PaymentService service = new PaymentService();
+        assertEquals(2.0, service.calculateFee(100));
     }
     
     @Test
-    void testAddition() {
-        // This test will fail
-        assertEquals(5, 2 + 2); // Wrong assertion
+    void testGenerateTransactionId() {
+        PaymentService service = new PaymentService();
+        assertNotNull(service.generateTransactionId());
     }
 }
 """,
@@ -558,524 +574,23 @@ class CalculatorApplicationTests {
     <modelVersion>4.0.0</modelVersion>
     
     <groupId>com.demo</groupId>
-    <artifactId>calculator-service</artifactId>
-    <version>1.0.0</version>
-    <packaging>jar</packaging>
-    
-    <parent>
-        <groupId>org.springframework.boot</groupId>
-        <artifactId>spring-boot-starter-parent</artifactId>
-        <version>2.7.0</version>
-    </parent>
-    
-    <properties>
-        <java.version>11</java.version>
-        <sonar.organization>demo</sonar.organization>
-        <sonar.projectKey>calculator-service</sonar.projectKey>
-    </properties>
-    
-    <dependencies>
-        <dependency>
-            <groupId>org.springframework.boot</groupId>
-            <artifactId>spring-boot-starter-web</artifactId>
-        </dependency>
-        <dependency>
-            <groupId>org.springframework.boot</groupId>
-            <artifactId>spring-boot-starter-test</artifactId>
-            <scope>test</scope>
-        </dependency>
-    </dependencies>
-    
-    <build>
-        <plugins>
-            <plugin>
-                <groupId>org.springframework.boot</groupId>
-                <artifactId>spring-boot-maven-plugin</artifactId>
-            </plugin>
-        </plugins>
-    </build>
-</project>
-""",
-            "Dockerfile": """FROM openjdk:11-jre-slim
-WORKDIR /app
-COPY target/*.jar app.jar
-EXPOSE 8080
-CMD ["java", "-jar", "app.jar"]
-""",
-            ".gitlab-ci.yml": """include:
-  - project: 'cicd-demo/shared-pipelines'
-    ref: main
-    file: '/templates/java-maven.yml'
-"""
-        }
-    },
-
-    # 2. Python Flask - Todo API
-    "todo-api": {
-        "description": "Python Flask API with test failures and quality issues",
-        "language": "python",
-        "template": "python.yml",
-        "files": {
-            "app.py": """
-from flask import Flask, jsonify, request
-import json
-
-app = Flask(__name__)
-
-# In-memory storage (not thread-safe)
-todos = []
-
-@app.route('/todos', methods=['GET'])
-def get_todos():
-    return jsonify(todos)
-
-@app.route('/todos', methods=['POST'])
-def create_todo():
-    data = request.get_json()
-    # Bug: No validation
-    todo = {
-        'id': len(todos) + 1,
-        'title': data['title'],  # Will crash if 'title' not provided
-        'completed': False
-    }
-    todos.append(todo)
-    return jsonify(todo), 201
-
-@app.route('/todos/<int:todo_id>', methods=['DELETE'])
-def delete_todo(todo_id):
-    # Bug: No bounds checking
-    del todos[todo_id - 1]  # Will crash if todo_id is invalid
-    return '', 204
-
-# Security issue: Debug mode enabled
-if __name__ == '__main__':
-    app.run(debug=True, host='0.0.0.0')
-""",
-            "test_app.py": """
-import pytest
-from app import app, todos
-
-@pytest.fixture
-def client():
-    app.config['TESTING'] = True
-    with app.test_client() as client:
-        yield client
-    todos.clear()
-
-def test_get_todos(client):
-    response = client.get('/todos')
-    assert response.status_code == 200
-    assert response.json == []
-
-def test_create_todo(client):
-    response = client.post('/todos', json={'title': 'Test todo'})
-    assert response.status_code == 201
-    assert response.json['title'] == 'Test todo'
-
-def test_create_todo_without_title(client):
-    # This test will fail - the app doesn't handle missing title
-    response = client.post('/todos', json={})
-    assert response.status_code == 400  # App will actually crash with 500
-
-def test_delete_invalid_todo(client):
-    # This test will fail - the app doesn't handle invalid IDs
-    response = client.delete('/todos/999')
-    assert response.status_code == 404  # App will actually crash with 500
-""",
-            "requirements.txt": """Flask==2.3.2
-pytest==7.4.0
-pytest-cov==4.1.0
-flake8==6.0.0
-bandit==1.7.5
-""",
-            "Dockerfile": """FROM python:3.9-slim
-WORKDIR /app
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
-COPY . .
-EXPOSE 5000
-CMD ["python", "app.py"]
-""",
-            ".gitlab-ci.yml": """include:
-  - project: 'cicd-demo/shared-pipelines'
-    ref: main
-    file: '/templates/python.yml'
-"""
-        }
-    },
-
-    # 3. Node.js Express - Weather Service
-    "weather-service": {
-        "description": "Node.js weather service with quality issues",
-        "language": "javascript",
-        "template": "nodejs.yml",
-        "files": {
-            "index.js": """
-const express = require('express');
-const app = express();
-app.use(express.json());
-
-// Hardcoded API key (security issue)
-const API_KEY = 'my-secret-weather-api-key';
-
-// In-memory cache (memory leak potential)
-const cache = {};
-
-app.get('/weather/:city', async (req, res) => {
-    const { city } = req.params;
-    
-    // Bug: No input validation
-    if (cache[city]) {
-        return res.json(cache[city]);
-    }
-    
-    // Fake weather data
-    const weather = {
-        city: city,
-        temperature: Math.random() * 30 + 10,
-        condition: ['sunny', 'cloudy', 'rainy'][Math.floor(Math.random() * 3)]
-    };
-    
-    // Memory leak: cache grows indefinitely
-    cache[city] = weather;
-    
-    res.json(weather);
-});
-
-// Code smell: Duplicate endpoints
-app.get('/temperature/:city', async (req, res) => {
-    const { city } = req.params;
-    const weather = {
-        city: city,
-        temperature: Math.random() * 30 + 10
-    };
-    res.json(weather);
-});
-
-app.get('/condition/:city', async (req, res) => {
-    const { city } = req.params;
-    const weather = {
-        city: city,
-        condition: ['sunny', 'cloudy', 'rainy'][Math.floor(Math.random() * 3)]
-    };
-    res.json(weather);
-});
-
-// Error handling that exposes internals
-app.use((err, req, res, next) => {
-    res.status(500).json({
-        error: err.message,
-        stack: err.stack  // Security issue: exposing stack trace
-    });
-});
-
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-    console.log(`Server running on port ${PORT}`);
-});
-
-module.exports = app;
-""",
-            "test.js": """
-const request = require('supertest');
-const app = require('./index');
-
-describe('Weather API', () => {
-    test('GET /weather/:city returns weather data', async () => {
-        const res = await request(app).get('/weather/London');
-        expect(res.statusCode).toBe(200);
-        expect(res.body).toHaveProperty('city', 'London');
-        expect(res.body).toHaveProperty('temperature');
-    });
-    
-    test('GET /weather/:city validates input', async () => {
-        // This test will fail - app doesn't validate input
-        const res = await request(app).get('/weather/');
-        expect(res.statusCode).toBe(400);
-    });
-    
-    test('Temperature is within valid range', async () => {
-        const res = await request(app).get('/weather/TestCity');
-        // This might fail randomly due to random temperature
-        expect(res.body.temperature).toBeGreaterThan(0);
-        expect(res.body.temperature).toBeLessThan(50);
-    });
-});
-""",
-            "package.json": """{
-  "name": "weather-service",
-  "version": "1.0.0",
-  "description": "Weather API service",
-  "main": "index.js",
-  "scripts": {
-    "start": "node index.js",
-    "test": "jest --coverage --forceExit",
-    "lint": "eslint ."
-  },
-  "dependencies": {
-    "express": "^4.18.2"
-  },
-  "devDependencies": {
-    "jest": "^29.5.0",
-    "supertest": "^6.3.3",
-    "eslint": "^8.42.0"
-  },
-  "jest": {
-    "testEnvironment": "node",
-    "coverageDirectory": "coverage",
-    "collectCoverageFrom": [
-      "index.js"
-    ]
-  }
-}
-""",
-            ".eslintrc.json": """{
-  "env": {
-    "node": true,
-    "es2021": true,
-    "jest": true
-  },
-  "extends": "eslint:recommended",
-  "parserOptions": {
-    "ecmaVersion": 12
-  },
-  "rules": {
-    "no-unused-vars": "error",
-    "no-console": "warn"
-  }
-}
-""",
-            "Dockerfile": """FROM node:16-alpine
-WORKDIR /app
-COPY package*.json ./
-RUN npm ci --only=production
-COPY . .
-EXPOSE 3000
-CMD ["node", "index.js"]
-""",
-            ".gitlab-ci.yml": """include:
-  - project: 'cicd-demo/shared-pipelines'
-    ref: main
-    file: '/templates/nodejs.yml'
-"""
-        }
-    },
-
-    # 4. Python FastAPI - User Service (Build Failure)
-    "user-service": {
-        "description": "Python FastAPI service with missing dependency",
-        "language": "python",
-        "template": "python.yml",
-        "files": {
-            "main.py": """
-from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel
-from typing import List
-import bcrypt  # This is not in requirements.txt - will cause build failure
-
-app = FastAPI()
-
-# In-memory user storage
-users_db = {}
-
-class User(BaseModel):
-    username: str
-    email: str
-    password: str
-
-class UserResponse(BaseModel):
-    username: str
-    email: str
-
-@app.post("/users", response_model=UserResponse)
-def create_user(user: User):
-    # Check if user exists
-    if user.username in users_db:
-        raise HTTPException(status_code=400, detail="User already exists")
-    
-    # Hash password (bcrypt not installed - will fail)
-    hashed_password = bcrypt.hashpw(user.password.encode('utf-8'), bcrypt.gensalt())
-    
-    users_db[user.username] = {
-        'email': user.email,
-        'password': hashed_password
-    }
-    
-    return UserResponse(username=user.username, email=user.email)
-
-@app.get("/users", response_model=List[UserResponse])
-def get_users():
-    return [
-        UserResponse(username=username, email=data['email']) 
-        for username, data in users_db.items()
-    ]
-""",
-            "requirements.txt": """fastapi==0.100.0
-uvicorn==0.23.1
-pydantic==2.0.2
-# bcrypt is missing - will cause import error
-""",
-            "Dockerfile": """FROM python:3.9-slim
-WORKDIR /app
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
-COPY . .
-EXPOSE 8000
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
-""",
-            ".gitlab-ci.yml": """include:
-  - project: 'cicd-demo/shared-pipelines'
-    ref: main
-    file: '/templates/python.yml'
-"""
-        }
-    },
-
-    # 5. Java Maven - Library Manager (Test Failure)
-    "library-manager": {
-        "description": "Java library management with failing tests",
-        "language": "java",
-        "template": "java-maven.yml",
-        "files": {
-            "src/main/java/com/demo/library/Book.java": """
-package com.demo.library;
-
-public class Book {
-    private String isbn;
-    private String title;
-    private String author;
-    private boolean available;
-    
-    public Book(String isbn, String title, String author) {
-        this.isbn = isbn;
-        this.title = title;
-        this.author = author;
-        this.available = true;
-    }
-    
-    // Getters and setters
-    public String getIsbn() { return isbn; }
-    public String getTitle() { return title; }
-    public String getAuthor() { return author; }
-    public boolean isAvailable() { return available; }
-    public void setAvailable(boolean available) { this.available = available; }
-}
-""",
-            "src/main/java/com/demo/library/Library.java": """
-package com.demo.library;
-
-import java.util.*;
-
-public class Library {
-    private Map<String, Book> books = new HashMap<>();
-    
-    public void addBook(Book book) {
-        // Bug: No null check
-        books.put(book.getIsbn(), book);
-    }
-    
-    public Book borrowBook(String isbn) {
-        Book book = books.get(isbn);
-        // Bug: No null check
-        if (book.isAvailable()) {
-            book.setAvailable(false);
-            return book;
-        }
-        throw new RuntimeException("Book not available");
-    }
-    
-    public void returnBook(String isbn) {
-        Book book = books.get(isbn);
-        // Bug: No null check
-        book.setAvailable(true);
-    }
-    
-    public List<Book> getAvailableBooks() {
-        List<Book> available = new ArrayList<>();
-        for (Book book : books.values()) {
-            if (book.isAvailable()) {
-                available.add(book);
-            }
-        }
-        return available;
-    }
-}
-""",
-            "src/test/java/com/demo/library/LibraryTest.java": """
-package com.demo.library;
-
-import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.BeforeEach;
-import static org.junit.jupiter.api.Assertions.*;
-
-public class LibraryTest {
-    private Library library;
-    
-    @BeforeEach
-    public void setUp() {
-        library = new Library();
-    }
-    
-    @Test
-    public void testAddBook() {
-        Book book = new Book("123", "Test Book", "Test Author");
-        library.addBook(book);
-        assertEquals(1, library.getAvailableBooks().size());
-    }
-    
-    @Test
-    public void testBorrowBook() {
-        Book book = new Book("123", "Test Book", "Test Author");
-        library.addBook(book);
-        
-        Book borrowed = library.borrowBook("123");
-        assertFalse(borrowed.isAvailable());
-        
-        // This will fail - trying to borrow again
-        assertThrows(RuntimeException.class, () -> {
-            library.borrowBook("123");
-        });
-    }
-    
-    @Test
-    public void testBorrowNonExistentBook() {
-        // This test will fail - app throws NullPointerException instead of proper error
-        assertThrows(BookNotFoundException.class, () -> {
-            library.borrowBook("999");
-        });
-    }
-    
-    @Test
-    public void testReturnBook() {
-        Book book = new Book("123", "Test Book", "Test Author");
-        library.addBook(book);
-        library.borrowBook("123");
-        
-        library.returnBook("123");
-        assertTrue(book.isAvailable());
-    }
-}
-
-class BookNotFoundException extends RuntimeException {}
-""",
-            "pom.xml": """<?xml version="1.0" encoding="UTF-8"?>
-<project xmlns="http://maven.apache.org/POM/4.0.0"
-         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
-         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 
-         https://maven.apache.org/xsd/maven-4.0.0.xsd">
-    <modelVersion>4.0.0</modelVersion>
-    
-    <groupId>com.demo</groupId>
-    <artifactId>library-manager</artifactId>
+    <artifactId>payment-service</artifactId>
     <version>1.0.0</version>
     
     <properties>
         <maven.compiler.source>11</maven.compiler.source>
         <maven.compiler.target>11</maven.compiler.target>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+        <sonar.organization>demo</sonar.organization>
+        <sonar.projectKey>payment-service</sonar.projectKey>
     </properties>
     
     <dependencies>
+        <dependency>
+            <groupId>com.h2database</groupId>
+            <artifactId>h2</artifactId>
+            <version>2.1.214</version>
+        </dependency>
         <dependency>
             <groupId>org.junit.jupiter</groupId>
             <artifactId>junit-jupiter</artifactId>
@@ -1105,6 +620,499 @@ CMD ["java", "-jar", "app.jar"]
   - project: 'cicd-demo/shared-pipelines'
     ref: main
     file: '/templates/java-maven.yml'
+"""
+        }
+    },
+
+    # 2. Python - Auth API (Build failure - missing dependency)
+    "auth-api": {
+        "description": "Auth API with build failure due to missing dependency",
+        "language": "python",
+        "template": "python.yml",
+        "files": {
+            "auth_service.py": """
+import jwt  # Missing from requirements.txt
+import hashlib
+from datetime import datetime, timedelta
+
+class AuthService:
+    SECRET_KEY = "secret123"  # Security issue
+    
+    def create_token(self, user_id):
+        payload = {
+            'user_id': user_id,
+            'exp': datetime.utcnow() + timedelta(hours=1)
+        }
+        return jwt.encode(payload, self.SECRET_KEY, algorithm='HS256')
+    
+    def verify_token(self, token):
+        try:
+            payload = jwt.decode(token, self.SECRET_KEY, algorithms=['HS256'])
+            return payload['user_id']
+        except:
+            return None
+    
+    def hash_password(self, password):
+        # Security: Weak hashing
+        return hashlib.md5(password.encode()).hexdigest()
+""",
+            "test_auth.py": """
+import pytest
+from auth_service import AuthService
+
+def test_hash_password():
+    service = AuthService()
+    hashed = service.hash_password("test123")
+    assert len(hashed) == 32
+""",
+            "requirements.txt": """pytest==7.4.0
+pytest-cov==4.1.0
+# jwt is missing - will cause build failure
+""",
+            "Dockerfile": """FROM python:3.9-slim
+WORKDIR /app
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+COPY . .
+EXPOSE 8000
+CMD ["python", "auth_service.py"]
+""",
+            ".gitlab-ci.yml": """include:
+  - project: 'cicd-demo/shared-pipelines'
+    ref: main
+    file: '/templates/python.yml'
+"""
+        }
+    },
+
+    # 3. Node.js - Notification Service (Test failure)
+    "notification-service": {
+        "description": "Notification service with failing tests",
+        "language": "javascript",
+        "template": "nodejs.yml",
+        "files": {
+            "notification.js": """
+class NotificationService {
+    constructor() {
+        this.notifications = [];
+    }
+    
+    sendEmail(to, subject, body) {
+        if (!to || !subject) {
+            throw new Error('Missing required fields');
+        }
+        
+        const notification = {
+            id: Date.now(),
+            type: 'email',
+            to,
+            subject,
+            body,
+            sent: new Date()
+        };
+        
+        this.notifications.push(notification);
+        return notification;
+    }
+    
+    getNotifications(type) {
+        return this.notifications.filter(n => n.type === type);
+    }
+    
+    // Bug: Returns wrong count
+    getCount() {
+        return this.notifications.length + 1; // Off by one error
+    }
+}
+
+module.exports = NotificationService;
+""",
+            "notification.test.js": """
+const NotificationService = require('./notification');
+
+describe('NotificationService', () => {
+    let service;
+    
+    beforeEach(() => {
+        service = new NotificationService();
+    });
+    
+    test('sends email notification', () => {
+        const result = service.sendEmail('test@example.com', 'Test', 'Body');
+        expect(result).toHaveProperty('id');
+        expect(result.type).toBe('email');
+    });
+    
+    test('throws error for missing fields', () => {
+        expect(() => {
+            service.sendEmail('test@example.com');
+        }).toThrow('Missing required fields');
+    });
+    
+    test('returns correct count', () => {
+        service.sendEmail('test@example.com', 'Test', 'Body');
+        // This test will fail due to off-by-one error
+        expect(service.getCount()).toBe(1);
+    });
+});
+""",
+            "package.json": """{
+  "name": "notification-service",
+  "version": "1.0.0",
+  "description": "Notification service",
+  "main": "notification.js",
+  "scripts": {
+    "test": "jest --watchAll=false",
+    "lint": "eslint ."
+  },
+  "devDependencies": {
+    "jest": "^29.5.0",
+    "eslint": "^8.42.0"
+  },
+  "jest": {
+    "testEnvironment": "node",
+    "coverageDirectory": "coverage",
+    "collectCoverageFrom": ["*.js", "!*.test.js"]
+  }
+}
+""",
+            ".eslintrc.json": """{
+  "env": {
+    "node": true,
+    "es2021": true,
+    "jest": true
+  },
+  "extends": "eslint:recommended",
+  "rules": {
+    "no-unused-vars": "error"
+  }
+}
+""",
+            "Dockerfile": """FROM node:16-alpine
+WORKDIR /app
+COPY package*.json ./
+RUN npm ci --only=production
+COPY . .
+EXPOSE 3000
+CMD ["node", "notification.js"]
+""",
+            ".gitlab-ci.yml": """include:
+  - project: 'cicd-demo/shared-pipelines'
+    ref: main
+    file: '/templates/nodejs.yml'
+"""
+        }
+    },
+
+    # 4. Python - Order Service (Package failure)
+    "order-service": {
+        "description": "Order service with package stage failure",
+        "language": "python",
+        "template": "python.yml",
+        "files": {
+            "order_service.py": """
+class OrderService:
+    def __init__(self):
+        self.orders = {}
+    
+    def create_order(self, user_id, items):
+        order_id = len(self.orders) + 1
+        self.orders[order_id] = {
+            'user_id': user_id,
+            'items': items,
+            'status': 'pending'
+        }
+        return order_id
+    
+    def get_order(self, order_id):
+        return self.orders.get(order_id)
+""",
+            "test_order.py": """
+import pytest
+from order_service import OrderService
+
+def test_create_order():
+    service = OrderService()
+    order_id = service.create_order('user123', ['item1', 'item2'])
+    assert order_id == 1
+""",
+            "requirements.txt": """pytest==7.4.0
+pytest-cov==4.1.0
+""",
+            "setup.py": """
+from setuptools import setup
+
+# Intentional syntax error to cause package failure
+setup(
+    name='order-service'
+    version='1.0.0',  # Missing comma above
+    packages=['order_service']
+)
+""",
+            "Dockerfile": """FROM python:3.9-slim
+WORKDIR /app
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+COPY . .
+EXPOSE 8000
+CMD ["python", "order_service.py"]
+""",
+            ".gitlab-ci.yml": """include:
+  - project: 'cicd-demo/shared-pipelines'
+    ref: main
+    file: '/templates/python.yml'
+"""
+        }
+    },
+
+    # 5. Java - Inventory API (Docker build failure)
+    "inventory-api": {
+        "description": "Inventory API with Docker build failure",
+        "language": "java",
+        "template": "java-maven.yml",
+        "files": {
+            "src/main/java/com/demo/inventory/InventoryService.java": """
+package com.demo.inventory;
+
+import java.util.HashMap;
+import java.util.Map;
+
+public class InventoryService {
+    private Map<String, Integer> inventory = new HashMap<>();
+    
+    public void addItem(String itemId, int quantity) {
+        inventory.put(itemId, inventory.getOrDefault(itemId, 0) + quantity);
+    }
+    
+    public boolean checkAvailability(String itemId, int quantity) {
+        return inventory.getOrDefault(itemId, 0) >= quantity;
+    }
+    
+    public void removeItem(String itemId, int quantity) {
+        int current = inventory.getOrDefault(itemId, 0);
+        inventory.put(itemId, Math.max(0, current - quantity));
+    }
+}
+""",
+            "src/test/java/com/demo/inventory/InventoryServiceTest.java": """
+package com.demo.inventory;
+
+import org.junit.jupiter.api.Test;
+import static org.junit.jupiter.api.Assertions.*;
+
+class InventoryServiceTest {
+    
+    @Test
+    void testAddItem() {
+        InventoryService service = new InventoryService();
+        service.addItem("ITEM001", 10);
+        assertTrue(service.checkAvailability("ITEM001", 5));
+    }
+}
+""",
+            "pom.xml": """<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 
+         https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+    
+    <groupId>com.demo</groupId>
+    <artifactId>inventory-api</artifactId>
+    <version>1.0.0</version>
+    
+    <properties>
+        <maven.compiler.source>11</maven.compiler.source>
+        <maven.compiler.target>11</maven.compiler.target>
+    </properties>
+    
+    <dependencies>
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter</artifactId>
+            <version>5.9.2</version>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+    
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-surefire-plugin</artifactId>
+                <version>3.0.0-M9</version>
+            </plugin>
+        </plugins>
+    </build>
+</project>
+""",
+            "Dockerfile": """FROM openjdk:11-jre-slim
+WORKDIR /app
+# Wrong path - will cause Docker build to fail
+COPY target/wrong-name.jar app.jar
+EXPOSE 8080
+CMD ["java", "-jar", "app.jar"]
+""",
+            ".gitlab-ci.yml": """include:
+  - project: 'cicd-demo/shared-pipelines'
+    ref: main
+    file: '/templates/java-maven.yml'
+"""
+        }
+    },
+
+    # 6. Node.js - Report Generator (Similar error pattern for vector DB demo)
+    "report-generator": {
+        "description": "Report generator with similar test failure pattern",
+        "language": "javascript",
+        "template": "nodejs.yml",
+        "files": {
+            "report.js": """
+class ReportGenerator {
+    constructor() {
+        this.reports = [];
+    }
+    
+    generateReport(type, data) {
+        const report = {
+            id: this.reports.length + 1,
+            type,
+            data,
+            timestamp: new Date()
+        };
+        
+        this.reports.push(report);
+        return report;
+    }
+    
+    // Bug: Returns wrong count (similar to notification-service)
+    getReportCount() {
+        return this.reports.length + 1; // Off by one error
+    }
+    
+    getReportsByType(type) {
+        return this.reports.filter(r => r.type === type);
+    }
+}
+
+module.exports = ReportGenerator;
+""",
+            "report.test.js": """
+const ReportGenerator = require('./report');
+
+describe('ReportGenerator', () => {
+    let generator;
+    
+    beforeEach(() => {
+        generator = new ReportGenerator();
+    });
+    
+    test('generates report', () => {
+        const report = generator.generateReport('monthly', {sales: 1000});
+        expect(report).toHaveProperty('id', 1);
+        expect(report.type).toBe('monthly');
+    });
+    
+    test('returns correct report count', () => {
+        generator.generateReport('monthly', {sales: 1000});
+        // This test will fail - same pattern as notification-service
+        expect(generator.getReportCount()).toBe(1);
+    });
+});
+""",
+            "package.json": """{
+  "name": "report-generator",
+  "version": "1.0.0",
+  "description": "Report generation service",
+  "main": "report.js",
+  "scripts": {
+    "test": "jest --watchAll=false",
+    "lint": "eslint ."
+  },
+  "devDependencies": {
+    "jest": "^29.5.0",
+    "eslint": "^8.42.0"
+  },
+  "jest": {
+    "testEnvironment": "node",
+    "coverageDirectory": "coverage",
+    "collectCoverageFrom": ["*.js", "!*.test.js"]
+  }
+}
+""",
+            "Dockerfile": """FROM node:16-alpine
+WORKDIR /app
+COPY package*.json ./
+RUN npm ci --only=production
+COPY . .
+EXPOSE 3000
+CMD ["node", "report.js"]
+""",
+            ".gitlab-ci.yml": """include:
+  - project: 'cicd-demo/shared-pipelines'
+    ref: main
+    file: '/templates/nodejs.yml'
+"""
+        }
+    },
+
+    # 7. Python - Shipping Service (Multiple similar patterns)
+    "shipping-service": {
+        "description": "Shipping service with pattern similar to auth-api",
+        "language": "python",
+        "template": "python.yml",
+        "files": {
+            "shipping_service.py": """
+import requests  # Missing from requirements.txt - similar to auth-api
+from datetime import datetime
+
+class ShippingService:
+    API_KEY = "shipping123"  # Security issue
+    
+    def calculate_shipping(self, weight, distance):
+        base_rate = 5.0
+        return base_rate + (weight * 0.5) + (distance * 0.1)
+    
+    def track_package(self, tracking_id):
+        # Would normally call external API
+        return {
+            'id': tracking_id,
+            'status': 'in_transit',
+            'location': 'Unknown'
+        }
+    
+    def create_label(self, order_data):
+        # Similar pattern - missing dependency will cause failure
+        response = requests.post('https://api.shipping.com/labels', 
+                               json=order_data,
+                               headers={'Authorization': self.API_KEY})
+        return response.json()
+""",
+            "test_shipping.py": """
+import pytest
+from shipping_service import ShippingService
+
+def test_calculate_shipping():
+    service = ShippingService()
+    cost = service.calculate_shipping(10, 100)
+    assert cost == 20.0
+""",
+            "requirements.txt": """pytest==7.4.0
+pytest-cov==4.1.0
+# requests is missing - similar pattern to auth-api
+""",
+            "Dockerfile": """FROM python:3.9-slim
+WORKDIR /app
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+COPY . .
+EXPOSE 8000
+CMD ["python", "shipping_service.py"]
+""",
+            ".gitlab-ci.yml": """include:
+  - project: 'cicd-demo/shared-pipelines'
+    ref: main
+    file: '/templates/python.yml'
 """
         }
     }
@@ -1246,7 +1254,7 @@ class SonarQubeSetup:
         success("SonarQube cleanup complete")
         
     def create_quality_gate(self):
-        """Create quality gate with reasonable thresholds"""
+        """Create strict quality gate"""
         info(f"Creating quality gate '{QUALITY_GATE_NAME}'...")
         
         # Create gate
@@ -1260,25 +1268,34 @@ class SonarQubeSetup:
         else:
             response.raise_for_status()
             
-        # Add conditions
+        # Add strict conditions
         conditions = [
             # Coverage
-            {'metric': 'new_coverage', 'op': 'LT', 'error': '50'},
+            {'metric': 'new_coverage', 'op': 'LT', 'error': '80'},
+            {'metric': 'coverage', 'op': 'LT', 'error': '60'},
             
             # Bugs
             {'metric': 'new_bugs', 'op': 'GT', 'error': '0'},
+            {'metric': 'bugs', 'op': 'GT', 'error': '5'},
             
             # Vulnerabilities
             {'metric': 'new_vulnerabilities', 'op': 'GT', 'error': '0'},
+            {'metric': 'vulnerabilities', 'op': 'GT', 'error': '3'},
             
             # Code Smells
-            {'metric': 'new_code_smells', 'op': 'GT', 'error': '5'},
+            {'metric': 'new_code_smells', 'op': 'GT', 'error': '3'},
+            {'metric': 'code_smells', 'op': 'GT', 'error': '20'},
             
             # Duplications
-            {'metric': 'new_duplicated_lines_density', 'op': 'GT', 'error': '10'},
+            {'metric': 'new_duplicated_lines_density', 'op': 'GT', 'error': '5'},
+            {'metric': 'duplicated_lines_density', 'op': 'GT', 'error': '10'},
             
-            # Complexity
-            {'metric': 'complexity', 'op': 'GT', 'error': '50'},
+            # Security
+            {'metric': 'new_security_hotspots', 'op': 'GT', 'error': '0'},
+            {'metric': 'security_rating', 'op': 'GT', 'error': '2'},
+            
+            # Maintainability
+            {'metric': 'sqale_rating', 'op': 'GT', 'error': '2'},
         ]
         
         for condition in conditions:
@@ -1302,7 +1319,7 @@ class SonarQubeSetup:
             params={'name': QUALITY_GATE_NAME}
         )
         
-        success("Quality gate created")
+        success("Strict quality gate created")
         
     def create_projects(self):
         """Create SonarQube projects"""
@@ -1339,38 +1356,47 @@ def print_summary():
     success("Demo environment created successfully!")
     
     print("\n📦 PROJECTS CREATED:")
-    print("\n🔵 JAVA PROJECTS:")
-    print("  • calculator-service: REST API with division by zero bug and failing tests")
-    print("  • library-manager: Library system with null pointer bugs and test failures")
     
-    print("\n🟢 PYTHON PROJECTS:")
-    print("  • todo-api: Flask API with validation bugs and test failures")
-    print("  • user-service: FastAPI with missing dependency (build failure)")
+    print("\n🚨 SONARQUBE QUALITY GATE FAILURES:")
+    print("  • payment-service: Multiple bugs, vulnerabilities, code smells, security issues")
+    print("    - SQL injection vulnerability")
+    print("    - Hardcoded passwords")
+    print("    - Resource leaks")
+    print("    - Duplicate code")
     
-    print("\n🟡 JAVASCRIPT PROJECTS:")
-    print("  • weather-service: Express API with memory leak and quality issues")
+    print("\n🔴 BUILD FAILURES:")
+    print("  • auth-api: Missing 'jwt' dependency")
+    print("  • shipping-service: Missing 'requests' dependency (similar pattern)")
     
-    print("\n📚 SHARED PIPELINES:")
-    print("  • Templates for Java (Maven), Python, and Node.js projects")
-    print("  • Centralized CI/CD configuration")
-    print("  • Consistent stages across all projects")
+    print("\n❌ TEST FAILURES:")
+    print("  • notification-service: Off-by-one error in getCount()")
+    print("  • report-generator: Same off-by-one pattern (vector DB demo)")
     
-    print("\n🔧 CI/CD VARIABLES:")
-    print("  • Group-level: Docker, SonarQube, and language defaults")
-    print("  • Project-level: Service names, language versions, SonarQube keys")
+    print("\n📦 PACKAGE FAILURES:")
+    print("  • order-service: Syntax error in setup.py")
     
-    print("\n🚨 EXPECTED FAILURES:")
-    print("  • Build failures: user-service (missing bcrypt dependency)")
-    print("  • Test failures: calculator-service, todo-api, library-manager")
-    print("  • Quality gate failures: All projects (code smells, coverage)")
-    print("  • Security scan failures: Possible in docker images")
+    print("\n🐳 DOCKER BUILD FAILURES:")
+    print("  • inventory-api: Wrong JAR file path in Dockerfile")
     
-    print("\n✅ ALL PIPELINES SHOULD RUN WITHOUT CI/CD ERRORS")
-    print("   (failures are in the application code, not the pipeline config)")
+    print("\n🔗 SIMILAR PATTERNS FOR VECTOR DB:")
+    print("  • auth-api & shipping-service: Missing dependency pattern")
+    print("  • notification-service & report-generator: Off-by-one error pattern")
+    
+    print("\n⚙️ QUALITY GATE RULES (STRICT):")
+    print("  • Coverage: < 80% (new), < 60% (overall)")
+    print("  • Zero tolerance for new bugs/vulnerabilities")
+    print("  • Maximum 3 new code smells")
+    print("  • Security rating must be A or B")
+    
+    print("\n✅ KEY FEATURES:")
+    print("  • No 'scan-image' stage (removed)")
+    print("  • Jest tests with --watchAll=false (no hanging)")
+    print("  • Moderate code complexity")
+    print("  • Clear failure patterns for demo")
     print("\n" + "="*80)
 
 if __name__ == "__main__":
-    print("=== CI/CD Demo Environment Setup ===\n")
+    print("=== Enhanced CI/CD Demo Environment Setup ===\n")
     
     # Get credentials
     gitlab_url = input("GitLab URL [http://localhost:8080]: ").strip() or "http://localhost:8080"
@@ -1380,10 +1406,8 @@ if __name__ == "__main__":
     
     print(f"\nThis script will create:")
     print(f"- GitLab group '{GROUP_NAME}'")
-    print(f"- Shared pipeline templates repository")
-    print(f"- 5 projects with various failure scenarios")
-    print(f"- Group and project-level CI/CD variables")
-    print(f"- SonarQube quality gate '{QUALITY_GATE_NAME}'")
+    print(f"- 7 projects with various failure scenarios")
+    print(f"- Strict SonarQube quality gate")
     print(f"- Webhook integrations")
     
     if input("\nProceed? (yes/no): ").lower() != 'yes':
