@@ -1,3 +1,4 @@
+# streamlit-ui/pages/quality_issues.py
 """Quality issues page"""
 import streamlit as st
 import asyncio
@@ -213,13 +214,47 @@ with col2:
             
             st.divider()
             
-            # Action buttons
+            # Action buttons - Smart logic based on fix attempts (SAME AS PIPELINE)
             col_btn1, col_btn2, col_btn3 = st.columns([1, 1, 2])
             
             mr_url = session.get("merge_request_url")
             
             with col_btn1:
-                if not mr_url:
+                # Check if current branch is a fix branch
+                current_branch = session.get("branch", "")
+                is_fix_branch = current_branch.startswith("fix/sonarqube_")
+                
+                # Check if we've hit iteration limit
+                if len(fix_attempts) >= 5:
+                    st.error("❌ Max attempts reached")
+                elif is_fix_branch and not mr_url:
+                    # This is analyzing a failure on OUR fix branch - show Apply Fix
+                    if st.button("🔧 Apply Fix", use_container_width=True):
+                        with st.spinner("Applying fix to the existing branch..."):
+                            response = asyncio.run(
+                                st.session_state.api_client.send_message(
+                                    session_id, 
+                                    "Apply the fixes to the current feature branch. This is an iteration on our existing fix branch, so update the same branch with additional commits."
+                                )
+                            )
+                            if response.get("merge_request_url"):
+                                st.success(f"✅ Fix applied to existing MR")
+                            st.rerun()
+                elif len(fix_attempts) > 0 and not mr_url:
+                    # Show retry button for subsequent attempts
+                    if st.button("🔄 Try Another Fix", use_container_width=True):
+                        with st.spinner("Analyzing latest logs and creating additional fixes..."):
+                            response = asyncio.run(
+                                st.session_state.api_client.send_message(
+                                    session_id, 
+                                    "The quality gate is still failing. Please analyze the latest quality issues and create another fix targeting any remaining problems."
+                                )
+                            )
+                            if response.get("merge_request_url"):
+                                st.success(f"✅ Additional fixes added to MR")
+                            st.rerun()
+                elif not mr_url:
+                    # First attempt - create MR button
                     if st.button("🔀 Create MR", use_container_width=True):
                         with st.spinner("Creating merge request..."):
                             response = asyncio.run(
@@ -301,6 +336,13 @@ with col3:
             st.caption("⏰ Status: Expired")
         else:
             st.caption(f"⏰ Expires in: {time_remaining}")
+        
+        # Fix attempts info
+        fix_attempts = session.get("webhook_data", {}).get("fix_attempts", [])
+        if fix_attempts:
+            st.markdown("**Fix Information:**")
+            st.caption(f"Iterations: {len(fix_attempts)}/5")
+            st.caption(f"Current Branch: {fix_attempts[-1]['branch']}")
         
         # Additional project details
         st.markdown("**SonarQube Details:**")

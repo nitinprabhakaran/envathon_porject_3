@@ -443,9 +443,9 @@ docker-build:
 
 # Project definitions
 PROJECTS = {
-    # 1. Java - Payment Service (SonarQube quality gate failures)
+    # 1. Java - Payment Service (MANY SonarQube issues)
     "payment-service": {
-        "description": "Payment service with multiple SonarQube issues",
+        "description": "Payment service with extensive SonarQube issues",
         "language": "java",
         "template": "java-maven.yml",
         "files": {
@@ -454,14 +454,19 @@ package com.demo.payment;
 
 import java.sql.*;
 import java.util.Random;
+import java.io.*;
+import javax.crypto.Cipher;
+import javax.crypto.spec.SecretKeySpec;
 
 public class PaymentService {
-    private static final String PASSWORD = "admin123"; // Security vulnerability
+    private static final String PASSWORD = "admin123"; // Security vulnerability: hardcoded password
+    private static final String DB_PASSWORD = "password"; // Another hardcoded password
+    private Connection conn; // Bug: Connection never closed
     
     // Bug: SQL Injection vulnerability
     public boolean processPayment(String userId, double amount) throws SQLException {
         String query = "SELECT balance FROM users WHERE id = '" + userId + "'";
-        Connection conn = DriverManager.getConnection("jdbc:h2:mem:test", "sa", PASSWORD);
+        conn = DriverManager.getConnection("jdbc:h2:mem:test", "sa", PASSWORD);
         Statement stmt = conn.createStatement();
         ResultSet rs = stmt.executeQuery(query);
         
@@ -473,10 +478,24 @@ public class PaymentService {
                 if (amount > 1000) {
                     // TODO: Add fraud check
                 }
+                
+                // Bug: SQL injection in update
+                String updateQuery = "UPDATE users SET balance = balance - " + amount + " WHERE id = '" + userId + "'";
+                stmt.executeUpdate(updateQuery);
+                
                 return true;
             }
         }
         return false;
+    }
+    
+    // Security vulnerability: Weak encryption
+    public String encryptCardNumber(String cardNumber) throws Exception {
+        String key = "1234567890123456"; // Hardcoded encryption key
+        SecretKeySpec spec = new SecretKeySpec(key.getBytes(), "AES");
+        Cipher cipher = Cipher.getInstance("AES");
+        cipher.init(Cipher.ENCRYPT_MODE, spec);
+        return new String(cipher.doFinal(cardNumber.getBytes()));
     }
     
     // Code smell: Duplicate code
@@ -500,20 +519,71 @@ public class PaymentService {
         }
     }
     
+    public double calculateDiscount(double amount) {
+        if (amount < 100) {
+            return amount * 0.02;
+        } else if (amount < 1000) {
+            return amount * 0.015;
+        } else {
+            return amount * 0.01;
+        }
+    }
+    
     // Security: Weak random number generator
     public String generateTransactionId() {
-        Random rand = new Random();
+        Random rand = new Random(); // Should use SecureRandom
         return "TXN" + rand.nextInt(10000);
+    }
+    
+    // Bug: Path traversal vulnerability
+    public void saveReceipt(String filename, String content) throws IOException {
+        File file = new File("/receipts/" + filename); // No validation
+        FileWriter writer = new FileWriter(file);
+        writer.write(content);
+        // Bug: Writer not closed
+    }
+    
+    // Code smell: God method (too complex)
+    public void processRefund(String transactionId, double amount, String reason, 
+                            String userId, String merchantId, boolean partial) {
+        // 100+ lines of complex logic here...
+        if (transactionId != null) {
+            if (amount > 0) {
+                if (reason != null && !reason.isEmpty()) {
+                    if (userId != null) {
+                        if (merchantId != null) {
+                            if (partial) {
+                                // Process partial refund
+                            } else {
+                                // Process full refund
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
     
     // Unused method (code smell)
     private void oldMethod() {
         System.out.println("This method is never used");
     }
+    
+    private void anotherUnusedMethod() {
+        System.out.println("Another unused method");
+    }
+    
+    // Bug: Synchronization issues
+    private int counter = 0;
+    public void incrementCounter() {
+        counter++; // Not thread-safe
+    }
 }
 """,
             "src/main/java/com/demo/payment/CreditCardValidator.java": """
 package com.demo.payment;
+
+import java.util.regex.Pattern;
 
 public class CreditCardValidator {
     
@@ -528,7 +598,9 @@ public class CreditCardValidator {
         
         // Code smell: Complex condition
         if (cardNumber.startsWith("4") || cardNumber.startsWith("5") || 
-            cardNumber.startsWith("37") || cardNumber.startsWith("6")) {
+            cardNumber.startsWith("37") || cardNumber.startsWith("6") ||
+            cardNumber.startsWith("35") || cardNumber.startsWith("34") ||
+            cardNumber.startsWith("30") || cardNumber.startsWith("36")) {
             return true;
         }
         
@@ -542,6 +614,55 @@ public class CreditCardValidator {
             masked[i] = cardNumber.charAt(i); // Crash if cardNumber is shorter
         }
         return new String(masked);
+    }
+    
+    // Security: Regex DoS vulnerability
+    public boolean validateWithRegex(String input) {
+        // Catastrophic backtracking vulnerability
+        Pattern pattern = Pattern.compile("(a+)+b");
+        return pattern.matcher(input).matches();
+    }
+    
+    // Code smell: Dead code
+    public void deadMethod() {
+        int x = 1;
+        if (x > 2) {
+            System.out.println("This will never execute");
+        }
+    }
+}
+""",
+            "src/main/java/com/demo/payment/DatabaseHelper.java": """
+package com.demo.payment;
+
+import java.sql.*;
+
+public class DatabaseHelper {
+    
+    // Security: Connection string with password
+    private static final String URL = "jdbc:mysql://localhost:3306/payments?user=root&password=root123";
+    
+    // Bug: Connection leak
+    public ResultSet executeQuery(String query) throws SQLException {
+        Connection conn = DriverManager.getConnection(URL);
+        Statement stmt = conn.createStatement();
+        return stmt.executeQuery(query); // Connection never closed
+    }
+    
+    // Security: SQL injection
+    public void deleteUser(String userId) throws SQLException {
+        String query = "DELETE FROM users WHERE id = " + userId;
+        executeQuery(query);
+    }
+    
+    // Code smell: Commented out code
+    public void processData() {
+        // Connection conn = getConnection();
+        // Statement stmt = conn.createStatement();
+        // ResultSet rs = stmt.executeQuery("SELECT * FROM payments");
+        // while(rs.next()) {
+        //     process(rs);
+        // }
     }
 }
 """,
@@ -592,6 +713,11 @@ class PaymentServiceTest {
             <version>2.1.214</version>
         </dependency>
         <dependency>
+            <groupId>mysql</groupId>
+            <artifactId>mysql-connector-java</artifactId>
+            <version>8.0.33</version>
+        </dependency>
+        <dependency>
             <groupId>org.junit.jupiter</groupId>
             <artifactId>junit-jupiter</artifactId>
             <version>5.9.2</version>
@@ -624,19 +750,27 @@ CMD ["java", "-jar", "app.jar"]
         }
     },
 
-    # 2. Python - Auth API (Build failure - missing dependency)
+    # 2. Python - Auth API (Build failure + quality issues)
     "auth-api": {
-        "description": "Auth API with build failure due to missing dependency",
+        "description": "Auth API with build failure and security issues",
         "language": "python",
         "template": "python.yml",
         "files": {
             "auth_service.py": """
 import jwt  # Missing from requirements.txt
 import hashlib
+import pickle  # Security risk
+import os
+import subprocess
 from datetime import datetime, timedelta
 
 class AuthService:
-    SECRET_KEY = "secret123"  # Security issue
+    SECRET_KEY = "secret123"  # Security vulnerability: hardcoded secret
+    API_KEY = "sk-1234567890abcdef"  # Another hardcoded credential
+    
+    def __init__(self):
+        self.users = {}  # In-memory storage (not thread-safe)
+        self.sessions = []  # Memory leak: sessions never cleaned
     
     def create_token(self, user_id):
         payload = {
@@ -649,12 +783,75 @@ class AuthService:
         try:
             payload = jwt.decode(token, self.SECRET_KEY, algorithms=['HS256'])
             return payload['user_id']
-        except:
+        except:  # Bug: Bare except clause
             return None
     
     def hash_password(self, password):
-        # Security: Weak hashing
+        # Security: Weak hashing algorithm (MD5)
         return hashlib.md5(password.encode()).hexdigest()
+    
+    # Security: Command injection vulnerability
+    def verify_email(self, email):
+        cmd = f"echo {email} | grep -E '^[a-zA-Z0-9]+@[a-zA-Z0-9]+\\.[a-zA-Z]+$'"
+        result = subprocess.shell(cmd, shell=True)  # Command injection
+        return result.returncode == 0
+    
+    # Security: Insecure deserialization
+    def load_user_data(self, data):
+        return pickle.loads(data)  # Dangerous deserialization
+    
+    # Bug: SQL injection
+    def get_user(self, user_id):
+        query = f"SELECT * FROM users WHERE id = '{user_id}'"  # SQL injection
+        # Simulate database query
+        return query
+    
+    # Code smell: Duplicate code
+    def is_admin(self, user_id):
+        user = self.users.get(user_id)
+        if user and user.get('role') == 'admin':
+            return True
+        return False
+    
+    def is_moderator(self, user_id):
+        user = self.users.get(user_id)
+        if user and user.get('role') == 'moderator':
+            return True
+        return False
+    
+    def is_user(self, user_id):
+        user = self.users.get(user_id)
+        if user and user.get('role') == 'user':
+            return True
+        return False
+    
+    # Security: Path traversal
+    def save_profile_picture(self, user_id, filename):
+        path = f"/uploads/{filename}"  # No validation
+        with open(path, 'wb') as f:
+            f.write(b"data")  # Simplified for demo
+    
+    # Code smell: Long method
+    def authenticate_user(self, username, password, ip_address, user_agent, 
+                         remember_me, two_factor_code, captcha_response):
+        # Complex authentication logic...
+        if username and password:
+            if ip_address:
+                if user_agent:
+                    if captcha_response:
+                        hashed = self.hash_password(password)
+                        # More nested logic...
+                        return True
+        return False
+    
+    # Unused function
+    def legacy_auth(self):
+        pass
+    
+    # Bug: Resource leak
+    def read_config(self):
+        f = open('/etc/config.txt', 'r')  # File never closed
+        return f.read()
 """,
             "test_auth.py": """
 import pytest
@@ -664,10 +861,27 @@ def test_hash_password():
     service = AuthService()
     hashed = service.hash_password("test123")
     assert len(hashed) == 32
+
+def test_create_token():
+    service = AuthService()
+    # This will fail because jwt is not installed
+    token = service.create_token("user123")
+    assert token is not None
 """,
             "requirements.txt": """pytest==7.4.0
 pytest-cov==4.1.0
 # jwt is missing - will cause build failure
+""",
+            "config.py": """
+# Security: Exposed credentials
+DATABASE_URL = "postgresql://admin:password123@localhost/authdb"
+REDIS_PASSWORD = "redis123"
+AWS_SECRET_KEY = "aws-secret-key-here"
+
+# Code smell: Magic numbers
+MAX_LOGIN_ATTEMPTS = 3
+SESSION_TIMEOUT = 3600
+TOKEN_LENGTH = 32
 """,
             "Dockerfile": """FROM python:3.9-slim
 WORKDIR /app
@@ -685,22 +899,35 @@ CMD ["python", "auth_service.py"]
         }
     },
 
-    # 3. Node.js - Notification Service (Test failure)
+    # 3. Node.js - Notification Service (Test failure + quality issues)
     "notification-service": {
-        "description": "Notification service with failing tests",
+        "description": "Notification service with failing tests and quality issues",
         "language": "javascript",
         "template": "nodejs.yml",
         "files": {
             "notification.js": """
+const fs = require('fs');
+const exec = require('child_process').exec;
+
+// Security: Hardcoded API keys
+const SENDGRID_API_KEY = 'SG.1234567890abcdef';
+const TWILIO_AUTH_TOKEN = 'auth_token_here';
+const DB_PASSWORD = 'password123';
+
 class NotificationService {
     constructor() {
         this.notifications = [];
+        this.connections = []; // Memory leak: connections never closed
     }
     
     sendEmail(to, subject, body) {
+        // Bug: No input validation
         if (!to || !subject) {
             throw new Error('Missing required fields');
         }
+        
+        // Security: Command injection
+        exec(`echo "${body}" | mail -s "${subject}" ${to}`);
         
         const notification = {
             id: Date.now(),
@@ -712,18 +939,96 @@ class NotificationService {
         };
         
         this.notifications.push(notification);
+        
+        // Security: Logging sensitive data
+        console.log(`Sending email to ${to} with API key ${SENDGRID_API_KEY}`);
+        
         return notification;
+    }
+    
+    // Security: SQL injection
+    getNotificationsByUser(userId) {
+        const query = `SELECT * FROM notifications WHERE user_id = '${userId}'`;
+        // Simulated query execution
+        return this.notifications.filter(n => n.userId === userId);
     }
     
     getNotifications(type) {
         return this.notifications.filter(n => n.type === type);
     }
     
-    // Bug: Returns wrong count
+    // Bug: Returns wrong count (off-by-one error)
     getCount() {
-        return this.notifications.length + 1; // Off by one error
+        return this.notifications.length + 1;
+    }
+    
+    // Security: Path traversal
+    saveNotificationLog(filename) {
+        const path = `/logs/${filename}`; // No sanitization
+        fs.writeFileSync(path, JSON.stringify(this.notifications));
+    }
+    
+    // Code smell: Duplicate code
+    sendSMS(phone, message) {
+        if (!phone || !message) {
+            throw new Error('Missing required fields');
+        }
+        
+        const notification = {
+            id: Date.now(),
+            type: 'sms',
+            phone,
+            message,
+            sent: new Date()
+        };
+        
+        this.notifications.push(notification);
+        return notification;
+    }
+    
+    sendPush(deviceId, title, message) {
+        if (!deviceId || !title) {
+            throw new Error('Missing required fields');
+        }
+        
+        const notification = {
+            id: Date.now(),
+            type: 'push',
+            deviceId,
+            title,
+            message,
+            sent: new Date()
+        };
+        
+        this.notifications.push(notification);
+        return notification;
+    }
+    
+    // Bug: Infinite loop potential
+    retryFailedNotifications() {
+        const failed = this.notifications.filter(n => n.failed);
+        failed.forEach(n => {
+            // Missing exit condition
+            while (n.failed) {
+                this.sendEmail(n.to, n.subject, n.body);
+            }
+        });
+    }
+    
+    // Code smell: Dead code
+    oldSendMethod() {
+        // This method is never called
+        console.log('Old method');
+    }
+    
+    // Security: Eval usage
+    executeTemplate(template, data) {
+        return eval(template); // Security vulnerability
     }
 }
+
+// Bug: Global variable pollution
+notificationCount = 0;
 
 module.exports = NotificationService;
 """,
@@ -755,6 +1060,28 @@ describe('NotificationService', () => {
         expect(service.getCount()).toBe(1);
     });
 });
+""",
+            "config.js": """
+// Security: Exposed configuration
+module.exports = {
+    database: {
+        host: 'localhost',
+        user: 'root',
+        password: 'root123', // Hardcoded password
+        database: 'notifications'
+    },
+    redis: {
+        host: 'localhost',
+        password: 'redis123' // Another hardcoded password
+    },
+    api: {
+        sendgrid: 'SG.actual_api_key_here',
+        twilio: {
+            accountSid: 'AC1234567890',
+            authToken: 'auth_token_12345'
+        }
+    }
+};
 """,
             "package.json": """{
   "name": "notification-service",
@@ -804,28 +1131,108 @@ CMD ["node", "notification.js"]
         }
     },
 
-    # 4. Python - Order Service (Package failure)
+    # 4. Python - Order Service (Package failure + quality issues)
     "order-service": {
-        "description": "Order service with package stage failure",
+        "description": "Order service with package failure and code issues",
         "language": "python",
         "template": "python.yml",
         "files": {
             "order_service.py": """
+import os
+import eval  # Security risk
+import pickle
+import random
+
+# Security: Hardcoded secrets
+API_TOKEN = "order-service-token-12345"
+DATABASE_PASSWORD = "order_db_pass"
+
 class OrderService:
     def __init__(self):
         self.orders = {}
+        self.connections = []  # Memory leak
     
     def create_order(self, user_id, items):
+        # Bug: Race condition with order ID generation
         order_id = len(self.orders) + 1
+        
+        # Security: Weak random for order confirmation
+        confirmation_code = random.randint(1000, 9999)  # Should use secrets
+        
         self.orders[order_id] = {
             'user_id': user_id,
             'items': items,
-            'status': 'pending'
+            'status': 'pending',
+            'confirmation': confirmation_code
         }
+        
+        # Security: Logging sensitive data
+        print(f"Order {order_id} created with confirmation {confirmation_code}")
+        
         return order_id
     
     def get_order(self, order_id):
         return self.orders.get(order_id)
+    
+    # Security: SQL injection
+    def get_user_orders(self, user_id):
+        query = f"SELECT * FROM orders WHERE user_id = {user_id}"
+        # Simulated query
+        return [o for o in self.orders.values() if o['user_id'] == user_id]
+    
+    # Security: Command injection
+    def export_order(self, order_id, format):
+        os.system(f"./export.sh {order_id} {format}")  # Command injection
+    
+    # Security: Insecure deserialization
+    def import_order(self, data):
+        return pickle.loads(data)  # Dangerous
+    
+    # Code smell: Long method with complex logic
+    def process_order(self, order_id, payment_method, shipping_address, 
+                     billing_address, coupon_code, gift_wrap, express_shipping):
+        order = self.orders.get(order_id)
+        if order:
+            if payment_method:
+                if shipping_address:
+                    if billing_address:
+                        if coupon_code:
+                            # Apply coupon
+                            pass
+                        if gift_wrap:
+                            # Add gift wrap
+                            pass
+                        if express_shipping:
+                            # Set express shipping
+                            pass
+                        # Process payment
+                        # Update inventory
+                        # Send confirmation
+                        return True
+        return False
+    
+    # Bug: File handle leak
+    def save_order_receipt(self, order_id):
+        f = open(f'/receipts/order_{order_id}.txt', 'w')
+        f.write(str(self.orders.get(order_id)))
+        # File not closed
+    
+    # Code smell: Duplicate validation logic
+    def validate_item_availability(self, item_id):
+        # Complex validation logic
+        return True
+    
+    def validate_item_price(self, item_id):
+        # Same complex validation logic
+        return True
+    
+    def validate_item_shipping(self, item_id):
+        # Same complex validation logic again
+        return True
+    
+    # Unused method
+    def legacy_process(self):
+        pass
 """,
             "test_order.py": """
 import pytest
@@ -835,6 +1242,12 @@ def test_create_order():
     service = OrderService()
     order_id = service.create_order('user123', ['item1', 'item2'])
     assert order_id == 1
+
+def test_get_order():
+    service = OrderService()
+    order_id = service.create_order('user123', ['item1'])
+    order = service.get_order(order_id)
+    assert order['user_id'] == 'user123'
 """,
             "requirements.txt": """pytest==7.4.0
 pytest-cov==4.1.0
@@ -848,6 +1261,12 @@ setup(
     version='1.0.0',  # Missing comma above
     packages=['order_service']
 )
+""",
+            "config.py": """
+# Security: Exposed credentials
+DATABASE_URL = "postgresql://orderuser:orderpass123@localhost/orders"
+REDIS_URL = "redis://:redis_password@localhost:6379"
+STRIPE_API_KEY = "sk_live_1234567890abcdef"
 """,
             "Dockerfile": """FROM python:3.9-slim
 WORKDIR /app
@@ -865,21 +1284,25 @@ CMD ["python", "order_service.py"]
         }
     },
 
-    # 5. Java - Inventory API (Docker build failure)
+    # 5. Java - Inventory API (Docker failure + quality issues)
     "inventory-api": {
-        "description": "Inventory API with Docker build failure",
+        "description": "Inventory API with Docker build failure and quality issues",
         "language": "java",
         "template": "java-maven.yml",
         "files": {
             "src/main/java/com/demo/inventory/InventoryService.java": """
 package com.demo.inventory;
 
-import java.util.HashMap;
-import java.util.Map;
+import java.util.*;
+import java.io.*;
+import java.sql.*;
 
 public class InventoryService {
+    // Bug: Not thread-safe
     private Map<String, Integer> inventory = new HashMap<>();
+    private static String DB_PASSWORD = "inventory123"; // Security: hardcoded
     
+    // Bug: Race condition
     public void addItem(String itemId, int quantity) {
         inventory.put(itemId, inventory.getOrDefault(itemId, 0) + quantity);
     }
@@ -888,10 +1311,78 @@ public class InventoryService {
         return inventory.getOrDefault(itemId, 0) >= quantity;
     }
     
+    // Bug: Race condition in concurrent environment
     public void removeItem(String itemId, int quantity) {
         int current = inventory.getOrDefault(itemId, 0);
         inventory.put(itemId, Math.max(0, current - quantity));
     }
+    
+    // Security: SQL injection
+    public List<String> searchItems(String query) throws SQLException {
+        String sql = "SELECT * FROM items WHERE name LIKE '%" + query + "%'";
+        // Vulnerable to SQL injection
+        return Arrays.asList(sql);
+    }
+    
+    // Bug: Resource leak
+    public void loadInventory(String filename) throws IOException {
+        BufferedReader reader = new BufferedReader(new FileReader(filename));
+        String line;
+        while ((line = reader.readLine()) != null) {
+            // Process line
+        }
+        // Reader not closed
+    }
+    
+    // Code smell: Duplicate logic
+    public double calculateStorageCost(String itemId) {
+        Integer quantity = inventory.get(itemId);
+        if (quantity == null) return 0;
+        if (quantity < 100) return quantity * 0.5;
+        if (quantity < 1000) return quantity * 0.3;
+        return quantity * 0.2;
+    }
+    
+    public double calculateHandlingCost(String itemId) {
+        Integer quantity = inventory.get(itemId);
+        if (quantity == null) return 0;
+        if (quantity < 100) return quantity * 0.5;
+        if (quantity < 1000) return quantity * 0.3;
+        return quantity * 0.2;
+    }
+    
+    // Security: Path traversal
+    public void exportInventory(String path) throws IOException {
+        File file = new File("/exports/" + path); // No validation
+        FileWriter writer = new FileWriter(file);
+        writer.write(inventory.toString());
+        writer.close();
+    }
+    
+    // Bug: Null pointer potential
+    public String getItemDetails(String itemId) {
+        return inventory.get(itemId).toString(); // NPE if item doesn't exist
+    }
+    
+    // Code smell: God class - too many responsibilities
+    public void processOrder(String orderId) { /* ... */ }
+    public void updatePricing(String itemId) { /* ... */ }
+    public void generateReport() { /* ... */ }
+    public void syncWithSuppliers() { /* ... */ }
+    public void handleReturns(String orderId) { /* ... */ }
+}
+""",
+            "src/main/java/com/demo/inventory/DatabaseConfig.java": """
+package com.demo.inventory;
+
+public class DatabaseConfig {
+    // Security: Hardcoded credentials
+    public static final String URL = "jdbc:mysql://localhost:3306/inventory";
+    public static final String USER = "root";
+    public static final String PASSWORD = "root123";
+    
+    // Security: Weak encryption key
+    public static final String ENCRYPTION_KEY = "1234567890123456";
 }
 """,
             "src/test/java/com/demo/inventory/InventoryServiceTest.java": """
@@ -907,6 +1398,15 @@ class InventoryServiceTest {
         InventoryService service = new InventoryService();
         service.addItem("ITEM001", 10);
         assertTrue(service.checkAvailability("ITEM001", 5));
+    }
+    
+    @Test
+    void testRemoveItem() {
+        InventoryService service = new InventoryService();
+        service.addItem("ITEM002", 10);
+        service.removeItem("ITEM002", 5);
+        assertTrue(service.checkAvailability("ITEM002", 5));
+        assertFalse(service.checkAvailability("ITEM002", 6));
     }
 }
 """,
@@ -927,6 +1427,11 @@ class InventoryServiceTest {
     </properties>
     
     <dependencies>
+        <dependency>
+            <groupId>mysql</groupId>
+            <artifactId>mysql-connector-java</artifactId>
+            <version>8.0.33</version>
+        </dependency>
         <dependency>
             <groupId>org.junit.jupiter</groupId>
             <artifactId>junit-jupiter</artifactId>
@@ -961,19 +1466,28 @@ CMD ["java", "-jar", "app.jar"]
         }
     },
 
-    # 6. Node.js - Report Generator (Similar error pattern for vector DB demo)
+    # 6. Node.js - Report Generator (Similar test failure + quality issues)
     "report-generator": {
-        "description": "Report generator with similar test failure pattern",
+        "description": "Report generator with similar test failure pattern and quality issues",
         "language": "javascript",
         "template": "nodejs.yml",
         "files": {
             "report.js": """
+const fs = require('fs');
+const { exec } = require('child_process');
+
+// Security: Hardcoded credentials
+const DB_CONNECTION = 'mongodb://admin:admin123@localhost:27017/reports';
+const API_KEY = 'report-api-key-12345';
+
 class ReportGenerator {
     constructor() {
         this.reports = [];
+        this.templates = {}; // Memory leak: templates never cleared
     }
     
     generateReport(type, data) {
+        // Bug: No input validation
         const report = {
             id: this.reports.length + 1,
             type,
@@ -981,7 +1495,16 @@ class ReportGenerator {
             timestamp: new Date()
         };
         
+        // Security: Command injection
+        if (type === 'pdf') {
+            exec(`wkhtmltopdf ${data.url} report.pdf`); // Dangerous
+        }
+        
         this.reports.push(report);
+        
+        // Security: Logging sensitive data
+        console.log(`Generated report with data: ${JSON.stringify(data)}`);
+        
         return report;
     }
     
@@ -993,7 +1516,58 @@ class ReportGenerator {
     getReportsByType(type) {
         return this.reports.filter(r => r.type === type);
     }
+    
+    // Security: Path traversal
+    saveReport(filename, content) {
+        const path = `/reports/${filename}`; // No sanitization
+        fs.writeFileSync(path, content);
+    }
+    
+    // Security: Template injection
+    renderTemplate(template, data) {
+        // Vulnerable to template injection
+        return eval('`' + template + '`');
+    }
+    
+    // Code smell: Duplicate code (similar pattern)
+    calculateReportSize(reportId) {
+        const report = this.reports.find(r => r.id === reportId);
+        if (!report) return 0;
+        if (report.data.length < 100) return 1;
+        if (report.data.length < 1000) return 2;
+        return 3;
+    }
+    
+    calculateReportComplexity(reportId) {
+        const report = this.reports.find(r => r.id === reportId);
+        if (!report) return 0;
+        if (report.data.length < 100) return 1;
+        if (report.data.length < 1000) return 2;
+        return 3;
+    }
+    
+    // Bug: Infinite recursion potential
+    generateRecursiveReport(depth = 0) {
+        if (depth > 10) return; // Weak termination condition
+        return this.generateRecursiveReport(depth); // Bug: doesn't increment
+    }
+    
+    // Security: SQL injection
+    getReportsByUser(userId) {
+        const query = `SELECT * FROM reports WHERE user_id = '${userId}'`;
+        // Simulated vulnerable query
+        return this.reports;
+    }
+    
+    // Code smell: Dead code
+    oldGenerateMethod() {
+        // Never called
+        console.log('Old method');
+    }
 }
+
+// Bug: Global pollution
+reportCount = 0;
 
 module.exports = ReportGenerator;
 """,
@@ -1019,6 +1593,22 @@ describe('ReportGenerator', () => {
         expect(generator.getReportCount()).toBe(1);
     });
 });
+""",
+            "config.js": """
+// Security: Exposed secrets
+module.exports = {
+    mongodb: {
+        url: 'mongodb://admin:password123@localhost:27017/reports',
+        options: {
+            user: 'admin',
+            password: 'password123'
+        }
+    },
+    aws: {
+        accessKeyId: 'AKIAIOSFODNN7EXAMPLE',
+        secretAccessKey: 'wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY'
+    }
+};
 """,
             "package.json": """{
   "name": "report-generator",
@@ -1056,7 +1646,7 @@ CMD ["node", "report.js"]
         }
     },
 
-    # 7. Python - Shipping Service (Multiple similar patterns)
+    # 7. Python - Shipping Service (Similar build failure + quality issues)
     "shipping-service": {
         "description": "Shipping service with pattern similar to auth-api",
         "language": "python",
@@ -1064,17 +1654,30 @@ CMD ["node", "report.js"]
         "files": {
             "shipping_service.py": """
 import requests  # Missing from requirements.txt - similar to auth-api
+import os
+import subprocess
+import yaml
 from datetime import datetime
 
+# Security: Hardcoded API credentials
+API_KEY = "shipping123"
+FEDEX_KEY = "fedex_api_key_12345"
+UPS_KEY = "ups_api_key_67890"
+DATABASE_URL = "postgresql://ship:ship123@localhost/shipping"
+
 class ShippingService:
-    API_KEY = "shipping123"  # Security issue
+    def __init__(self):
+        self.shipments = {}
+        self.carriers = []  # Memory leak
     
     def calculate_shipping(self, weight, distance):
         base_rate = 5.0
         return base_rate + (weight * 0.5) + (distance * 0.1)
     
     def track_package(self, tracking_id):
-        # Would normally call external API
+        # Security: SQL injection
+        query = f"SELECT * FROM packages WHERE tracking_id = '{tracking_id}'"
+        
         return {
             'id': tracking_id,
             'status': 'in_transit',
@@ -1082,11 +1685,92 @@ class ShippingService:
         }
     
     def create_label(self, order_data):
-        # Similar pattern - missing dependency will cause failure
+        # Missing dependency will cause failure
         response = requests.post('https://api.shipping.com/labels', 
                                json=order_data,
                                headers={'Authorization': self.API_KEY})
         return response.json()
+    
+    # Security: Command injection
+    def generate_barcode(self, tracking_number):
+        cmd = f"barcode -o barcode.png {tracking_number}"
+        subprocess.call(cmd, shell=True)  # Command injection
+    
+    # Security: Path traversal
+    def save_shipping_label(self, filename, content):
+        path = f"/labels/{filename}"  # No validation
+        with open(path, 'wb') as f:
+            f.write(content)
+    
+    # Bug: YAML parsing vulnerability
+    def load_config(self, config_str):
+        return yaml.load(config_str)  # Should use safe_load
+    
+    # Code smell: Complex nested conditions
+    def calculate_delivery_time(self, origin, destination, service_type, weight, 
+                               is_hazmat, is_fragile, is_oversized):
+        if origin and destination:
+            if service_type == 'express':
+                if weight < 50:
+                    if not is_hazmat:
+                        if not is_fragile:
+                            if not is_oversized:
+                                return 1
+                            else:
+                                return 3
+                        else:
+                            return 2
+                    else:
+                        return 5
+                else:
+                    return 4
+            else:
+                return 7
+        return 10
+    
+    # Code smell: Duplicate validation
+    def validate_address(self, address):
+        if not address.get('street'):
+            return False
+        if not address.get('city'):
+            return False
+        if not address.get('zip'):
+            return False
+        return True
+    
+    def validate_sender_address(self, address):
+        if not address.get('street'):
+            return False
+        if not address.get('city'):
+            return False
+        if not address.get('zip'):
+            return False
+        return True
+    
+    def validate_receiver_address(self, address):
+        if not address.get('street'):
+            return False
+        if not address.get('city'):
+            return False
+        if not address.get('zip'):
+            return False
+        return True
+    
+    # Security: Hardcoded encryption key
+    def encrypt_tracking_data(self, data):
+        key = "1234567890123456"  # Hardcoded key
+        # Simplified encryption logic
+        return data
+    
+    # Bug: File descriptor leak
+    def log_shipment(self, shipment_id):
+        f = open(f'/logs/shipment_{shipment_id}.log', 'a')
+        f.write(f"{datetime.now()}: Shipment processed\n")
+        # File not closed
+    
+    # Unused method
+    def deprecated_calculate(self):
+        pass
 """,
             "test_shipping.py": """
 import pytest
@@ -1096,10 +1780,40 @@ def test_calculate_shipping():
     service = ShippingService()
     cost = service.calculate_shipping(10, 100)
     assert cost == 20.0
+
+def test_track_package():
+    service = ShippingService()
+    result = service.track_package("TRACK123")
+    assert result['status'] == 'in_transit'
 """,
             "requirements.txt": """pytest==7.4.0
 pytest-cov==4.1.0
+pyyaml==6.0
 # requests is missing - similar pattern to auth-api
+""",
+            "config.py": """
+# Security: Exposed credentials
+SHIPPING_PROVIDERS = {
+    'fedex': {
+        'api_key': 'fedex_production_key_12345',
+        'secret': 'fedex_secret_67890'
+    },
+    'ups': {
+        'username': 'ups_user',
+        'password': 'ups_pass123'
+    },
+    'usps': {
+        'user_id': 'usps_12345',
+        'password': 'usps_password'
+    }
+}
+
+DATABASE_CONFIG = {
+    'host': 'localhost',
+    'user': 'shipping_user',
+    'password': 'shipping_pass123',
+    'database': 'shipping_db'
+}
 """,
             "Dockerfile": """FROM python:3.9-slim
 WORKDIR /app
@@ -1254,7 +1968,7 @@ class SonarQubeSetup:
         success("SonarQube cleanup complete")
         
     def create_quality_gate(self):
-        """Create strict quality gate"""
+        """Create very strict quality gate"""
         info(f"Creating quality gate '{QUALITY_GATE_NAME}'...")
         
         # Create gate
@@ -1268,33 +1982,35 @@ class SonarQubeSetup:
         else:
             response.raise_for_status()
             
-        # Add strict conditions
+        # Add very strict conditions
         conditions = [
             # Coverage
             {'metric': 'new_coverage', 'op': 'LT', 'error': '80'},
-            {'metric': 'coverage', 'op': 'LT', 'error': '60'},
+            {'metric': 'coverage', 'op': 'LT', 'error': '70'},
             
-            # Bugs
+            # Bugs - Zero tolerance
             {'metric': 'new_bugs', 'op': 'GT', 'error': '0'},
-            {'metric': 'bugs', 'op': 'GT', 'error': '5'},
+            {'metric': 'bugs', 'op': 'GT', 'error': '2'},
             
-            # Vulnerabilities
+            # Vulnerabilities - Zero tolerance
             {'metric': 'new_vulnerabilities', 'op': 'GT', 'error': '0'},
-            {'metric': 'vulnerabilities', 'op': 'GT', 'error': '3'},
+            {'metric': 'vulnerabilities', 'op': 'GT', 'error': '1'},
             
-            # Code Smells
+            # Code Smells - Very strict
             {'metric': 'new_code_smells', 'op': 'GT', 'error': '3'},
-            {'metric': 'code_smells', 'op': 'GT', 'error': '20'},
+            {'metric': 'code_smells', 'op': 'GT', 'error': '10'},
             
             # Duplications
-            {'metric': 'new_duplicated_lines_density', 'op': 'GT', 'error': '5'},
-            {'metric': 'duplicated_lines_density', 'op': 'GT', 'error': '10'},
+            {'metric': 'new_duplicated_lines_density', 'op': 'GT', 'error': '3'},
+            {'metric': 'duplicated_lines_density', 'op': 'GT', 'error': '5'},
             
-            # Security
+            # Security Hotspots - Zero tolerance
             {'metric': 'new_security_hotspots', 'op': 'GT', 'error': '0'},
-            {'metric': 'security_rating', 'op': 'GT', 'error': '2'},
+            {'metric': 'security_hotspots', 'op': 'GT', 'error': '2'},
             
-            # Maintainability
+            # Ratings must be A or B
+            {'metric': 'reliability_rating', 'op': 'GT', 'error': '2'},
+            {'metric': 'security_rating', 'op': 'GT', 'error': '2'},
             {'metric': 'sqale_rating', 'op': 'GT', 'error': '2'},
         ]
         
@@ -1319,7 +2035,7 @@ class SonarQubeSetup:
             params={'name': QUALITY_GATE_NAME}
         )
         
-        success("Strict quality gate created")
+        success("Very strict quality gate created")
         
     def create_projects(self):
         """Create SonarQube projects"""
@@ -1355,44 +2071,40 @@ def print_summary():
     print("\n" + "="*80)
     success("Demo environment created successfully!")
     
-    print("\n📦 PROJECTS CREATED:")
+    print("\n📦 PROJECTS CREATED (ALL WITH SONARQUBE ISSUES):")
     
-    print("\n🚨 SONARQUBE QUALITY GATE FAILURES:")
-    print("  • payment-service: Multiple bugs, vulnerabilities, code smells, security issues")
-    print("    - SQL injection vulnerability")
-    print("    - Hardcoded passwords")
-    print("    - Resource leaks")
-    print("    - Duplicate code")
+    print("\n🚨 EXTENSIVE QUALITY ISSUES IN ALL PROJECTS:")
+    print("  Every project contains:")
+    print("    • Multiple security vulnerabilities (hardcoded passwords, SQL injection)")
+    print("    • Several bugs (null pointers, resource leaks, race conditions)")
+    print("    • Many code smells (duplicate code, complex methods, dead code)")
+    print("    • Poor coverage (no tests for most code)")
     
-    print("\n🔴 BUILD FAILURES:")
-    print("  • auth-api: Missing 'jwt' dependency")
-    print("  • shipping-service: Missing 'requests' dependency (similar pattern)")
-    
-    print("\n❌ TEST FAILURES:")
-    print("  • notification-service: Off-by-one error in getCount()")
-    print("  • report-generator: Same off-by-one pattern (vector DB demo)")
-    
-    print("\n📦 PACKAGE FAILURES:")
-    print("  • order-service: Syntax error in setup.py")
-    
-    print("\n🐳 DOCKER BUILD FAILURES:")
-    print("  • inventory-api: Wrong JAR file path in Dockerfile")
+    print("\n🔴 SPECIFIC FAILURES:")
+    print("  • payment-service: MOST issues - SQL injection, weak crypto, memory leaks")
+    print("  • auth-api: Build failure (missing jwt) + command injection, weak hashing")
+    print("  • notification-service: Test failure + eval usage, hardcoded API keys")
+    print("  • order-service: Package failure + insecure deserialization")
+    print("  • inventory-api: Docker failure + thread safety issues")
+    print("  • report-generator: Test failure (same pattern as notification)")
+    print("  • shipping-service: Build failure (same pattern as auth-api)")
     
     print("\n🔗 SIMILAR PATTERNS FOR VECTOR DB:")
-    print("  • auth-api & shipping-service: Missing dependency pattern")
-    print("  • notification-service & report-generator: Off-by-one error pattern")
+    print("  • Build failures: auth-api & shipping-service (missing dependency)")
+    print("  • Test failures: notification-service & report-generator (off-by-one)")
+    print("  • Security patterns: All projects have SQL injection vulnerabilities")
+    print("  • Code smell patterns: All projects have duplicate code")
     
-    print("\n⚙️ QUALITY GATE RULES (STRICT):")
-    print("  • Coverage: < 80% (new), < 60% (overall)")
-    print("  • Zero tolerance for new bugs/vulnerabilities")
+    print("\n⚙️ VERY STRICT QUALITY GATE RULES:")
+    print("  • Zero new bugs/vulnerabilities allowed")
+    print("  • Coverage: < 80% new, < 70% overall")
     print("  • Maximum 3 new code smells")
-    print("  • Security rating must be A or B")
+    print("  • Maximum 10 total code smells")
+    print("  • All ratings must be A or B")
+    print("  • Zero security hotspots allowed")
     
-    print("\n✅ KEY FEATURES:")
-    print("  • No 'scan-image' stage (removed)")
-    print("  • Jest tests with --watchAll=false (no hanging)")
-    print("  • Moderate code complexity")
-    print("  • Clear failure patterns for demo")
+    print("\n✅ ALL PROJECTS WILL FAIL QUALITY GATES")
+    print("   Perfect for demonstrating batch fixes in single MR")
     print("\n" + "="*80)
 
 if __name__ == "__main__":
@@ -1406,8 +2118,8 @@ if __name__ == "__main__":
     
     print(f"\nThis script will create:")
     print(f"- GitLab group '{GROUP_NAME}'")
-    print(f"- 7 projects with various failure scenarios")
-    print(f"- Strict SonarQube quality gate")
+    print(f"- 7 projects with extensive SonarQube issues")
+    print(f"- Very strict quality gate")
     print(f"- Webhook integrations")
     
     if input("\nProceed? (yes/no): ").lower() != 'yes':

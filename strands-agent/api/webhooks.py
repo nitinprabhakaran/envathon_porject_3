@@ -118,6 +118,23 @@ async def handle_gitlab_webhook(request: Request):
                 if (session.get("session_type") == "quality" and 
                     session.get("project_id") == gitlab_project_id and
                     session.get("status") == "active"):
+                    
+                    # Check if this is a fix branch failure
+                    current_branch = pipeline.get("ref", "")
+                    if current_branch.startswith("fix/sonarqube_"):
+                        # Only track as fix attempt if session already has an MR
+                        if session.get("merge_request_url"):
+                            # This is a failed fix attempt after MR was created
+                            await session_manager.track_fix_attempt(
+                                session['id'],
+                                str(pipeline.get("id")),
+                                current_branch,
+                                {"status": "failed"}
+                            )
+                            log.info(f"Tracked failed fix attempt for quality session {session['id']}")
+                        else:
+                            log.info(f"Fix branch failed but no MR yet for session {session['id']}")
+                    
                     log.info(f"Found existing quality session {session['id']} for project {gitlab_project_id}, ignoring duplicate webhook")
                     return {
                         "status": "ignored",
