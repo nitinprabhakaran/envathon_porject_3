@@ -422,8 +422,11 @@ CRITICAL: The files parameter must be a dictionary with this EXACT structure:
     }}
 }}
 
-- Put files that already exist in the repository under "updates"
-- Put new files that need to be created under "creates"
+IMPORTANT RULES:
+- Check which files you retrieved successfully with get_file_content
+- Files that returned content go in "updates" 
+- Files that returned "Error getting file content" or don't exist go in "creates"
+- BookNotFoundException.java typically goes in "creates" as it's a new file
 - Include the COMPLETE content for each file, not just the changes"""
         elif is_apply_fix or (is_mr_request and is_fix_branch):
             # Applying fix to existing branch

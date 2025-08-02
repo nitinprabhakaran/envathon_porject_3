@@ -191,10 +191,12 @@ async def create_merge_request(
             if isinstance(files, dict) and "updates" in files:
                 for file_path, content in files["updates"].items():
                     files_to_process.append(("update", file_path, content))
+                    log.info(f"LLM marked for update: {file_path}")
             
             if isinstance(files, dict) and "creates" in files:
                 for file_path, content in files["creates"].items():
                     files_to_process.append(("create", file_path, content))
+                    log.info(f"LLM marked for create: {file_path}")
             
             # Fallback for old format
             if not any(key in files for key in ["updates", "creates"]):
@@ -213,18 +215,25 @@ async def create_merge_request(
                 check_ref = target_branch if not update_mode else source_branch
                 
                 # Check if file exists
+                file_exists = False
                 try:
                     check_response = await client.get(
                         f"/projects/{project_id}/repository/files/{encoded_path}",
                         params={"ref": check_ref}
                     )
-                    # File exists - update it
+                    if check_response.status_code == 200:
+                        file_exists = True
+                except:
+                    file_exists = False
+                
+                # Determine the correct action
+                if file_exists:
                     actions.append({"action": "update", "file_path": file_path, "content": content})
                     files_processed.append(f"UPDATE: {file_path}")
-                except:
-                    # File doesn't exist - create it
+                else:
                     actions.append({"action": "create", "file_path": file_path, "content": content})
-                    files_processed.append(f"CREATE: {file_path}")
+                    files_processed.append(f"CREATE: {file_path} (file doesn't exist on {check_ref})")
+                    log.warning(f"File {file_path} doesn't exist on {check_ref}, creating it")
             
             if not actions:
                 return {
