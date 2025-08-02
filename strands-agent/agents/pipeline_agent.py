@@ -391,19 +391,8 @@ Session Context:
         if is_mr_request and not is_fix_branch:
             timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
             branch_name = f"fix/pipeline_{context.job_name}_{timestamp}".replace(" ", "_").lower()
-            
+
             final_prompt = f"""{context_prompt}
-
-The user wants to create a merge request with the fixes discussed.
-
-INSTRUCTIONS:
-1. First, call get_stored_file_analysis() to retrieve the file analysis from the session
-2. Review the previous analysis in the conversation to understand what fixes are needed
-3. For each file that was tracked:
-   - If it needs changes based on the analysis, determine the complete fixed content
-   - If it's a new file that needs to be created (like BookNotFoundException), create it
-4. Create a merge request with ALL necessary files
-5. Include the complete MR URL in your response
 
 Use these parameters for create_merge_request:
 - Project ID: {context.project_id}
@@ -412,8 +401,19 @@ Use these parameters for create_merge_request:
 - Title: Fix {context.failed_stage} failure in {context.job_name}
 - Description: Automated fix for pipeline failure #{context.pipeline_id}
 
-The files parameter should be a dictionary mapping file paths to their complete content.
-Review the conversation history to understand what changes are needed."""
+CRITICAL: The files parameter must be a dictionary with this EXACT structure:
+{{
+    "updates": {{
+        "path/to/existing/file.ext": "complete file content here"
+    }},
+    "creates": {{
+        "path/to/new/file.ext": "complete file content here"
+    }}
+}}
+
+- Put files that already exist in the repository under "updates"
+- Put new files that need to be created under "creates"
+- Include the COMPLETE content for each file, not just the changes"""
         else:
             final_prompt = f"""{context_prompt}
 

@@ -162,59 +162,111 @@ async def get_recent_commits(project_id: str, limit: int = 10) -> List[Dict[str,
 
 @tool
 async def create_merge_request(
-    title: str,
-    description: str,
-    files: Dict[str, str],
-    project_id: str,
-    source_branch: str,
-    target_branch: str = "main",
-    update_mode: bool = False
+   title: str,
+   description: str,
+   files: Dict[str, Any],
+   project_id: str,
+   source_branch: str,
+   target_branch: str = "main",
+   update_mode: bool = False
 ) -> Dict[str, Any]:
-    """Create or update a merge request with file changes"""
-    
-    async with await get_gitlab_client() as client:
-        try:
-            if not update_mode:
-                # Create new branch from target
-                await client.post(
-                    f"/projects/{project_id}/repository/branches",
-                    json={"branch": source_branch, "ref": target_branch}
-                )
-            
-            # Commit changes (works for both new and existing branches)
-            actions = [
-                {"action": "update", "file_path": fp, "content": c}
-                for fp, c in files.items()
-            ]
-            
-            await client.post(
-                f"/projects/{project_id}/repository/commits",
-                json={
-                    "branch": source_branch,
-                    "commit_message": f"Iteration fix: {title}",
-                    "actions": actions
-                }
-            )
-            
-            if not update_mode:
-                # Create new MR
-                response = await client.post(
-                    f"/projects/{project_id}/merge_requests",
-                    json={
-                        "source_branch": source_branch,
-                        "target_branch": target_branch,
-                        "title": title,
-                        "description": description,
-                        "remove_source_branch": True
-                    }
-                )
-                return response.json()
-            else:
-                # Return existing MR info
-                return {"message": "Added commits to existing branch", "branch": source_branch}
-        except Exception as e:
-            log.error(f"Failed to create merge request: {e}")
-            return {"error": str(e)}
+   """Create or update a merge request with file changes
+   
+   Args:
+       files: Dict with 'updates' and 'creates' keys, each containing file paths and content
+   """
+   
+   async with await get_gitlab_client() as client:
+       try:
+           if not update_mode:
+               # Create new branch from target
+               await client.post(
+                   f"/projects/{project_id}/repository/branches",
+                   json={"branch": source_branch, "ref": target_branch}
+               )
+           
+           # Build actions from LLM's explicit instructions
+           actions = []
+           files_processed = []
+           
+           # Handle updates - files that should exist
+           if isinstance(files, dict) and "updates" in files:
+               for file_path, content in files["updates"].items():
+                   actions.append({"action": "update", "file_path": file_path, "content": content})
+                   files_processed.append(f"UPDATE: {file_path}")
+           
+           # Handle creates - new files
+           if isinstance(files, dict) and "creates" in files:
+               for file_path, content in files["creates"].items():
+                   actions.append({"action": "create", "file_path": file_path, "content": content})
+                   files_processed.append(f"CREATE: {file_path}")
+           
+           # Fallback for old format (flat dict)
+           if not any(key in files for key in ["updates", "creates"]):
+               log.warning("Using legacy file format - assuming all are updates")
+               for file_path, content in files.items():
+                   actions.append({"action": "update", "file_path": file_path, "content": content})
+                   files_processed.append(f"UPDATE: {file_path}")
+           
+           if not actions:
+               return {
+                   "error": "No files to commit",
+                   "files_checked": files_processed
+               }
+           
+           # Commit changes
+           commit_response = await client.post(
+               f"/projects/{project_id}/repository/commits",
+               json={
+                   "branch": source_branch,
+                   "commit_message": f"Fix: {title}",
+                   "actions": actions
+               }
+           )
+           
+           if commit_response.status_code != 201:
+               log.error(f"Commit failed: {commit_response.text}")
+               return {
+                   "error": f"Commit failed: {commit_response.text}",
+                   "files_processed": files_processed
+               }
+           
+           if not update_mode:
+               # Create new MR
+               response = await client.post(
+                   f"/projects/{project_id}/merge_requests",
+                   json={
+                       "source_branch": source_branch,
+                       "target_branch": target_branch,
+                       "title": title,
+                       "description": description + f"\n\n**Files changed:**\n" + "\n".join(f"- {fp}" for fp in files_processed),
+                       "remove_source_branch": True
+                   }
+               )
+               
+               if response.status_code != 201:
+                   log.error(f"MR creation failed: {response.text}")
+                   return {"error": f"MR creation failed: {response.text}"}
+                   
+               mr_data = response.json()
+               return {
+                   "id": mr_data.get("iid"),
+                   "web_url": mr_data.get("web_url"),
+                   "title": mr_data.get("title"),
+                   "source_branch": source_branch,
+                   "target_branch": target_branch,
+                   "files_processed": files_processed
+               }
+           else:
+               # Return existing MR info
+               return {
+                   "message": "Added commits to existing branch",
+                   "branch": source_branch,
+                   "files_processed": files_processed
+               }
+       except Exception as e:
+           log.error(f"Failed to create merge request: {e}")
+           return {"error": str(e)}
 
 @tool
 async def get_project_info(project_id: str) -> Dict[str, Any]:
