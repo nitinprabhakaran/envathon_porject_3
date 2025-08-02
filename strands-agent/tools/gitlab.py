@@ -221,3 +221,9 @@ async def get_project_info(project_id: str) -> Dict[str, Any]:
         except Exception as e:
             log.error(f"Failed to get project info: {e}")
             return {"error": str(e)}
+
+@tool
+async def get_stored_file_analysis(session_id: str) -> Dict[str, Any]:
+    """Get stored file analysis for a session"""
+    session_manager = SessionManager()
+    return await session_manager.get_file_analysis(session_id)

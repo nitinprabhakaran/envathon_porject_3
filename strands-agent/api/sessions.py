@@ -76,7 +76,27 @@ async def send_message(session_id: str, request: MessageRequest):
             )
         
         # Generic response extraction
-        response_text = extract_text_from_response(response)
+        response_text = ""
+        if isinstance(response, str):
+            response_text = response
+        elif hasattr(response, 'message'):
+            response_text = response.message
+        elif hasattr(response, 'content'):
+            response_text = response.content
+        elif isinstance(response, dict):
+            if "content" in response:
+                content = response["content"]
+                if isinstance(content, list):
+                    for item in content:
+                        if isinstance(item, dict) and "text" in item:
+                            response_text += item["text"]
+                elif isinstance(content, str):
+                    response_text = content
+            elif "message" in response:
+                response_text = response["message"]
+        
+        if not response_text:
+            response_text = str(response)
         
         # Extract and store MR URL if present
         mr_url = None
@@ -167,33 +187,16 @@ def extract_response_text(response) -> str:
     if isinstance(response, str):
         return response
     
-    if hasattr(response, 'message') and isinstance(response.message, str):
+    # Handle Strands agent response
+    if hasattr(response, 'message'):
         return response.message
     
-    if hasattr(response, 'content') and isinstance(response.content, str):
-        return response.content
-    
-    if isinstance(response, dict):
-        # Handle content array format
-        if "content" in response:
-            content = response["content"]
-            if isinstance(content, list):
-                texts = []
-                for item in content:
-                    if isinstance(item, dict) and "text" in item:
-                        texts.append(item["text"])
-                return "".join(texts)
-            return str(content)
-        elif "message" in response:
-            return response["message"]
-    
-    # Handle response with nested structure
-    if hasattr(response, '__dict__'):
-        for attr in ['message', 'content', 'text']:
-            if hasattr(response, attr):
-                val = getattr(response, attr)
-                if isinstance(val, str):
-                    return val
+    # Handle dict with content array
+    if isinstance(response, dict) and "content" in response:
+        content = response["content"]
+        if isinstance(content, list):
+            return "".join(item.get("text", "") for item in content if isinstance(item, dict))
+        return str(content)
     
     return str(response)
 
@@ -214,3 +217,39 @@ def extract_files_from_response(response_text: str) -> Dict[str, str]:
                 files[match] = "modified"
     
     return files
+
+
+async def store_file_analysis(self, session_id: str, file_path: str, original_content: str, proposed_changes: str):
+    """Store file analysis for a specific file in a session"""
+    async with self.get_connection() as conn:
+        # Store in a JSONB field in sessions table
+        current = await conn.fetchval(
+            "SELECT webhook_data FROM sessions WHERE id = $1",
+            session_id
+        )
+        
+        webhook_data = json.loads(current) if current else {}
+        
+        # Initialize file_analysis if not exists
+        if 'file_analysis' not in webhook_data:
+            webhook_data['file_analysis'] = {}
+        
+        # Store file data
+        webhook_data['file_analysis'][file_path] = {
+            'original_content': original_content,
+            'proposed_changes': proposed_changes,
+            'timestamp': datetime.utcnow().isoformat()
+        }
+        
+        await conn.execute(
+            "UPDATE sessions SET webhook_data = $2::jsonb WHERE id = $1",
+            session_id, json.dumps(webhook_data)
+        )
+        log.info(f"Stored file analysis for {file_path} in session {session_id}")
+
+async def get_file_analysis(self, session_id: str) -> Dict[str, Any]:
+    """Get all file analysis for a session"""
+    session = await self.get_session(session_id)
+    if session:
+        return session.get('webhook_data', {}).get('file_analysis', {})
+    return {}

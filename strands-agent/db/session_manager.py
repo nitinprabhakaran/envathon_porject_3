@@ -158,25 +158,57 @@ class SessionManager:
             )
             log.debug(f"Added {role} message to session {session_id}")
     
+    # Add this method to session_manager.py
+
     async def update_session_metadata(self, session_id: str, metadata: Dict[str, Any]):
         """Update session metadata"""
         async with self.get_connection() as conn:
-            # Build update query dynamically
+            # Handle webhook_data specially to merge it
+            if "webhook_data" in metadata:
+                # Get current webhook_data
+                current = await conn.fetchval(
+                    "SELECT webhook_data FROM sessions WHERE id = $1",
+                    session_id
+                )
+                current_data = json.loads(current) if current else {}
+                
+                # Merge new data
+                new_webhook_data = metadata["webhook_data"]
+                if isinstance(new_webhook_data, dict):
+                    current_data.update(new_webhook_data)
+                    metadata["webhook_data"] = json.dumps(current_data)
+                else:
+                    metadata["webhook_data"] = json.dumps(new_webhook_data)
+            
+            # Build update query
             updates = []
             params = [session_id]
             param_num = 2
             
-            field_mapping = {
-                "merge_request_url": "merge_request_url",
-                "merge_request_id": "merge_request_id",
-                "fixes_applied": "fixes_applied"
-            }
-            
             for key, value in metadata.items():
-                if key in field_mapping:
-                    updates.append(f"{field_mapping[key]} = ${param_num}")
+                if key == "tracked_files":
+                    # Store tracked_files in webhook_data
+                    current = await conn.fetchval(
+                        "SELECT webhook_data FROM sessions WHERE id = $1",
+                        session_id
+                    )
+                    webhook_data = json.loads(current) if current else {}
+                    webhook_data["tracked_files"] = value
+                    updates.append(f"webhook_data = ${param_num}::jsonb")
+                    params.append(json.dumps(webhook_data))
+                elif key == "webhook_data":
+                    updates.append(f"webhook_data = ${param_num}::jsonb")
                     params.append(value)
-                    param_num += 1
+                else:
+                    field_mapping = {
+                        "merge_request_url": "merge_request_url",
+                        "merge_request_id": "merge_request_id",
+                        "fixes_applied": "fixes_applied"
+                    }
+                    if key in field_mapping:
+                        updates.append(f"{field_mapping[key]} = ${param_num}")
+                        params.append(value)
+                param_num += 1
             
             if updates:
                 query = f"""

@@ -2,7 +2,7 @@
 from typing import Dict, Any, List
 from datetime import datetime
 from strands import Agent, tool
-import os, json, asyncio
+import os, json, asyncio, re
 from strands.models.bedrock import BedrockModel
 from strands.models.anthropic import AnthropicModel
 from utils.logger import log
@@ -126,6 +126,7 @@ class PipelineAgent:
         # Session storage for tracking files
         self.session_files = {}
         self._current_session_id = None
+        self._session_manager = SessionManager()
         
         # Create wrapped get_file_content to track accessed files
         original_get_file_content = get_file_content
@@ -135,15 +136,26 @@ class PipelineAgent:
             """Get content of a file from GitLab repository"""
             result = await original_get_file_content(file_path, project_id, ref)
             
-            # Track successful file access
+            # Track and store successful file access
             if self._current_session_id and "Error getting file content" not in result:
                 if self._current_session_id not in self.session_files:
-                    self.session_files[self._current_session_id] = []
-                if file_path not in self.session_files[self._current_session_id]:
-                    self.session_files[self._current_session_id].append(file_path)
-                    log.debug(f"Tracked file: {file_path} for session {self._current_session_id}")
+                    self.session_files[self._current_session_id] = {}
+                
+                # Store both path and content
+                self.session_files[self._current_session_id][file_path] = result
+                log.debug(f"Tracked and stored content for: {file_path}")
             
             return result
+        
+        # Tool to get stored file analysis
+        @tool
+        async def get_stored_file_analysis() -> Dict[str, Any]:
+            """Get stored file analysis for current session"""
+            if self._current_session_id:
+                session = await self._session_manager.get_session(self._current_session_id)
+                if session:
+                    return session.get('webhook_data', {}).get('file_analysis', {})
+            return {}
         
         # Store tools
         self.tools = [
@@ -152,7 +164,8 @@ class PipelineAgent:
             tracked_get_file_content,
             get_recent_commits,
             create_merge_request,
-            get_project_info
+            get_project_info,
+            get_stored_file_analysis
         ]
         
         log.info("Pipeline agent initialized")
@@ -271,39 +284,51 @@ Remember: Do NOT create a merge request. Only analyze and propose solutions."""
     
     async def _store_analysis_data(self, session_id: str, result_text: str):
         """Store tracked files and analysis data"""
-        import re
-        
-        # Get tracked files for this session
-        tracked_files = self.session_files.get(session_id, [])
+        # Get tracked files and content for this session
+        tracked_files_content = self.session_files.get(session_id, {})
         
         # Extract code blocks
         code_pattern = r'```(?:java|python|javascript|yaml|xml)?\n(.*?)\n```'
         code_blocks = re.findall(code_pattern, result_text, re.DOTALL)
         
-        # Store analysis data
-        analysis_data = {
-            'tracked_files': tracked_files,
-            'code_blocks': code_blocks,
-            'full_message': result_text,
-            'timestamp': datetime.utcnow().isoformat()
-        }
+        # Get current session data
+        session = await self._session_manager.get_session(session_id)
+        webhook_data = session.get('webhook_data', {})
         
-        log.info(f"Storing analysis data for session {session_id}:")
-        log.info(f"  Tracked files: {tracked_files}")
-        log.info(f"  Code blocks found: {len(code_blocks)}")
+        # Initialize file_analysis
+        if 'file_analysis' not in webhook_data:
+            webhook_data['file_analysis'] = {}
         
-        # Store in database
-        try:
-            session_manager = SessionManager()
-            await session_manager.store_analyzed_files(session_id, analysis_data)
+        # Map code blocks to files
+        for file_path, original_content in tracked_files_content.items():
+            # Find the code block for this file
+            proposed_change = None
             
-            # Also update session metadata with tracked files
-            await session_manager.update_session_metadata(
-                session_id,
-                {"tracked_files": tracked_files}
-            )
-        except Exception as e:
-            log.error(f"Failed to store analysis data: {e}")
+            if 'Library.java' in file_path and code_blocks:
+                # Find the code block with Library class
+                for code in code_blocks:
+                    if 'public class Library' in code and 'borrowBook' in code:
+                        proposed_change = code
+                        break
+            
+            if proposed_change:
+                # Store in webhook_data
+                webhook_data['file_analysis'][file_path] = {
+                    'original_content': original_content,
+                    'proposed_changes': proposed_change,
+                    'timestamp': datetime.utcnow().isoformat()
+                }
+        
+        # Update session with file analysis
+        await self._session_manager.update_session_metadata(
+            session_id,
+            {
+                "webhook_data": webhook_data,
+                "tracked_files": list(tracked_files_content.keys())
+            }
+        )
+        
+        log.info(f"Stored analysis for {len(tracked_files_content)} files")
     
     async def handle_user_message(
         self,
@@ -315,6 +340,9 @@ Remember: Do NOT create a merge request. Only analyze and propose solutions."""
         """Handle user message with full context"""
         log.info(f"Handling message for pipeline session {session_id}")
         
+        # Set current session
+        self._current_session_id = session_id
+        
         # Check message intent
         is_retry = "still failing" in message.lower() or "same error" in message.lower() or "try again" in message.lower()
         is_mr_request = "create" in message.lower() and ("mr" in message.lower() or "merge request" in message.lower())
@@ -324,12 +352,12 @@ Remember: Do NOT create a merge request. Only analyze and propose solutions."""
         is_fix_branch = context.branch and context.branch.startswith("fix/pipeline_")
         
         # Get fix attempts
-        session_manager = SessionManager()
-        fix_attempts = await session_manager.get_fix_attempts(session_id)
+        fix_attempts = await self._session_manager.get_fix_attempts(session_id)
         
         # Check iteration limit
         if is_retry or is_apply_fix or (is_mr_request and len(fix_attempts) > 0):
-            if await session_manager.check_iteration_limit(session_id):
+            if await self._session_manager.check_iteration_limit(session_id):
+                self._current_session_id = None
                 return """### ❌ Iteration Limit Reached
 
 I've attempted to fix this issue 5 times but the pipeline continues to fail. This suggests:
@@ -354,35 +382,11 @@ Session Context:
 - Pipeline: #{context.pipeline_id}
 - Branch: {context.branch}
 - Failed Job: {context.job_name} in stage {context.failed_stage}
-- Is Fix Branch: {is_fix_branch}
-- Fix Attempts: {len(fix_attempts)}
+- Session ID: {session_id}
 """
         
         # Prepare final prompt based on context
         if is_mr_request and not is_fix_branch:
-            # Get tracked files and previous analysis
-            session = await session_manager.get_session(session_id)
-            tracked_files = session.get("tracked_files", [])
-            
-            # Get previous analysis from conversation
-            previous_analysis = ""
-            proposed_code = {}
-            
-            for msg in reversed(conversation_history):
-                if msg["role"] == "assistant" and "Failure Analysis" in msg.get("content", ""):
-                    previous_analysis = msg["content"]
-                    # Extract code blocks from analysis
-                    import re
-                    code_pattern = r'```(?:java|python|javascript|yaml|xml)?\n(.*?)\n```'
-                    code_blocks = re.findall(code_pattern, previous_analysis, re.DOTALL)
-                    if code_blocks and tracked_files:
-                        # Map first code block to first tracked file (Library.java)
-                        for f in tracked_files:
-                            if 'Library.java' in f and code_blocks:
-                                proposed_code[f] = code_blocks[0]
-                                break
-                    break
-            
             timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
             branch_name = f"fix/pipeline_{context.job_name}_{timestamp}".replace(" ", "_").lower()
             
@@ -390,32 +394,20 @@ Session Context:
 
 The user wants to create a merge request with the fixes discussed.
 
-Files to modify: {tracked_files}
-
-Previous analysis identified these files need changes. The proposed fix for Library.java was:
-```java
-{proposed_code.get(tracked_files[0], '') if tracked_files else ''}
-```
-
-CRITICAL INSTRUCTIONS:
-1. First retrieve the current content of: {tracked_files}
-2. Apply the fixes from the analysis (add null checks, throw BookNotFoundException)
-3. Create the merge request with the complete file content using the 'files' parameter
+INSTRUCTIONS:
+1. First, call get_stored_file_analysis() to retrieve the file analysis from the session
+2. For each file in the analysis, use the proposed_changes to create the fixed version
+3. Create a merge request with ALL files that have proposed changes
 4. Include the complete MR URL in your response
 
-Example of correct create_merge_request call:
-create_merge_request(
-    title="Fix test failure",
-    description="Description",
-    files={{
-        "src/main/java/com/demo/library/Library.java": "complete fixed file content here"
-    }},
-    project_id="{context.project_id}",
-    source_branch="{branch_name}",
-    target_branch="{context.branch or 'main'}"
-)
+Use these parameters for create_merge_request:
+- Project ID: {context.project_id}
+- Source Branch: {branch_name}
+- Target Branch: {context.branch or 'main'}
+- Title: Fix {context.failed_stage} failure in {context.job_name}
+- Description: Automated fix for pipeline failure #{context.pipeline_id}
 
-Create the merge request now with the actual file content."""
+IMPORTANT: The files parameter should be a dictionary mapping file paths to their complete fixed content."""
         else:
             final_prompt = f"""{context_prompt}
 
@@ -425,9 +417,6 @@ Previous Conversation:
 User Question: {message}
 
 Note: When retrieving logs, always use max_size=30000 to prevent overflow."""
-        
-        # Set current session for file tracking if needed
-        self._current_session_id = session_id
         
         # Create agent with tools
         agent = Agent(
