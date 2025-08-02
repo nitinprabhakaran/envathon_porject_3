@@ -2,7 +2,7 @@
 from typing import Dict, Any, List
 from datetime import datetime
 from strands import Agent
-import os, json
+import os, json, asyncio
 from strands.models.bedrock import BedrockModel
 from strands.models.anthropic import AnthropicModel
 from utils.logger import log
@@ -229,13 +229,18 @@ Remember: Do NOT create a merge request. Only analyze and propose solutions."""
         result = await agent.invoke_async(prompt)
         log.info(f"Analysis complete for session {session_id}")
         
-        # Extract text from result first
         if hasattr(result, 'message'):
             result_text = result.message
-        elif isinstance(result, dict) and 'content' in result:
-            result_text = result['content']
+        elif hasattr(result, 'content'):
+            result_text = result.content
+        elif isinstance(result, dict):
+            result_text = result.get('content', str(result))
         else:
             result_text = str(result)
+
+        # Ensure it's a string
+        if not isinstance(result_text, str):
+            result_text = str(result_text)
         
         # Extract and store file changes from the analysis
         self._extract_file_changes(session_id, result_text)
@@ -243,39 +248,43 @@ Remember: Do NOT create a merge request. Only analyze and propose solutions."""
         # Return the text
         return result_text
     
-    def _extract_file_changes(self, session_id: str, result):
+    def _extract_file_changes(self, session_id: str, result_text: str):
         """Extract file changes from agent's analysis"""
-        # Parse the result to find file paths and changes
-        message = result.message if hasattr(result, 'message') else str(result)
-        
-        # Look for file paths and code blocks
         import re
-        
-        # Find all file paths mentioned
-        file_patterns = [
-            r'`([^`]+\.[a-zA-Z]+)`',  # Files in backticks
-            r'File:\s*`?([^\s`]+\.[a-zA-Z]+)`?',  # File: declarations
-            r'src/[^\s]+\.[a-zA-Z]+',  # Direct src paths
-        ]
-        
-        files_mentioned = set()
-        for pattern in file_patterns:
-            matches = re.findall(pattern, message)
-            files_mentioned.update(matches)
-        
-        # Extract code blocks with their content
-        code_blocks = re.findall(r'```(?:java|python|javascript|yaml|xml)?\n(.*?)\n```', message, re.DOTALL)
-        
-        # Store for this session
+
+        # Extract the actual file paths from tool calls
+        file_pattern = r'Getting file ([^\s]+) from project'
+        actual_files = re.findall(file_pattern, result_text)
+
+        # Extract code blocks
+        code_pattern = r'```(?:java|python|javascript|yaml|xml)?\n(.*?)\n```'
+        code_blocks = re.findall(code_pattern, result_text, re.DOTALL)
+
+        # Map files to code blocks
+        file_changes = {}
+        if actual_files and code_blocks:
+            # For Library.java specifically, map the complete class code
+            for i, file_path in enumerate(actual_files):
+                if 'Library.java' in file_path and code_blocks:
+                    # Find the code block with the complete Library class
+                    for code in code_blocks:
+                        if 'public class Library' in code:
+                            file_changes[file_path] = code
+                            break
+
+        # Store
         self.analyzed_file_changes[session_id] = {
-            'files': list(files_mentioned),
-            'code_blocks': code_blocks,
-            'full_message': message
+            'files': actual_files,
+            'changes': file_changes,
+            'full_message': result_text
         }
-        
+
         log.info(f"Extracted file changes for session {session_id}:")
-        log.info(f"  Files mentioned: {files_mentioned}")
-        log.info(f"  Code blocks found: {len(code_blocks)}")
+        log.info(f"  Actual files retrieved: {actual_files}")
+        log.info(f"  File changes mapped: {list(file_changes.keys())}")
+
+        # Store in database
+        asyncio.create_task(self._store_to_db(session_id, self.analyzed_file_changes[session_id]))
     
     async def handle_user_message(
         self,

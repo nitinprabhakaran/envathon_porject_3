@@ -367,3 +367,31 @@ class SessionManager:
         if session:
             return session.get('webhook_data', {}).get('analyzed_files', {})
         return {}
+    
+    async def mark_session_resolved(self, session_id: str):
+        """Mark session as resolved when fix is successfully applied"""
+        async with self.get_connection() as conn:
+            await conn.execute(
+                """
+                UPDATE sessions 
+                SET status = 'resolved',
+                    last_activity = CURRENT_TIMESTAMP
+                WHERE id = $1
+                """,
+                session_id
+            )
+            log.info(f"Marked session {session_id} as resolved")
+
+    async def get_sessions_by_mr(self, project_id: str, mr_id: str) -> List[Dict[str, Any]]:
+        """Get sessions associated with a specific MR"""
+        async with self.get_connection() as conn:
+            sessions = await conn.fetch(
+                """
+                SELECT * FROM sessions 
+                WHERE project_id = $1 
+                AND merge_request_id = $2
+                AND status = 'active'
+                """,
+                project_id, mr_id
+            )
+            return [dict(session) for session in sessions]
