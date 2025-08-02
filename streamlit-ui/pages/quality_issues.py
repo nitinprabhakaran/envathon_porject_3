@@ -131,8 +131,22 @@ with col2:
             else:
                 st.info(f"⏰ Session expires in: {time_remaining}")
             
-            # Get metrics
+            # Get metrics and fix attempts
             metrics = session.get("webhook_data", {}).get("quality_metrics", {})
+            fix_attempts = session.get("webhook_data", {}).get("fix_attempts", [])
+            
+            # Show fix iteration info if applicable
+            if fix_attempts:
+                col_iter1, col_iter2 = st.columns([3, 1])
+                with col_iter1:
+                    st.warning(f"🔄 Fix Iterations: {len(fix_attempts)}/5")
+                with col_iter2:
+                    with st.expander("Fix History"):
+                        for i, attempt in enumerate(fix_attempts):
+                            status_icon = "✅" if attempt.get("status") == "success" else "❌" if attempt.get("status") == "failed" else "⏳"
+                            st.text(f"{status_icon} Attempt {i+1}: MR #{attempt['mr_id']}")
+                            st.caption(f"Branch: {attempt['branch']}")
+                            st.caption(f"Status: {attempt.get('status', 'pending')}")
             
             # Quality metrics summary
             col_m1, col_m2, col_m3, col_m4, col_m5 = st.columns(5)

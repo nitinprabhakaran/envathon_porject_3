@@ -178,8 +178,40 @@ Important:
         """Handle user message in conversation"""
         log.info(f"Handling user message for quality session {session_id}")
         
-        # Check for MR creation request
+        # Import session manager
+        from db.session_manager import SessionManager
+        session_manager = SessionManager()
+        
+        # Check message intent
+        is_retry = "still failing" in message.lower() or "same error" in message.lower() or "try again" in message.lower()
         is_mr_request = "create" in message.lower() and ("mr" in message.lower() or "merge request" in message.lower())
+        is_apply_fix = "apply" in message.lower() and "fix" in message.lower()
+        
+        # Check if current branch is a fix branch
+        is_fix_branch = context.branch and context.branch.startswith("fix/sonarqube_")
+        
+        # Get fix attempts
+        fix_attempts = await session_manager.get_fix_attempts(session_id)
+        
+        # Check iteration limit
+        if is_retry or is_apply_fix or (is_mr_request and len(fix_attempts) > 0):
+            if await session_manager.check_iteration_limit(session_id):
+                return """### ❌ Iteration Limit Reached
+
+I've attempted to fix quality issues 5 times but the quality gate continues to fail. This suggests:
+
+1. **Deep architectural issues** requiring refactoring
+2. **Complex security vulnerabilities** needing manual review
+3. **Test coverage gaps** requiring new test implementation
+
+### 🔍 Recommended Actions:
+1. Review all quality issues in SonarQube dashboard
+2. Check the merge requests created for partial fixes
+3. Prioritize critical security vulnerabilities manually
+4. Consider breaking fixes into smaller, focused MRs
+
+### 📋 Fix Attempts Made:
+""" + "\n".join([f"- MR #{att['mr_id']} on branch `{att['branch']}`" for att in fix_attempts])
         
         # Build context prompt
         context_prompt = f"""
@@ -188,6 +220,7 @@ Session Context:
 - SonarQube Key: {context.sonarqube_key}
 - GitLab Project ID: {context.gitlab_project_id}
 - Quality Gate Status: {context.quality_gate_status}
+- Session ID: {session_id}
 """
         
         # Add conversation summary (last analysis)
@@ -197,8 +230,8 @@ Session Context:
                     context_prompt += f"\n\nPrevious Analysis:\n{msg['content']}"
                     break
         
-        # Prepare final prompt
-        if is_mr_request:
+        # Prepare final prompt based on context
+        if is_mr_request and not is_fix_branch:
             timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
             branch_name = f"fix/sonarqube_{timestamp}"
             
@@ -227,6 +260,31 @@ Use these parameters IF creating MR:
 - Description: Automated fixes for bugs, vulnerabilities, and code smells
 
 Remember: Only create an MR if you have actual file content to commit."""
+        elif is_apply_fix or (is_mr_request and is_fix_branch):
+            # Applying fix to existing branch
+            final_prompt = f"""{context_prompt}
+
+The user wants to apply additional fixes to the existing feature branch: {context.branch}
+
+INSTRUCTIONS:
+1. Review the latest quality gate failure and previous attempts
+2. Identify what additional fixes are needed
+3. Apply fixes to the same branch by updating or creating files as needed
+
+Use these parameters for create_merge_request:
+- GitLab Project ID: {context.gitlab_project_id}
+- Source Branch: {context.branch}
+- Target Branch: main
+- Title: Additional quality fixes
+- Description: Iterative fix for quality gate failures
+- update_mode: true
+
+CRITICAL: Set update_mode=true since we're updating an existing branch.
+The files parameter must use the same structure:
+{{
+    "updates": {{}},
+    "creates": {{}}
+}}"""
         else:
             final_prompt = f"{context_prompt}\n\nUser Question: {message}"
         
