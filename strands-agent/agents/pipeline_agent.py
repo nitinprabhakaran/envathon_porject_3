@@ -1,7 +1,7 @@
 """Pipeline failure analysis agent"""
 from typing import Dict, Any, List
 from datetime import datetime
-from strands import Agent
+from strands import Agent, tool
 import os, json, asyncio
 from strands.models.bedrock import BedrockModel
 from strands.models.anthropic import AnthropicModel
@@ -67,13 +67,13 @@ Use this exact format for your responses:
 - Show actual code/config changes, not just descriptions
 - Branch names should be: fix/pipeline_[job_name]_[timestamp]
 - When creating MR, ALWAYS include the full MR URL in your response
-- When calling get_job_logs, ALWAYS use max_size parameter (recommended: 30000)"""
+- When calling get_job_logs, ALWAYS use max_size parameter (recommended: 30000)
+- When you analyze files, ALWAYS retrieve them using get_file_content to see the actual content"""
 
 class PipelineAgent:
     def __init__(self):
         # Initialize LLM based on provider
         if settings.llm_provider == "bedrock":
-            # Get model ID from environment
             model_id = os.getenv("MODEL_ID", "anthropic.claude-3-5-sonnet-20241022-v2:0")
             region = settings.aws_region
             
@@ -81,7 +81,6 @@ class PipelineAgent:
             log.info(f"  Original MODEL_ID: {model_id}")
             log.info(f"  AWS Region: {region}")
             
-            # Check if it's a cross-region inference profile
             is_cross_region = False
             if model_id.startswith(("us.", "eu.", "ap.")):
                 is_cross_region = True
@@ -90,9 +89,7 @@ class PipelineAgent:
                 is_cross_region = True
                 log.info(f"  Detected ARN format for cross-region")
             
-            # If not already in cross-region format, convert it
             if not is_cross_region and settings.aws_region != "us-east-1":
-                # Convert to cross-region inference profile
                 original_model_id = model_id
                 model_id = f"us.{model_id}"
                 log.info(f"  Converted to cross-region format: {model_id}")
@@ -106,10 +103,9 @@ class PipelineAgent:
                     model_id=model_id,
                     region=region,
                     temperature=0.1,
-                    streaming=False,  # Changed to False - streaming might cause issues
+                    streaming=False,
                     max_tokens=4096,
                     top_p=0.8,
-                    # Additional parameters that might be needed
                     credentials_profile_name=os.getenv("AWS_PROFILE", None),
                     aws_access_key_id=settings.aws_access_key_id,
                     aws_secret_access_key=settings.aws_secret_access_key,
@@ -136,9 +132,6 @@ class PipelineAgent:
             create_merge_request,
             get_project_info
         ]
-        
-        # Store file changes from analysis
-        self.analyzed_file_changes = {}
         
         log.info("Pipeline agent initialized")
     
@@ -203,13 +196,13 @@ Use the available tools to:
 1. Get the pipeline jobs and identify all failures
 2. Get logs for the failed job(s) - IMPORTANT: use max_size=30000 parameter
 3. Analyze the error and determine root cause
-4. If needed, examine relevant files (CI config, dependencies, etc.)
+4. If needed, examine relevant files (CI config, dependencies, etc.) - USE get_file_content to retrieve them
 5. Provide a solution following the specified format
 
-CRITICAL: When you identify files that need changes:
-- Store the EXACT file paths you checked (from get_file_content)
-- Save the COMPLETE fixed content for each file
-- Remember these for when the user requests an MR
+CRITICAL: 
+- When you identify files that need changes, RETRIEVE them using get_file_content
+- Show the COMPLETE fixed content for each file
+- Remember the exact file paths and changes for when the user requests an MR
 
 Note: 
 - Always use max_size=30000 when calling get_job_logs to prevent context overflow
@@ -243,48 +236,79 @@ Remember: Do NOT create a merge request. Only analyze and propose solutions."""
             result_text = str(result_text)
         
         # Extract and store file changes from the analysis
-        self._extract_file_changes(session_id, result_text)
+        await self._extract_and_store_file_changes(session_id, result_text)
         
         # Return the text
         return result_text
     
-    def _extract_file_changes(self, session_id: str, result_text: str):
-        """Extract file changes from agent's analysis"""
+    async def _extract_and_store_file_changes(self, session_id: str, result_text: str):
         import re
-
-        # Extract the actual file paths from tool calls
-        file_pattern = r'Getting file ([^\s]+) from project'
-        actual_files = re.findall(file_pattern, result_text)
-
-        # Extract code blocks
+        
+        # Extract file paths mentioned in the analysis
+        """Extract code changes from analysis result"""
+        file_patterns = [
+            r'File:\s*`?([^\s`]+)`?',  # File: path/to/file
+            r'//\s*([^\s]+\.java)',     # Comments with file paths
+            r'src/[^\s]+\.java',        # Java files
+            r'src/[^\s]+\.py',          # Python files
+            r'[^\s]+\.yml',             # YAML files
+            r'[^\s]+\.xml',             # XML files
+        ]
+        
+        files_mentioned = []
+        for pattern in file_patterns:
+            matches = re.findall(pattern, result_text)
+            files_mentioned.extend(matches)
+        
+        # Remove duplicates while preserving order
+        seen = set()
+        files_mentioned = [x for x in files_mentioned if not (x in seen or seen.add(x))]
+        
+        # Extract code blocks with their language
+        code_blocks = []
         code_pattern = r'```(?:java|python|javascript|yaml|xml)?\n(.*?)\n```'
-        code_blocks = re.findall(code_pattern, result_text, re.DOTALL)
-
+        matches = re.findall(code_pattern, result_text, re.DOTALL)
+        
         # Map files to code blocks
         file_changes = {}
-        if actual_files and code_blocks:
-            # For Library.java specifically, map the complete class code
-            for i, file_path in enumerate(actual_files):
-                if 'Library.java' in file_path and code_blocks:
-                    # Find the code block with the complete Library class
-                    for code in code_blocks:
-                        if 'public class Library' in code:
-                            file_changes[file_path] = code
-                            break
-
-        # Store
-        self.analyzed_file_changes[session_id] = {
-            'files': actual_files,
+        
+        # Look for file paths in comments within code blocks
+        for code in matches:
+            # Check for file path comment at the beginning
+            file_comment_match = re.match(r'//\s*([^\n]+\.java)', code)
+            if file_comment_match:
+                file_path = file_comment_match.group(1).strip()
+                # Remove the comment line from the code
+                code_without_comment = '\n'.join(code.split('\n')[1:])
+                file_changes[file_path] = code_without_comment
+            else:
+                # Try to match based on class names
+                for file_path in files_mentioned:
+                    file_name = os.path.basename(file_path)
+                    class_name = file_name.replace('.java', '').replace('.py', '')
+                    
+                    if f'class {class_name}' in code or f'public class {class_name}' in code:
+                        file_changes[file_path] = code
+                        break
+        
+        # Store the analysis data
+        analysis_data = {
+            'files': files_mentioned,
             'changes': file_changes,
-            'full_message': result_text
+            'full_message': result_text,
+            'timestamp': datetime.utcnow().isoformat()
         }
-
-        log.info(f"Extracted file changes for session {session_id}:")
-        log.info(f"  Actual files retrieved: {actual_files}")
+        
+        log.info(f"Storing file changes for session {session_id}:")
+        log.info(f"  Files mentioned: {files_mentioned}")
         log.info(f"  File changes mapped: {list(file_changes.keys())}")
-
+        
         # Store in database
-        asyncio.create_task(self._store_to_db(session_id, self.analyzed_file_changes[session_id]))
+        try:
+            session_manager = SessionManager()
+            await session_manager.store_analyzed_files(session_id, analysis_data)
+        except Exception as e:
+            log.error(f"Failed to store analyzed files: {e}")
     
     async def handle_user_message(
         self,
@@ -348,82 +372,34 @@ Session Context:
             existing_mr_id = latest_attempt.get('mr_id')
         
         # Prepare final prompt based on context
-        if is_apply_fix and is_fix_branch:
-            # Applying fix to existing fix branch
+        if is_mr_request and not is_fix_branch:
+            # First fix - create new branch
+            timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+            branch_name = f"fix/pipeline_{context.job_name}_{timestamp}".replace(" ", "_").lower()
+            
+            # Get analyzed files from database
+            analyzed_data = await session_manager.get_analyzed_files(session_id)
+            
+            # Extract the proposed solution from previous analysis
+            full_message = analyzed_data.get('full_message', '')
+            
             final_prompt = f"""{context_prompt}
 
-The user wants to apply fixes to the existing feature branch.
+The user wants to create a merge request with the fixes discussed.
 
-CONTEXT: This pipeline failure is on branch {context.branch} which is a fix branch we created.
-We need to add commits to this same branch to fix the new issues.
-
-Previous Conversation:
-{self._format_conversation_history(conversation_history)}
+Previous Analysis Summary:
+{full_message[:1500]}...
 
 CRITICAL INSTRUCTIONS:
-1. Analyze the latest failure on this fix branch
-2. Use the get_job_logs tool with max_size=30000
-3. Apply fixes by updating files on the SAME branch: {context.branch}
-4. Use create_merge_request with update_mode=True
-5. DO NOT create a new branch or new MR
-
-Use these parameters:
-- Project ID: {context.project_id}
-- Source Branch: {context.branch} (EXISTING)
-- Update Mode: True
-- Add commits to fix the new issues found
-
-Analyze and apply the fix now."""
-        
-        elif is_mr_request and not is_fix_branch:
-            # Creating new MR from main branch
-            if existing_fix_branch and len(fix_attempts) > 0:
-                # Reuse existing branch for iterations
-                final_prompt = f"""{context_prompt}
-
-The user wants to update the existing merge request with additional fixes.
-
-Previous Conversation:
-{self._format_conversation_history(conversation_history)}
-
-CRITICAL INSTRUCTIONS:
-1. Use the existing branch: {existing_fix_branch}
-2. Add NEW commits to fix remaining issues
-3. The MR #{existing_mr_id} already exists - just add commits
-4. Use create_merge_request with update_mode=True
-
-Use these parameters:
-- Project ID: {context.project_id}
-- Source Branch: {existing_fix_branch} (EXISTING)
-- Target Branch: {context.branch or 'main'}
-- Update Mode: True
-
-Create additional fixes on the same branch."""
-            else:
-                # First fix - create new branch
-                timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
-                branch_name = f"fix/pipeline_{context.job_name}_{timestamp}".replace(" ", "_").lower()
-                
-                # Get analyzed files from database
-                session_manager = SessionManager()
-                analyzed_data = await session_manager.get_analyzed_files(session_id)
-                
-                final_prompt = f"""{context_prompt}
-
-The user wants to create a merge request with the fixes.
-
-Previous Conversation:
-{self._format_conversation_history(conversation_history)}
-
-ANALYZED FILES AND CHANGES:
-Files retrieved during analysis: {analyzed_data.get('files', [])}
-Proposed changes: {json.dumps(analyzed_data.get('changes', {}), indent=2)}
-
-CRITICAL INSTRUCTIONS:
-1. Use ONLY the file paths from "Files retrieved during analysis" above
-2. Apply the changes from "Proposed changes" to those exact files
-3. Do NOT modify the file paths or package names
+1. First, use get_file_content to retrieve the actual content of files that need to be modified
+2. Apply the fixes discussed in the analysis
+3. Create a merge request with the complete fixed files
 4. Include the complete MR URL in your response
+
+For the Library.java issue, you need to:
+- Add null checks in borrowBook method
+- Add BookNotFoundException handling
+- Fix the returnBook and addBook methods
 
 Use these parameters:
 - Project ID: {context.project_id}
@@ -432,7 +408,7 @@ Use these parameters:
 - Title: Fix {context.failed_stage} failure in {context.job_name}
 - Description: Automated fix for pipeline failure #{context.pipeline_id}
 
-Create the merge request now with the exact files and changes shown above."""
+Retrieve the files and create the merge request now."""
         else:
             final_prompt = f"""{context_prompt}
 

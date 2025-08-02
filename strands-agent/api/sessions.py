@@ -160,41 +160,60 @@ def extract_response_text(response) -> str:
     """Extract text from various response formats"""
     response_text = ""
     
-    # Handle different response formats
+    # Handle string response first
+    if isinstance(response, str):
+        return response
+    
+    # Handle Strands agent response objects
+    if hasattr(response, 'message') and isinstance(response.message, str):
+        return response.message
+    
+    # Handle dict response (from agent)
     if isinstance(response, dict):
+        # Check for direct message field
+        if "message" in response:
+            return response["message"]
+        
+        # Check for content field (Anthropic format)
         if "content" in response:
             content = response["content"]
-            if isinstance(content, list):
+            if isinstance(content, str):
+                return content
+            elif isinstance(content, list):
+                texts = []
                 for item in content:
                     if isinstance(item, dict) and "text" in item:
-                        response_text += item["text"]
-            elif isinstance(content, str):
-                response_text = content
-        elif "message" in response:
-            response_text = response["message"]
-        else:
-            response_text = str(response)
-    elif isinstance(response, str):
-        response_text = response
-    elif hasattr(response, 'message'):
-        response_text = response.message
-    elif hasattr(response, 'messages') and response.messages:
-        # Extract from messages list
+                        texts.append(item["text"])
+                return "".join(texts)
+        
+        # Check for role/content structure
+        if "role" in response and response.get("role") == "assistant":
+            content = response.get("content", [])
+            if isinstance(content, str):
+                return content
+            elif isinstance(content, list):
+                texts = []
+                for item in content:
+                    if isinstance(item, dict) and "text" in item:
+                        texts.append(item["text"])
+                return "".join(texts)
+    
+    # Handle messages list format
+    if hasattr(response, 'messages') and response.messages:
         for msg in response.messages:
-            if msg.get('role') == 'assistant':
+            if isinstance(msg, dict) and msg.get('role') == 'assistant':
                 content = msg.get('content', [])
-                if isinstance(content, list):
+                if isinstance(content, str):
+                    return content
+                elif isinstance(content, list):
+                    texts = []
                     for item in content:
                         if isinstance(item, dict) and 'text' in item:
-                            response_text += item['text']
-                elif isinstance(content, str):
-                    response_text = content
-                break
+                            texts.append(item['text'])
+                    return "".join(texts)
     
-    if not response_text:
-        response_text = str(response)
-    
-    return response_text
+    # Fallback to string conversion
+    return str(response)
 
 def extract_files_from_response(response_text: str) -> Dict[str, str]:
     """Extract file paths mentioned in the response"""
