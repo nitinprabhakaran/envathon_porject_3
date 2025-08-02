@@ -83,11 +83,23 @@ async def send_message(session_id: str, request: MessageRequest):
         
         # Extract and store MR URL if present
         mr_url = None
+        mr_id = None
+        
+        # Check for MR URL in the response text
         mr_url_match = re.search(r'https?://[^\s<>"{}|\\^`\[\]]+/merge_requests/\d+', response_text)
         if mr_url_match:
             mr_url = mr_url_match.group(0)
             mr_id = mr_url.split('/')[-1]
-            
+        
+        # Also check if the agent returned MR info in tool response
+        if "web_url" in response_text:
+            # Extract web_url from tool response
+            web_url_match = re.search(r'"web_url":\s*"([^"]+)"', response_text)
+            if web_url_match:
+                mr_url = web_url_match.group(1)
+                mr_id = mr_url.split('/')[-1] if mr_url else None
+        
+        if mr_url:
             await session_manager.update_session_metadata(
                 session_id,
                 {

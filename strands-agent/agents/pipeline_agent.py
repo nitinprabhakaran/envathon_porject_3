@@ -391,8 +391,19 @@ Session Context:
         if is_mr_request and not is_fix_branch:
             timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
             branch_name = f"fix/pipeline_{context.job_name}_{timestamp}".replace(" ", "_").lower()
-
+            
             final_prompt = f"""{context_prompt}
+
+The user wants to create a merge request with the fixes discussed.
+
+INSTRUCTIONS:
+1. First, call get_stored_file_analysis() to retrieve the file analysis from the session
+2. Review the previous analysis in the conversation to understand what fixes are needed
+3. For each file that was tracked:
+   - If it needs changes based on the analysis, determine the complete fixed content
+   - If it's a new file that needs to be created (like BookNotFoundException), create it
+4. Create a merge request with ALL necessary files
+5. Include the complete MR URL in your response
 
 Use these parameters for create_merge_request:
 - Project ID: {context.project_id}
@@ -414,6 +425,31 @@ CRITICAL: The files parameter must be a dictionary with this EXACT structure:
 - Put files that already exist in the repository under "updates"
 - Put new files that need to be created under "creates"
 - Include the COMPLETE content for each file, not just the changes"""
+        elif is_apply_fix or (is_mr_request and is_fix_branch):
+            # Applying fix to existing branch
+            final_prompt = f"""{context_prompt}
+
+The user wants to apply additional fixes to the existing feature branch: {context.branch}
+
+INSTRUCTIONS:
+1. Review the latest failure and previous attempts
+2. Identify what additional changes are needed
+3. Apply fixes to the same branch by updating or creating files as needed
+
+Use these parameters for create_merge_request:
+- Project ID: {context.project_id}
+- Source Branch: {context.branch}
+- Target Branch: main
+- Title: Additional fixes for {context.failed_stage} failure
+- Description: Iterative fix for pipeline failure #{context.pipeline_id}
+- update_mode: true
+
+CRITICAL: Set update_mode=true since we're updating an existing branch.
+The files parameter must use the same structure:
+{{
+    "updates": {{}},
+    "creates": {{}}
+}}"""
         else:
             final_prompt = f"""{context_prompt}
 
