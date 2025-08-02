@@ -39,10 +39,10 @@ async def check_quality_gate_in_logs(webhook_data: Dict[str, Any]) -> bool:
         
         log.info(f"Checking most recent failed job: {job_name} (ID: {job_id})")
         
-        # Skip checking if it's not a quality/sonar related job name
-        if not any(keyword in job_name.lower() for keyword in ['sonar', 'quality', 'scan']):
-            log.info(f"Job {job_name} is not a quality-related job, skipping quality check")
-            return False
+        # If it's a sonar/quality job, assume it's a quality failure
+        if any(keyword in job_name.lower() for keyword in ['sonar', 'quality']):
+            log.info(f"Job {job_name} is a quality-related job, treating as quality gate failure")
+            return True
         
         logs = await get_job_logs(job_id, project_id)
         
@@ -82,7 +82,7 @@ async def handle_gitlab_webhook(request: Request):
         if data.get("object_attributes", {}).get("status") != "failed":
             return {"status": "ignored", "reason": "Not a failure event"}
         
-        # Check if this is a quality gate failure by analyzing logs
+        # Check if this is a quality gate failure by analyzing logs BEFORE creating any session
         is_quality_failure = await check_quality_gate_in_logs(data)
         
         if is_quality_failure:
