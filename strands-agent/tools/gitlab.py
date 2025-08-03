@@ -208,12 +208,24 @@ async def create_merge_request(
     
     async with await get_gitlab_client() as client:
         try:
-            if not update_mode:
+            branch_exists = False
+            try:
+                branch_check = await client.get(f"/projects/{project_id}/repository/branches/{source_branch}")
+                if branch_check.status_code == 200:
+                    branch_exists = True
+                    log.info(f"Branch {source_branch} already exists")
+            except:
+                pass
+            
+            if not branch_exists and not update_mode:
                 # Create new branch from target
                 await client.post(
                     f"/projects/{project_id}/repository/branches",
                     json={"branch": source_branch, "ref": target_branch}
                 )
+            elif branch_exists:
+                update_mode = True
+                log.info(f"Switching to update mode for existing branch {source_branch}")
             
             # Process updates and creates based on LLM instructions
             files_to_process = []
@@ -315,7 +327,23 @@ async def create_merge_request(
                     "files_processed": files_processed
                 }
             else:
-                # Return existing MR info
+                # Return existing MR info - we need to find it
+                mrs_response = await client.get(
+                    f"/projects/{project_id}/merge_requests",
+                    params={"source_branch": source_branch, "state": "opened"}
+                )
+                if mrs_response.status_code == 200:
+                    mrs = mrs_response.json()
+                    if mrs:
+                        mr = mrs[0]
+                        return {
+                            "id": mr.get("iid"),
+                            "web_url": mr.get("web_url"),
+                            "message": "Added commits to existing branch",
+                            "branch": source_branch,
+                            "files_processed": files_processed
+                        }
+                
                 return {
                     "message": "Added commits to existing branch",
                     "branch": source_branch,

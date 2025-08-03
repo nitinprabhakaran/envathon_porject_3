@@ -41,8 +41,16 @@ CREATE TABLE IF NOT EXISTS sessions (
     
     -- Fix tracking fields
     current_fix_branch VARCHAR(255),
-    fix_iteration INTEGER DEFAULT 0
+    fix_iteration INTEGER DEFAULT 0,
+    parent_session_id UUID  -- NEW FIELD
 );
+
+-- Add foreign key constraint for parent_session_id
+ALTER TABLE sessions 
+ADD CONSTRAINT fk_parent_session 
+FOREIGN KEY (parent_session_id) 
+REFERENCES sessions(id) 
+ON DELETE SET NULL;
 
 -- Create tracked files table for better file management
 CREATE TABLE IF NOT EXISTS tracked_files (
@@ -95,6 +103,7 @@ CREATE INDEX IF NOT EXISTS idx_sessions_created ON sessions(created_at);
 CREATE INDEX IF NOT EXISTS idx_sessions_expires ON sessions(expires_at);
 CREATE INDEX IF NOT EXISTS idx_sessions_quality_gate ON sessions(quality_gate_status);
 CREATE INDEX IF NOT EXISTS idx_sessions_fix_branch ON sessions(current_fix_branch);
+CREATE INDEX IF NOT EXISTS idx_sessions_parent ON sessions(parent_session_id);  -- NEW INDEX
 CREATE INDEX IF NOT EXISTS idx_tracked_files_session ON tracked_files(session_id);
 CREATE INDEX IF NOT EXISTS idx_tracked_files_path ON tracked_files(session_id, file_path);
 CREATE INDEX IF NOT EXISTS idx_fix_attempts_session ON fix_attempts(session_id, attempt_number);
@@ -127,5 +136,12 @@ BEGIN
     IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
                    WHERE table_name = 'sessions' AND column_name = 'fix_iteration') THEN
         ALTER TABLE sessions ADD COLUMN fix_iteration INTEGER DEFAULT 0;
+    END IF;
+    
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
+                   WHERE table_name = 'sessions' AND column_name = 'parent_session_id') THEN
+        ALTER TABLE sessions ADD COLUMN parent_session_id UUID;
+        ALTER TABLE sessions ADD CONSTRAINT fk_parent_session 
+        FOREIGN KEY (parent_session_id) REFERENCES sessions(id) ON DELETE SET NULL;
     END IF;
 END $$;

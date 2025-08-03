@@ -363,16 +363,15 @@ Session Context:
 """
         
         # Prepare final prompt based on context
-        if is_mr_request:
-            if current_fix_branch and len(fix_attempts) > 0:
-                # Update existing branch
+        if is_mr_request or (is_apply_fix and current_fix_branch):
+            if current_fix_branch:
                 final_prompt = f"""{context_prompt}
 
 The user wants to apply additional fixes to the existing branch.
 
 INSTRUCTIONS:
 1. Use available tools to get stored analysis and tracked files
-2. Review what changes were already made
+2. Review what changes were already made on branch: {current_fix_branch}
 3. Apply additional fixes to the same branch
 4. Update the existing merge request
 

@@ -358,16 +358,15 @@ Session Context:
                     break
         
         # Prepare final prompt based on context
-        if is_mr_request:
-            if current_fix_branch and len(fix_attempts) > 0:
-                # Update existing branch
+        if is_mr_request or (is_apply_fix and current_fix_branch):
+            if current_fix_branch:
                 final_prompt = f"""{context_prompt}
 
 The user wants to apply additional fixes to the existing branch.
 
 INSTRUCTIONS:
 1. Use available tools to get stored analysis and tracked files
-2. Review what changes were already made
+2. Review what changes were already made on branch: {current_fix_branch}
 3. Apply additional fixes to the same branch
 4. Update the existing merge request
 
@@ -479,35 +478,35 @@ The files parameter must be a dictionary with this structure:
             # Extract branch name and MR details from result
             branch_match = re.search(r'(?:Source Branch|Branch):\s*([^\s\n]+)', result_text)
             mr_url_match = re.search(r'https?://[^\s<>"{}|\\^`\[\]]+/merge_requests/\d+', result_text)
-            
+
             if branch_match and mr_url_match:
                 branch_name = branch_match.group(1)
                 mr_url = mr_url_match.group(0)
                 mr_id = mr_url.split('/')[-1]
-                
+
                 # Extract files changed from the result
                 files_changed = []
                 # Look for file paths in the response
                 file_pattern = r'(?:File|Updated?|Changed?|Modified?):\s*`?([^\s`\n]+\.[a-zA-Z]+)`?'
                 file_matches = re.findall(file_pattern, result_text)
                 files_changed.extend(file_matches)
-                
+
                 # Also check for files in structured response
                 if "files_processed" in result_text:
                     processed_pattern = r'(?:UPDATE|CREATE):\s*([^\s\n]+)'
                     processed_matches = re.findall(processed_pattern, result_text)
                     files_changed.extend(processed_matches)
-                
+
                 # Remove duplicates
                 files_changed = list(set(files_changed))
-                
+
                 # Create fix attempt record
                 attempt_num = await self._session_manager.create_fix_attempt(
                     session_id,
                     branch_name,
                     files_changed
                 )
-                
+
                 # Update session with MR info and current fix branch
                 await self._session_manager.update_session_metadata(
                     session_id,
@@ -517,7 +516,7 @@ The files parameter must be a dictionary with this structure:
                         "current_fix_branch": branch_name
                     }
                 )
-                
+
                 await self._session_manager.update_fix_attempt(
                     session_id,
                     attempt_num,

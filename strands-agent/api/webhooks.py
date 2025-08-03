@@ -17,6 +17,19 @@ session_manager = SessionManager()
 pipeline_agent = PipelineAgent()
 quality_agent = QualityAgent()
 
+async def get_existing_fix_branch(session_type: str, project_id: str) -> tuple[Optional[str], Optional[str]]:
+    """Get existing fix branch and parent session for a project"""
+    existing_sessions = await session_manager.get_active_sessions()
+    
+    for session in existing_sessions:
+        if (session.get("session_type") == session_type and 
+            session.get("project_id") == project_id and
+            session.get("current_fix_branch") and
+            session.get("merge_request_url")):
+            return session.get("current_fix_branch"), session["id"]
+    
+    return None, None
+
 async def check_quality_gate_in_logs(webhook_data: Dict[str, Any]) -> bool:
     """Check if pipeline failure is due to quality gate by analyzing logs"""
     from tools.gitlab import get_job_logs
@@ -112,7 +125,7 @@ async def handle_gitlab_webhook(request: Request):
                     session.get("project_id") == project_id and
                     session.get("current_fix_branch") == ref and
                     session.get("status") == "active"):
-                    
+
                     # Update fix attempt status
                     fix_attempts = await session_manager.get_fix_attempts(session['id'])
                     for attempt in fix_attempts:
@@ -123,18 +136,18 @@ async def handle_gitlab_webhook(request: Request):
                                 "failed",
                                 error_details=f"{session_type.capitalize()} still failing"
                             )
-                    
+
                     # Add system message for user awareness
                     await session_manager.add_message(
                         session['id'],
                         "system",
                         f"Fix attempt on branch {ref} failed - {session_type} still not passing"
                     )
-                    
+
                     # Store fix attempt in webhook_data for UI
                     webhook_data = session.get("webhook_data", {})
                     fix_attempts_data = webhook_data.get("fix_attempts", [])
-                    
+
                     # Find and update the existing attempt
                     attempt_updated = False
                     for attempt in fix_attempts_data:
@@ -143,7 +156,7 @@ async def handle_gitlab_webhook(request: Request):
                             attempt["failed_at"] = datetime.utcnow().isoformat()
                             attempt_updated = True
                             break
-                    
+
                     # If not found, add new attempt
                     if not attempt_updated:
                         fix_attempts_data.append({
@@ -153,24 +166,24 @@ async def handle_gitlab_webhook(request: Request):
                             "status": "failed",
                             "timestamp": datetime.utcnow().isoformat()
                         })
-                    
+
                     webhook_data["fix_attempts"] = fix_attempts_data
                     await session_manager.update_session_metadata(session['id'], {"webhook_data": webhook_data})
-        
+
                     log.info(f"Updated failed fix attempt for {session_type} session {session['id']}")
                     return {
                         "status": "updated",
                         "session_id": session['id'],
                         "message": "Fix attempt failed, ready for next iteration"
                     }
-        
+
         # Check for existing active session (non-fix branch)
         for session in existing_sessions:
             if (session.get("session_type") == session_type and 
                 session.get("project_id") == project_id and
                 session.get("status") == "active" and
                 not ref.startswith(fix_branch_prefix)):  # Don't match fix branches
-                
+
                 log.info(f"Found existing {session_type} session {session['id']} for project {project_id}")
                 return {
                     "status": "ignored",
@@ -240,6 +253,9 @@ async def create_quality_session(data: Dict[str, Any]):
     sonarqube_key = project.get("name")
     gitlab_project_id = str(project.get("id"))
     
+    # Check for existing fix branch
+    current_fix_branch, parent_session_id = await get_existing_fix_branch("quality", gitlab_project_id)
+    
     # Get failed job details
     failed_jobs = [job for job in data.get("builds", []) if job.get("status") == "failed"]
     failed_jobs.sort(key=lambda x: x.get("finished_at", ""), reverse=True)
@@ -255,7 +271,9 @@ async def create_quality_session(data: Dict[str, Any]):
         "pipeline_id": str(pipeline.get("id")),
         "pipeline_url": pipeline.get("url"),
         "job_name": failed_job.get("name", "sonarqube-check"),
-        "failed_stage": failed_job.get("stage", "scan")
+        "failed_stage": failed_job.get("stage", "scan"),
+        "current_fix_branch": current_fix_branch,
+        "parent_session_id": parent_session_id
     }
     
     session_id = str(uuid.uuid4())
@@ -294,14 +312,21 @@ async def create_pipeline_session(data: Dict[str, Any]):
     project = data.get("project", {})
     pipeline = data.get("object_attributes", {})
     
+    project_id = str(project.get("id"))
+    
+    # Check for existing fix branch
+    current_fix_branch, parent_session_id = await get_existing_fix_branch("pipeline", project_id)
+    
     metadata = {
-        "project_id": str(project.get("id")),
+        "project_id": project_id,
         "project_name": project.get("name"),
         "pipeline_id": str(pipeline.get("id")),
         "pipeline_url": pipeline.get("url"),
         "branch": pipeline.get("ref"),
         "commit_sha": pipeline.get("sha"),
-        "webhook_data": data
+        "webhook_data": data,
+        "current_fix_branch": current_fix_branch,
+        "parent_session_id": parent_session_id
     }
     
     # Extract failed job info
