@@ -273,6 +273,10 @@ Remember: Do NOT create a merge request. Only analyze and propose solutions."""
     
     async def _store_analysis_data(self, session_id: str, result_text: str):
         """Store analysis data"""
+        # Ensure result_text is a string
+        if not isinstance(result_text, str):
+            result_text = str(result_text)
+
         # Extract all code blocks from the analysis
         code_blocks = []
 

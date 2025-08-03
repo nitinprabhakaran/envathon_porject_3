@@ -219,10 +219,12 @@ async def create_merge_request(
             
             if not branch_exists and not update_mode:
                 # Create new branch from target
-                await client.post(
-                    f"/projects/{project_id}/repository/branches",
-                    json={"branch": source_branch, "ref": target_branch}
-                )
+                # await client.post(
+                #     f"/projects/{project_id}/repository/branches",
+                #     json={"branch": source_branch, "ref": target_branch}
+                # )
+                # log.info(f"Created new branch {source_branch} from {target_branch}")
+                pass
             elif branch_exists:
                 update_mode = True
                 log.info(f"Switching to update mode for existing branch {source_branch}")
@@ -289,7 +291,8 @@ async def create_merge_request(
                 json={
                     "branch": source_branch,
                     "commit_message": f"Fix: {title}",
-                    "actions": actions
+                    "actions": actions,
+                    "start_branch": target_branch if not branch_exists else None
                 }
             )
             
