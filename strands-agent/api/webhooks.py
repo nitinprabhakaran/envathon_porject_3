@@ -210,25 +210,59 @@ async def handle_pipeline_success(project_id: str, ref: str):
     # Check if this is a fix branch that succeeded
     if ref and ref.startswith("fix/"):
         for session in sessions:
-            if (session.get("project_id") == project_id and 
-                session.get("current_fix_branch") == ref and
-                session.get("status") == "active"):
-                
-                # Update fix attempt status
-                await update_fix_attempt_status(session["id"], ref, "success")
-                await session_manager.mark_session_resolved(session["id"])
-                log.info(f"Marked session {session['id']} as resolved - fix branch succeeded")
-                
-    # Check if this is main/master branch after merge
-    elif ref in ["main", "master"]:
+            if session.get("project_id") == project_id and session.get("status") == "active":
+                # Check fix attempts for THIS EXACT branch
+                fix_attempts = await session_manager.get_fix_attempts(session["id"])
+                for attempt in fix_attempts:
+                    if attempt.get("branch_name") == ref and attempt["status"] == "pending":
+                        # This is OUR fix branch that succeeded
+                        await session_manager.update_fix_attempt(
+                            session["id"],
+                            attempt["attempt_number"],
+                            "success"
+                        )
+                        
+                        # Add success message with pipeline URL
+                        pipeline_url = f"{settings.gitlab_url}/{session.get('project_name')}/-/pipelines"
+                        await session_manager.add_message(
+                            session["id"],
+                            "assistant",
+                            f"✅ **Fix Successful!**\n\n"
+                            f"The pipeline on branch `{ref}` has passed all checks.\n\n"
+                            f"**Next Steps:**\n"
+                            f"1. Review the changes in the merge request\n"
+                            f"2. Merge when ready: {attempt.get('merge_request_url')}\n"
+                            f"3. The fix will be applied to the target branch after merge\n\n"
+                            f"[View Pipeline]({pipeline_url})"
+                        )
+                        
+                        log.info(f"Marked fix attempt as successful for session {session['id']}")
+                        return {"status": "updated", "action": "fix_succeeded"}
+    
+    # Check if this is target branch after merge
+    else:
         for session in sessions:
             if (session.get("project_id") == project_id and 
                 session.get("merge_request_url") and
-                session.get("status") == "active" and
-                session.get("current_fix_branch")):
+                session.get("status") == "active"):
                 
-                await session_manager.mark_session_resolved(session["id"])
-                log.info(f"Marked session {session['id']} as resolved - main branch succeeded after merge")
+                # Check if branch matches the session's target branch
+                target_branch = session.get("branch", "main")
+                if ref == target_branch:
+                    # Check if any fix attempt was recently successful
+                    fix_attempts = await session_manager.get_fix_attempts(session["id"])
+                    for attempt in fix_attempts:
+                        if attempt["status"] == "success":
+                            await session_manager.mark_session_resolved(session["id"])
+                            await session_manager.add_message(
+                                session["id"],
+                                "assistant",
+                                f"✅ **Issue Fully Resolved!**\n\n"
+                                f"The fix has been merged and the pipeline on `{ref}` branch is passing.\n"
+                                f"The issue has been successfully resolved."
+                            )
+                            log.info(f"Marked session {session['id']} as resolved - target branch succeeded after merge")
+                            return {"status": "resolved", "action": "target_branch_success"}
     
     return {"status": "processed", "action": "checked_for_resolution"}
 
