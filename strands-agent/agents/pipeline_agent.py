@@ -248,18 +248,23 @@ Remember: Do NOT create a merge request. Only analyze and propose solutions."""
         result = await agent.invoke_async(prompt)
         log.info(f"Analysis complete for session {session_id}")
         
+        # Extract text from result
         if hasattr(result, 'message'):
             result_text = result.message
         elif hasattr(result, 'content'):
             result_text = result.content
         elif isinstance(result, dict):
-            result_text = result.get('content', str(result))
+            # Handle dict response
+            if "content" in result:
+                content = result["content"]
+                if isinstance(content, list) and len(content) > 0:
+                    result_text = content[0].get("text", str(result))
+                else:
+                    result_text = str(content)
+            else:
+                result_text = result.get("message", str(result))
         else:
             result_text = str(result)
-
-        # Ensure it's a string
-        if not isinstance(result_text, str):
-            result_text = str(result_text)
         
         # Store analysis result
         await self._store_analysis_data(session_id, result_text)
