@@ -518,6 +518,7 @@ Note: When retrieving logs, always use max_size=30000 to prevent overflow."""
                     branch_name,
                     files_changed
                 )
+                log.info(f"Created fix attempt #{attempt_num} for branch {branch_name}")
 
                 # Update session with MR info and current fix branch
                 await self._session_manager.update_session_metadata(
@@ -536,6 +537,7 @@ Note: When retrieving logs, always use max_size=30000 to prevent overflow."""
                     mr_id,
                     mr_url
                 )
+                log.info(f"Updated fix attempt #{attempt_num} for branch {branch_name}")
         
         log.debug(f"Generated response for session {session_id}")
         

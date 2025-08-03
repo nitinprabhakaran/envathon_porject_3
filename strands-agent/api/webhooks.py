@@ -220,7 +220,9 @@ async def handle_pipeline_success(project_id: str, ref: str):
                 log.info(f"Checking session {session['id']} for fix attempts")
                 # Check fix attempts for THIS EXACT branch
                 fix_attempts = await session_manager.get_fix_attempts(session["id"])
+                log.info(f"Found {len(fix_attempts)} fix attempts for session {session['id']}")
                 for attempt in fix_attempts:
+                    log.info(f"Fix attempt: branch={attempt.get('branch_name')}, status={attempt.get('status')}")
                     if attempt.get("branch_name") == ref and attempt["status"] == "pending":
                         # This is OUR fix branch that succeeded
                         await session_manager.update_fix_attempt(
