@@ -123,59 +123,59 @@ async def handle_gitlab_webhook(request: Request):
             for session in existing_sessions:
                 if (session.get("session_type") == session_type and 
                     session.get("project_id") == project_id and
-                    session.get("current_fix_branch") == ref and
                     session.get("status") == "active"):
 
-                    # Update fix attempt status
+                    # Check if this session has an MR on this branch
                     fix_attempts = await session_manager.get_fix_attempts(session['id'])
                     for attempt in fix_attempts:
-                        if attempt["branch_name"] == ref and attempt["status"] == "pending":
-                            await session_manager.update_fix_attempt(
+                        if attempt.get("branch_name") == ref:
+                            # This is a failure of a fix branch from this session
+                            if attempt["status"] == "pending":
+                                await session_manager.update_fix_attempt(
+                                    session['id'],
+                                    attempt["attempt_number"],
+                                    "failed",
+                                    error_details=f"{session_type.capitalize()} still failing"
+                                )
+
+                            # Add system message for user awareness
+                            await session_manager.add_message(
                                 session['id'],
-                                attempt["attempt_number"],
-                                "failed",
-                                error_details=f"{session_type.capitalize()} still failing"
+                                "system",
+                                f"Fix attempt on branch {ref} failed - {session_type} still not passing"
                             )
 
-                    # Add system message for user awareness
-                    await session_manager.add_message(
-                        session['id'],
-                        "system",
-                        f"Fix attempt on branch {ref} failed - {session_type} still not passing"
-                    )
+                            # Update webhook_data with fix attempt info
+                            webhook_data = session.get("webhook_data", {})
+                            fix_attempts_data = webhook_data.get("fix_attempts", [])
 
-                    # Store fix attempt in webhook_data for UI
-                    webhook_data = session.get("webhook_data", {})
-                    fix_attempts_data = webhook_data.get("fix_attempts", [])
+                            # Update or add attempt
+                            attempt_updated = False
+                            for fa in fix_attempts_data:
+                                if fa.get("branch") == ref:
+                                    fa["status"] = "failed"
+                                    fa["failed_at"] = datetime.utcnow().isoformat()
+                                    attempt_updated = True
+                                    break
 
-                    # Find and update the existing attempt
-                    attempt_updated = False
-                    for attempt in fix_attempts_data:
-                        if attempt.get("branch") == ref:
-                            attempt["status"] = "failed"
-                            attempt["failed_at"] = datetime.utcnow().isoformat()
-                            attempt_updated = True
-                            break
+                            if not attempt_updated:
+                                fix_attempts_data.append({
+                                    "branch": ref,
+                                    "mr_id": attempt.get("merge_request_id"),
+                                    "mr_url": attempt.get("merge_request_url"),
+                                    "status": "failed",
+                                    "timestamp": datetime.utcnow().isoformat()
+                                })
 
-                    # If not found, add new attempt
-                    if not attempt_updated:
-                        fix_attempts_data.append({
-                            "branch": ref,
-                            "mr_id": session.get("merge_request_id"),
-                            "mr_url": session.get("merge_request_url"),
-                            "status": "failed",
-                            "timestamp": datetime.utcnow().isoformat()
-                        })
+                            webhook_data["fix_attempts"] = fix_attempts_data
+                            await session_manager.update_session_metadata(session['id'], {"webhook_data": webhook_data})
 
-                    webhook_data["fix_attempts"] = fix_attempts_data
-                    await session_manager.update_session_metadata(session['id'], {"webhook_data": webhook_data})
-
-                    log.info(f"Updated failed fix attempt for {session_type} session {session['id']}")
-                    return {
-                        "status": "updated",
-                        "session_id": session['id'],
-                        "message": "Fix attempt failed, ready for next iteration"
-                    }
+                            log.info(f"Updated failed fix attempt for {session_type} session {session['id']}")
+                            return {
+                                "status": "updated", 
+                                "session_id": session['id'],
+                                "message": "Fix attempt failed, ready for next iteration"
+                            }
 
         # Check for existing active session (non-fix branch)
         for session in existing_sessions:
