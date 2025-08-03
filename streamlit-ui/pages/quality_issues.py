@@ -1,4 +1,3 @@
-# streamlit-ui/pages/quality_issues.py
 """Quality issues page"""
 import streamlit as st
 import asyncio
@@ -51,102 +50,114 @@ def calculate_time_remaining(expires_at):
 # Header
 st.title("📊 Quality Issues")
 
-# Create layout - adjusted column widths
+# Top navigation bar
+col_nav1, col_nav2, col_nav3 = st.columns([2, 2, 1])
+with col_nav1:
+    date_range = st.date_input(
+        "Date Range",
+        value=(datetime.now() - timedelta(days=7), datetime.now()),
+        key="quality_date_range"
+    )
+with col_nav2:
+    severity_filter = st.multiselect(
+        "Severity Filter",
+        ["Critical", "Major", "Minor"],
+        default=["Critical", "Major"],
+        key="severity_filter"
+    )
+with col_nav3:
+    if st.button("🔄 Refresh", key="refresh_quality_main"):
+        st.rerun()
+
+# Main layout - adjusted column widths
 col1, col2, col3 = st.columns([1.5, 3, 1.5])
 
 # Column 1: Session list
 with col1:
-    st.subheader("Active Sessions")
+    st.subheader("Projects")
     
-    if st.button("🔄 Refresh", key="refresh_quality"):
-        st.rerun()
-    
-    # Fetch sessions
-    async def fetch_sessions():
-        return await st.session_state.api_client.get_active_sessions()
-    
-    try:
-        sessions = asyncio.run(fetch_sessions())
+    # Fetch sessions and group by project
+    async def fetch_and_group_sessions():
+        sessions = await st.session_state.api_client.get_active_sessions()
         quality_sessions = [s for s in sessions if s.get("session_type") == "quality"]
         
-        # Remove duplicates based on project_name (keep latest)
-        seen_projects = {}
+        # Group by project
+        groups = {}
         for session in quality_sessions:
-            project_name = session.get("project_name", "Unknown")
-            if project_name not in seen_projects or session.get("created_at", "") > seen_projects[project_name].get("created_at", ""):
-                seen_projects[project_name] = session
+            project = session.get("project_name", "Unknown")
+            
+            if project not in groups:
+                groups[project] = []
+            
+            groups[project].append(session)
         
-        quality_sessions = list(seen_projects.values())
+        return groups
+    
+    try:
+        failure_groups = asyncio.run(fetch_and_group_sessions())
         
-        if not quality_sessions:
+        if not failure_groups:
             st.info("No active quality sessions")
         else:
-            for session in quality_sessions:
-                session_id = session["id"]
-                project_name = session.get("project_name", "Unknown")
-                gate_status = session.get("quality_gate_status", "ERROR")
-                total_issues = session.get("total_issues", 0)
-                time_remaining = calculate_time_remaining(session.get('expires_at'))
+            # Project expandables
+            for project_name, sessions in failure_groups.items():
+                # Count active issues
+                active_count = sum(1 for s in sessions if s.get("status") == "active")
+                total_issues = sum(s.get("total_issues", 0) for s in sessions)
+                icon = "🔴" if active_count > 0 else "🟢"
                 
-                # Color code based on time remaining
-                if time_remaining == "Expired":
-                    time_color = "🔴"
-                elif "m" in time_remaining and not "h" in time_remaining:
-                    time_color = "🟡"
-                else:
-                    time_color = "🟢"
-                
-                # Session button
-                button_label = f"🚨 {project_name}\n{total_issues} issues\n{time_color} {time_remaining}"
-                
-                if st.button(button_label, key=f"session_{session_id}", use_container_width=True):
-                    st.session_state.selected_quality_session = session_id
-                    log.info(f"Selected quality session: {session_id}")
-                    st.rerun()
-                
+                with st.expander(f"{icon} {project_name} ({total_issues} issues)", expanded=active_count > 0):
+                    for session in sessions:
+                        session_id = session["id"]
+                        time_remaining = calculate_time_remaining(session.get('expires_at'))
+                        fix_attempts = session.get("webhook_data", {}).get("fix_attempts", [])
+                        
+                        # Color code based on time remaining
+                        if time_remaining == "Expired":
+                            time_color = "🔴"
+                        elif "m" in time_remaining and not "h" in time_remaining:
+                            time_color = "🟡"
+                        else:
+                            time_color = "🟢"
+                        
+                        # Session button
+                        button_label = f"Quality Gate Failed\n{session.get('total_issues', 0)} issues\n{time_color} {time_remaining}"
+                        if fix_attempts:
+                            button_label += f"\n🔄 {len(fix_attempts)} fix(es)"
+                        
+                        if st.button(
+                            button_label,
+                            key=f"quality_{session_id}",
+                            use_container_width=True
+                        ):
+                            st.session_state.selected_quality_session = session
+                            st.rerun()
+    
     except Exception as e:
-        st.error(f"Failed to load sessions: {e}")
+        st.error(f"Failed to load projects: {e}")
 
 # Column 2: Main Content Area (Analysis & Chat)
 with col2:
     if st.session_state.selected_quality_session:
-        session_id = st.session_state.selected_quality_session
+        session = st.session_state.selected_quality_session
+        session_id = session["id"]
         
+        st.subheader("Quality Analysis")
+        
+        # Load full session data
         try:
-            # Load session details
-            session = asyncio.run(st.session_state.api_client.get_session(session_id))
-            
-            # Ensure conversation_history is properly parsed
-            if isinstance(session.get("conversation_history"), str):
-                session["conversation_history"] = json.loads(session["conversation_history"])
-            
-            # Session header
-            st.subheader(f"Quality Analysis - {session.get('project_name')}")
+            full_session = asyncio.run(st.session_state.api_client.get_session(session_id))
+            messages = full_session.get("conversation_history", [])
+            fix_attempts = full_session.get("webhook_data", {}).get("fix_attempts", [])
             
             # Show expiration timer at top
-            time_remaining = calculate_time_remaining(session.get('expires_at'))
+            time_remaining = calculate_time_remaining(full_session.get('expires_at'))
             if time_remaining == "Expired":
                 st.error(f"⏰ This session has expired and will be cleaned up")
             elif "m" in time_remaining and not "h" in time_remaining:
                 st.warning(f"⏰ Session expires in: {time_remaining}")
             else:
                 st.info(f"⏰ Session expires in: {time_remaining}")
-            
-            # Get metrics and fix attempts
-            metrics = session.get("webhook_data", {}).get("quality_metrics", {})
-            fix_attempts = session.get("webhook_data", {}).get("fix_attempts", [])
-
-            if not metrics.get("total_issues"):
-                metrics["total_issues"] = session.get("total_issues", 0)
-                metrics["critical_issues"] = session.get("critical_issues", 0)
-                metrics["major_issues"] = session.get("major_issues", 0)
-                metrics["bug_count"] = session.get("bug_count", 0)
-                metrics["vulnerability_count"] = session.get("vulnerability_count", 0)
-                metrics["code_smell_count"] = session.get("code_smell_count", 0)
-                metrics["coverage"] = session.get("coverage", "0")
-                metrics["reliability_rating"] = session.get("reliability_rating", "E")
-                metrics["security_rating"] = session.get("security_rating", "E")
-                metrics["maintainability_rating"] = session.get("maintainability_rating", "E")
             
             # Show fix iteration info if applicable
             if fix_attempts:
@@ -161,79 +172,24 @@ with col2:
                             st.caption(f"Branch: {attempt['branch']}")
                             st.caption(f"Status: {attempt.get('status', 'pending')}")
             
-            # Quality metrics summary
-            col_m1, col_m2, col_m3, col_m4, col_m5 = st.columns(5)
+            # Quality metrics summary cards
+            col_m1, col_m2, col_m3 = st.columns(3)
             
             with col_m1:
-                st.metric("Quality Gate", session.get("quality_gate_status", "ERROR"))
+                st.metric("🐛 Bugs", full_session.get("bug_count", 0))
             with col_m2:
-                st.metric("Total Issues", session.get("total_issues", metrics.get("total_issues", 0)))
+                st.metric("🔒 Vulnerabilities", full_session.get("vulnerability_count", 0))
             with col_m3:
-                st.metric("Critical", session.get("critical_issues", metrics.get("critical_issues", 0)))
-            with col_m4:
-                st.metric("Major", session.get("major_issues", metrics.get("major_issues", 0)))
-            with col_m5:
-                coverage = metrics.get("coverage", session.get("coverage", "0"))
-                st.metric("Coverage", f"{float(coverage or 0):.1f}%")
+                st.metric("💩 Code Smells", full_session.get("code_smell_count", 0))
             
-            # Issue breakdown
-            st.markdown("#### Issue Breakdown")
-            issue_cols = st.columns(3)
-            
-            with issue_cols[0]:
-                bugs = metrics.get("bug_count", session.get("bug_count", 0))
-                st.info(f"🐛 **Bugs**: {bugs} issues")
-            with issue_cols[1]:
-                vulns = metrics.get("vulnerability_count", session.get("vulnerability_count", 0))
-                st.warning(f"🔒 **Vulnerabilities**: {vulns} issues")
-            with issue_cols[2]:
-                smells = metrics.get("code_smell_count", session.get("code_smell_count", 0))
-                st.success(f"💩 **Code Smells**: {smells} issues")
-            
-            # Quality ratings
-            st.markdown("#### Quality Ratings")
-            rating_cols = st.columns(3)
-            
-            with rating_cols[0]:
-                rel_rating = metrics.get("reliability_rating", session.get("reliability_rating", "?"))
-                st.markdown(f"**Reliability**: {rel_rating}")
-            with rating_cols[1]:
-                sec_rating = metrics.get("security_rating", session.get("security_rating", "?"))
-                st.markdown(f"**Security**: {sec_rating}")
-            with rating_cols[2]:
-                main_rating = metrics.get("maintainability_rating", session.get("maintainability_rating", "?"))
-                st.markdown(f"**Maintainability**: {main_rating}")
-            
-            st.divider()
-            
-            # Load conversation
-            messages = session.get("conversation_history", [])
-            if session_id not in st.session_state.quality_messages:
-                st.session_state.quality_messages[session_id] = messages
-            
-            # Display latest analysis
-            st.markdown("### 📋 Latest Analysis")
-            analysis_found = False
-            for msg in reversed(messages):
-                if msg["role"] == "assistant" and msg.get("content"):
-                    analysis_found = True
-                    with st.expander("View Full Analysis", expanded=True):
-                        st.markdown(msg["content"])
-                    break
-            
-            if not analysis_found:
-                st.info("Analysis in progress... Please wait.")
-            
-            st.divider()
-            
-            # Action buttons - Smart logic based on fix attempts (SAME AS PIPELINE)
+            # Action buttons
             col_btn1, col_btn2, col_btn3 = st.columns([1, 1, 2])
             
-            mr_url = session.get("merge_request_url")
+            mr_url = full_session.get("merge_request_url")
             
             with col_btn1:
-                # Check if current branch is a fix branch
-                current_branch = session.get("branch", "")
+                # Check if current branch is a fix branch created by our system
+                current_branch = full_session.get("branch", "")
                 is_fix_branch = current_branch.startswith("fix/sonarqube_")
                 
                 # Check if we've hit iteration limit
@@ -255,7 +211,7 @@ with col2:
                 elif len(fix_attempts) > 0 and not mr_url:
                     # Show retry button for subsequent attempts
                     if st.button("🔄 Try Another Fix", use_container_width=True):
-                        with st.spinner("Analyzing latest logs and creating additional fixes..."):
+                        with st.spinner("Analyzing latest quality issues and creating additional fixes..."):
                             response = asyncio.run(
                                 st.session_state.api_client.send_message(
                                     session_id, 
@@ -282,21 +238,45 @@ with col2:
                     st.link_button("📄 View MR", mr_url, use_container_width=True)
             
             with col_btn2:
-                if st.button("💬 Chat", use_container_width=True):
+                if st.button("💬 Ask Question", use_container_width=True):
                     st.session_state.show_quality_chat[session_id] = not st.session_state.show_quality_chat.get(session_id, False)
             
-            # Chat interface
-            if st.session_state.show_quality_chat.get(session_id):
-                st.divider()
-                st.markdown("### 💬 Chat")
-                
-                # Display conversation history
+            st.divider()
+            
+            # Always show conversation history
+            st.markdown("### 📋 Analysis & Discussion")
+            
+            # Create a container for messages with fixed height and scroll
+            message_container = st.container(height=400)
+            
+            with message_container:
                 for msg in messages:
                     if msg["role"] != "system":
                         with st.chat_message(msg["role"]):
-                            st.write(msg.get("content", ""))
-                
-                # Chat input
+                            content = msg.get("content", "")
+
+                            # Try to parse JSON string if it looks like JSON
+                            if isinstance(content, str) and content.strip().startswith('{'):
+                                try:
+                                    parsed = json.loads(content)
+                                    if isinstance(parsed, dict):
+                                        if "text" in parsed:
+                                            content = parsed["text"]
+                                        elif "message" in parsed:
+                                            content = parsed["message"]
+                                        elif "content" in parsed:
+                                            if isinstance(parsed["content"], list):
+                                                content = parsed["content"][0].get("text", str(parsed))
+                                            else:
+                                                content = parsed["content"]
+                                except json.JSONDecodeError:
+                                    pass
+                                    
+                            st.markdown(content)
+            
+            # Chat input interface (only shown when chat button is clicked)
+            if st.session_state.show_quality_chat.get(session_id):
+                st.divider()
                 if prompt := st.chat_input("Ask about the quality issues..."):
                     # Add user message
                     with st.chat_message("user"):
@@ -317,24 +297,92 @@ with col2:
                     st.rerun()
         
         except Exception as e:
-            st.error(f"Failed to load session: {e}")
+            st.error(f"Failed to load session details: {e}")
+    
     else:
-        st.info("👈 Select a quality session from the left to begin")
+        # Show quality cards when no session is selected
+        st.subheader("Quality Analysis")
         
-        # Show instructions
-        st.markdown("""
-        ### How it works:
-        1. **SonarQube webhook** notifies about quality gate failures
-        2. **AI analyzes** all issues (bugs, vulnerabilities, code smells)
-        3. **Get fixes** with complete code changes
-        4. **Create MR** with all fixes when ready
-        5. **Track improvement** in code quality
-        """)
+        if failure_groups:
+            for project_name, sessions in failure_groups.items():
+                st.markdown(f"### 📊 {project_name}")
+                
+                for session in sessions:
+                    status = session.get("status", "active")
+                    time_remaining = calculate_time_remaining(session.get('expires_at'))
+                    fix_attempts = session.get("webhook_data", {}).get("fix_attempts", [])
+                    
+                    # Create card
+                    with st.container():
+                        col_info, col_action = st.columns([4, 1])
+                        
+                        with col_info:
+                            status_emoji = "🔴" if status == "active" else "🟢" if status == "resolved" else "🟡"
+                            status_text = "Active" if status == "active" else "Fixed" if status == "resolved" else "Analyzing"
+                            
+                            # Color for time
+                            if time_remaining == "Expired":
+                                time_emoji = "🔴"
+                            elif "m" in time_remaining and not "h" in time_remaining:
+                                time_emoji = "🟡"
+                            else:
+                                time_emoji = "🟢"
+                            
+                            st.markdown(f"""
+                            **{status_emoji} Quality Gate** - {status_text}
+                            
+                            Issues: {session.get('total_issues', 0)} | 
+                            Bugs: {session.get('bug_count', 0)} | 
+                            Vulnerabilities: {session.get('vulnerability_count', 0)} |
+                            Fixes: {len(fix_attempts)} |
+                            Last: {datetime.fromisoformat(session.get("created_at", datetime.now().isoformat())).strftime("%b %d, %H:%M")} |
+                            {time_emoji} Expires: {time_remaining}
+                            """)
+                        
+                        with col_action:
+                            if st.button("View", key=f"view_{session['id']}"):
+                                st.session_state.selected_quality_session = session
+                                st.rerun()
+                    
+                    st.divider()
+        else:
+            st.info("Select a project from the left to view quality issues")
+            
+            # Show instructions
+            st.markdown("""
+            ### How it works:
+            1. **SonarQube webhook** notifies about quality gate failures
+            2. **AI analyzes** all issues (bugs, vulnerabilities, code smells)
+            3. **Get fixes** with complete code changes
+            4. **Create MR** with all fixes when ready
+            5. **Track improvement** in code quality
+            """)
 
 # Column 3: Metadata Panel
 with col3:
     if st.session_state.selected_quality_session:
-        st.subheader("Project Info")
+        session = st.session_state.selected_quality_session
+        
+        st.subheader("Quality Metrics")
+        
+        # Quality metrics
+        st.markdown("**Issue Breakdown:**")
+        st.caption(f"🐛 Bugs: {session.get('bug_count', 0)}")
+        st.caption(f"🔒 Vulnerabilities: {session.get('vulnerability_count', 0)}")
+        st.caption(f"💩 Code Smells: {session.get('code_smell_count', 0)}")
+        
+        # Quality ratings
+        st.markdown("**Quality Ratings:**")
+        st.caption(f"Reliability: {session.get('reliability_rating', '?')}")
+        st.caption(f"Security: {session.get('security_rating', '?')}")
+        st.caption(f"Maintainability: {session.get('maintainability_rating', '?')}")
+        
+        # Fix attempts info
+        fix_attempts = session.get("webhook_data", {}).get("fix_attempts", [])
+        if fix_attempts:
+            st.markdown("**Fix Information:**")
+            st.caption(f"Iterations: {len(fix_attempts)}/5")
+            st.caption(f"Current Branch: {fix_attempts[-1]['branch']}")
         
         # Session timing
         st.markdown("**Session Info:**")
@@ -349,13 +397,6 @@ with col3:
         else:
             st.caption(f"⏰ Expires in: {time_remaining}")
         
-        # Fix attempts info
-        fix_attempts = session.get("webhook_data", {}).get("fix_attempts", [])
-        if fix_attempts:
-            st.markdown("**Fix Information:**")
-            st.caption(f"Iterations: {len(fix_attempts)}/5")
-            st.caption(f"Current Branch: {fix_attempts[-1]['branch']}")
-        
-        # Additional project details
-        st.markdown("**SonarQube Details:**")
-        st.caption("View detailed reports in SonarQube dashboard")
+        # Link to SonarQube
+        if st.button("View in SonarQube", use_container_width=True):
+            st.write("SonarQube dashboard link would open here")

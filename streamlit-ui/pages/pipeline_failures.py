@@ -188,22 +188,6 @@ with col2:
                             st.caption(f"Branch: {attempt['branch']}")
                             st.caption(f"Status: {attempt.get('status', 'pending')}")
             
-            # Display latest analysis
-            st.markdown("### 📋 Latest Analysis")
-            analysis_found = False
-            for msg in reversed(messages):
-                if msg["role"] == "assistant" and msg.get("content"):
-                    analysis_found = True
-                    # Display full analysis in expandable section
-                    with st.expander("View Full Analysis", expanded=True):
-                        st.markdown(msg["content"])
-                    break
-            
-            if not analysis_found:
-                st.info("Analysis in progress... Please wait.")
-            
-            st.divider()
-            
             # Action buttons - Smart logic based on fix attempts
             col_btn1, col_btn2, col_btn3 = st.columns([1, 1, 2])
             
@@ -260,15 +244,18 @@ with col2:
                     st.link_button("📄 View MR", mr_url, use_container_width=True)
             
             with col_btn2:
-                if st.button("💬 Chat", use_container_width=True):
+                if st.button("💬 Ask Question", use_container_width=True):
                     st.session_state.show_chat[session_id] = not st.session_state.show_chat.get(session_id, False)
             
-            # Chat interface
-            if st.session_state.show_chat.get(session_id):
-                st.divider()
-                st.markdown("### 💬 Chat")
-                
-                # Display conversation history
+            st.divider()
+            
+            # Always show conversation history
+            st.markdown("### 📋 Analysis & Discussion")
+            
+            # Create a container for messages with fixed height and scroll
+            message_container = st.container(height=400)
+            
+            with message_container:
                 for msg in messages:
                     if msg["role"] != "system":
                         with st.chat_message(msg["role"]):
@@ -292,8 +279,10 @@ with col2:
                                     pass
                                     
                             st.markdown(content)
-                                
-                # Chat input
+            
+            # Chat input interface (only shown when chat button is clicked)
+            if st.session_state.show_chat.get(session_id):
+                st.divider()
                 if prompt := st.chat_input("Ask about this failure..."):
                     # Add user message
                     with st.chat_message("user"):

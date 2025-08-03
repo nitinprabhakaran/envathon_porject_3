@@ -124,6 +124,18 @@ async def handle_gitlab_webhook(request: Request):
                         f"Fix attempt on branch {ref} failed - {session_type} still not passing"
                     )
                     
+                    #  Store fix attempt in webhook_data for UI
+                    webhook_data = session.get("webhook_data", {})
+                    fix_attempts = webhook_data.get("fix_attempts", [])
+                    fix_attempts.append({
+                        "branch": ref,
+                        "mr_id": session.get("merge_request_id"),
+                        "status": "failed",
+                        "timestamp": datetime.utcnow().isoformat()
+                    })
+                    webhook_data["fix_attempts"] = fix_attempts
+                    await session_manager.update_session_metadata(session['id'], {"webhook_data": webhook_data})
+
                     log.info(f"Updated failed fix attempt for {session_type} session {session['id']}")
                     return {
                         "status": "updated",
@@ -603,6 +615,7 @@ async def analyze_quality_issues(session_id: str, project_key: str, gitlab_proje
         log.info(f"Quality analysis complete for session {session_id}")
         
     except Exception as e:
+        error_msg = str(e)
         if "{" in error_msg or "}" in error_msg:
             error_msg = error_msg.replace("{", "{{").replace("}", "}}")
 
