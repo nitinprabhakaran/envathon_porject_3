@@ -145,11 +145,11 @@ async def handle_gitlab_webhook(request: Request):
                                 f"Fix attempt on branch {ref} failed - {session_type} still not passing"
                             )
 
-                            # Update webhook_data with fix attempt info
+                            # Store fix attempt in webhook_data for UI
                             webhook_data = session.get("webhook_data", {})
                             fix_attempts_data = webhook_data.get("fix_attempts", [])
 
-                            # Update or add attempt
+                            # Find and update the existing attempt
                             attempt_updated = False
                             for fa in fix_attempts_data:
                                 if fa.get("branch") == ref:
@@ -158,6 +158,7 @@ async def handle_gitlab_webhook(request: Request):
                                     attempt_updated = True
                                     break
 
+                            # If not found, add new attempt
                             if not attempt_updated:
                                 fix_attempts_data.append({
                                     "branch": ref,
@@ -172,7 +173,7 @@ async def handle_gitlab_webhook(request: Request):
 
                             log.info(f"Updated failed fix attempt for {session_type} session {session['id']}")
                             return {
-                                "status": "updated", 
+                                "status": "updated",
                                 "session_id": session['id'],
                                 "message": "Fix attempt failed, ready for next iteration"
                             }

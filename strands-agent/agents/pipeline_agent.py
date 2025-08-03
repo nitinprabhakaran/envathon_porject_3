@@ -477,28 +477,56 @@ Note: When retrieving logs, always use max_size=30000 to prevent overflow."""
         
         # Track fix attempt if MR was created
         if is_mr_request and "web_url" in result_text:
-            # Extract branch name from result
-            branch_match = re.search(r'Source Branch: ([^\s]+)', result_text)
-            if branch_match:
+            import re
+            # Extract branch name and MR details from result
+            branch_match = re.search(r'(?:Source Branch|Branch):\s*([^\s\n]+)', result_text)
+            mr_url_match = re.search(r'https?://[^\s<>"{}|\\^`\[\]]+/merge_requests/\d+', result_text)
+
+            if branch_match and mr_url_match:
                 branch_name = branch_match.group(1)
+                mr_url = mr_url_match.group(0)
+                mr_id = mr_url.split('/')[-1]
+
+                # Extract files changed from the result
+                files_changed = []
+                # Look for file paths in the response
+                file_pattern = r'(?:File|Updated?|Changed?|Modified?):\s*`?([^\s`\n]+\.[a-zA-Z]+)`?'
+                file_matches = re.findall(file_pattern, result_text)
+                files_changed.extend(file_matches)
+
+                # Also check for files in structured response
+                if "files_processed" in result_text:
+                    processed_pattern = r'(?:UPDATE|CREATE):\s*([^\s\n]+)'
+                    processed_matches = re.findall(processed_pattern, result_text)
+                    files_changed.extend(processed_matches)
+
+                # Remove duplicates
+                files_changed = list(set(files_changed))
+
+                # Create fix attempt record
                 attempt_num = await self._session_manager.create_fix_attempt(
                     session_id,
                     branch_name,
-                    []  # Files will be updated later
+                    files_changed
                 )
-                
-                # Extract MR URL and ID
-                mr_url_match = re.search(r'https?://[^\s<>"{}|\\^`\[\]]+/merge_requests/\d+', result_text)
-                if mr_url_match:
-                    mr_url = mr_url_match.group(0)
-                    mr_id = mr_url.split('/')[-1]
-                    await self._session_manager.update_fix_attempt(
-                        session_id,
-                        attempt_num,
-                        "pending",
-                        mr_id,
-                        mr_url
-                    )
+
+                # Update session with MR info and current fix branch
+                await self._session_manager.update_session_metadata(
+                    session_id,
+                    {
+                        "merge_request_url": mr_url,
+                        "merge_request_id": mr_id,
+                        "current_fix_branch": branch_name
+                    }
+                )
+
+                await self._session_manager.update_fix_attempt(
+                    session_id,
+                    attempt_num,
+                    "pending",
+                    mr_id,
+                    mr_url
+                )
         
         log.debug(f"Generated response for session {session_id}")
         
