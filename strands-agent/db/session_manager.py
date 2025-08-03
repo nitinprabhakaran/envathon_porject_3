@@ -257,7 +257,7 @@ class SessionManager:
             await conn.execute(
                 """
                 UPDATE fix_attempts
-                SET status = $3, 
+                SET status = $3::VARCHAR(20), 
                     merge_request_id = $4,
                     merge_request_url = $5,
                     error_details = $6,
