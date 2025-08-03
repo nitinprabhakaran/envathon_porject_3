@@ -476,10 +476,10 @@ The files parameter must be a dictionary with this structure:
         # Track fix attempt if MR was created
         if is_mr_request and "web_url" in result_text:
             import re
-            # Extract branch name from result
-            branch_match = re.search(r'Source Branch: ([^\s]+)', result_text)
+            # Extract branch name and MR details from result
+            branch_match = re.search(r'(?:Source Branch|Branch):\s*([^\s\n]+)', result_text)
             mr_url_match = re.search(r'https?://[^\s<>"{}|\\^`\[\]]+/merge_requests/\d+', result_text)
-
+            
             if branch_match and mr_url_match:
                 branch_name = branch_match.group(1)
                 mr_url = mr_url_match.group(0)
@@ -514,16 +514,7 @@ The files parameter must be a dictionary with this structure:
                     {
                         "merge_request_url": mr_url,
                         "merge_request_id": mr_id,
-                        "current_fix_branch": branch_name,
-                        "webhook_data": {
-                            "fix_attempts": [{
-                                "branch": branch_name,
-                                "mr_id": mr_id,
-                                "mr_url": mr_url,
-                                "status": "pending",
-                                "attempt_number": attempt_num
-                            }]
-                        }
+                        "current_fix_branch": branch_name
                     }
                 )
                 

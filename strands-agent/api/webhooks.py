@@ -114,8 +114,15 @@ async def handle_gitlab_webhook(request: Request):
                     session.get("status") == "active"):
                     
                     # Update fix attempt status
-                    await update_fix_attempt_status(session['id'], ref, "failed", 
-                                                  f"{session_type.capitalize()} still failing")
+                    fix_attempts = await session_manager.get_fix_attempts(session['id'])
+                    for attempt in fix_attempts:
+                        if attempt["branch_name"] == ref and attempt["status"] == "pending":
+                            await session_manager.update_fix_attempt(
+                                session['id'],
+                                attempt["attempt_number"],
+                                "failed",
+                                error_details=f"{session_type.capitalize()} still failing"
+                            )
                     
                     # Add system message for user awareness
                     await session_manager.add_message(
@@ -124,18 +131,32 @@ async def handle_gitlab_webhook(request: Request):
                         f"Fix attempt on branch {ref} failed - {session_type} still not passing"
                     )
                     
-                    #  Store fix attempt in webhook_data for UI
+                    # Store fix attempt in webhook_data for UI
                     webhook_data = session.get("webhook_data", {})
-                    fix_attempts = webhook_data.get("fix_attempts", [])
-                    fix_attempts.append({
-                        "branch": ref,
-                        "mr_id": session.get("merge_request_id"),
-                        "status": "failed",
-                        "timestamp": datetime.utcnow().isoformat()
-                    })
-                    webhook_data["fix_attempts"] = fix_attempts
+                    fix_attempts_data = webhook_data.get("fix_attempts", [])
+                    
+                    # Find and update the existing attempt
+                    attempt_updated = False
+                    for attempt in fix_attempts_data:
+                        if attempt.get("branch") == ref:
+                            attempt["status"] = "failed"
+                            attempt["failed_at"] = datetime.utcnow().isoformat()
+                            attempt_updated = True
+                            break
+                    
+                    # If not found, add new attempt
+                    if not attempt_updated:
+                        fix_attempts_data.append({
+                            "branch": ref,
+                            "mr_id": session.get("merge_request_id"),
+                            "mr_url": session.get("merge_request_url"),
+                            "status": "failed",
+                            "timestamp": datetime.utcnow().isoformat()
+                        })
+                    
+                    webhook_data["fix_attempts"] = fix_attempts_data
                     await session_manager.update_session_metadata(session['id'], {"webhook_data": webhook_data})
-
+        
                     log.info(f"Updated failed fix attempt for {session_type} session {session['id']}")
                     return {
                         "status": "updated",
@@ -147,7 +168,8 @@ async def handle_gitlab_webhook(request: Request):
         for session in existing_sessions:
             if (session.get("session_type") == session_type and 
                 session.get("project_id") == project_id and
-                session.get("status") == "active"):
+                session.get("status") == "active" and
+                not ref.startswith(fix_branch_prefix)):  # Don't match fix branches
                 
                 log.info(f"Found existing {session_type} session {session['id']} for project {project_id}")
                 return {
