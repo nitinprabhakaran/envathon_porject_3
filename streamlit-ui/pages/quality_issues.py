@@ -135,6 +135,18 @@ with col2:
             # Get metrics and fix attempts
             metrics = session.get("webhook_data", {}).get("quality_metrics", {})
             fix_attempts = session.get("webhook_data", {}).get("fix_attempts", [])
+
+            if not metrics.get("total_issues"):
+                metrics["total_issues"] = session.get("total_issues", 0)
+                metrics["critical_issues"] = session.get("critical_issues", 0)
+                metrics["major_issues"] = session.get("major_issues", 0)
+                metrics["bug_count"] = session.get("bug_count", 0)
+                metrics["vulnerability_count"] = session.get("vulnerability_count", 0)
+                metrics["code_smell_count"] = session.get("code_smell_count", 0)
+                metrics["coverage"] = session.get("coverage", "0")
+                metrics["reliability_rating"] = session.get("reliability_rating", "E")
+                metrics["security_rating"] = session.get("security_rating", "E")
+                metrics["maintainability_rating"] = session.get("maintainability_rating", "E")
             
             # Show fix iteration info if applicable
             if fix_attempts:

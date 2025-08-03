@@ -2,7 +2,7 @@
 from typing import Dict, Any, List, Optional
 from datetime import datetime
 from strands import Agent, tool
-import os
+import os, re
 from strands.models.bedrock import BedrockModel
 from strands.models.anthropic import AnthropicModel
 from utils.logger import log
@@ -28,10 +28,20 @@ QUALITY_SYSTEM_PROMPT = """You are an expert code quality analyst specialized in
 Analyze quality issues and provide actionable fixes. When analyzing, always fetch the actual metrics first.
 
 ## Important Rules for File Access
-- When you need to fix issues in specific files, ALWAYS attempt to retrieve the file content using get_file_content()
-- If get_file_content() returns an error or fails, acknowledge this and explain that you cannot provide specific fixes without access to the source code
+- ALWAYS attempt to retrieve the main source files even if no specific issues are reported
+- When you need to fix issues in specific files, ALWAYS attempt to retrieve the file content
+- If file retrieval fails, acknowledge this and explain that you cannot provide specific fixes without access to the source code
 - NEVER create a merge request if you cannot access the files that need to be changed
 - When creating MRs, only include files that you have successfully retrieved and can actually modify
+
+## Analysis Process
+1. Get project metrics
+2. Get all issues by type (BUG, VULNERABILITY, CODE_SMELL)
+3. ALWAYS attempt to retrieve source files, especially:
+   - Main application files based on common naming conventions
+   - Configuration files for the detected language/framework
+   - Even if there are 0 issues, retrieve files to check for test coverage opportunities
+4. Analyze findings and propose solutions
 
 ## Analysis Format
 Use this exact format for your responses:
@@ -162,26 +172,23 @@ Quality Gate Status: {webhook_data.get('qualityGate', {}).get('status', 'ERROR')
 Failed Conditions:
 {webhook_data.get('qualityGate', {}).get('conditions', [])}
 
-Use the available tools to:
-1. Get the project metrics using get_project_metrics()
-2. Get all project issues using get_project_issues() - separate calls for BUG, VULNERABILITY, CODE_SMELL
-3. For the top issues, attempt to get the file content from GitLab using get_file_content()
-4. If you can retrieve files, analyze the issues and provide specific fixes
-5. If you cannot retrieve files, explain the issues conceptually and provide general guidance
-6. Present findings in the specified format with ACTUAL metrics
-
-Important: 
-- Use project_key="{project_key}" for SonarQube API calls
-- Use project_id="{gitlab_project_id}" for GitLab API calls
-- If files cannot be retrieved, acknowledge this and provide conceptual fixes
-- Do NOT create a merge request unless you have actual file content to work with"""
+Analysis approach:
+1. Get project metrics
+2. Get all project issues - they contain file paths in the 'component' field
+3. Extract file paths from the issues and retrieve those specific files
+4. File paths in SonarQube format: "project_key:path/to/file.ext"
+5. Extract the path after the colon for file retrieval
+6. Only create MR if you successfully retrieved files with issues"""
         
         # Create wrapped get_file_content that stores files immediately
         original_get_file_content = get_file_content
         
         @tool
-        async def tracked_get_file_content(file_path: str, project_id: str, ref: str = "HEAD") -> str:
+        async def tracked_get_file_content(file_path: str, project_id: str, ref: str = "HEAD") -> Dict[str, Any]:
             """Get content of a file from GitLab repository"""
+            if current_fix_branch and ref == "HEAD":
+                ref = current_fix_branch
+
             result = await original_get_file_content(file_path, project_id, ref)
             
             # Store file immediately in database
@@ -219,6 +226,18 @@ Important:
         # Extract text from result
         if hasattr(result, 'message'):
             result_text = result.message
+        elif hasattr(result, 'content'):
+            result_text = result.content
+        elif isinstance(result, dict):
+            # Handle dict response
+            if "content" in result:
+                content = result["content"]
+                if isinstance(content, list) and len(content) > 0:
+                    result_text = content[0].get("text", str(result))
+                else:
+                    result_text = str(content)
+            else:
+                result_text = result.get("message", str(result))
         else:
             result_text = str(result)
             
@@ -229,22 +248,24 @@ Important:
     
     async def _store_analysis_data(self, session_id: str, result_text: str):
         """Store analysis data"""
-        import re
+        # Ensure result_text is a string
+        if not isinstance(result_text, str):
+            result_text = str(result_text)
         
         # Extract all code blocks from the analysis
         code_blocks = []
-
+    
         # Pattern for triple backtick code blocks
         triple_pattern = r'```(?:\w+)?\n(.*?)\n```'
         triple_matches = re.findall(triple_pattern, result_text, re.DOTALL)
-
+    
         # Pattern for single backtick code blocks
         single_pattern = r'`(?:\w+)?\n(.*?)\n`'
         single_matches = re.findall(single_pattern, result_text, re.DOTALL)
-
+    
         code_blocks.extend(triple_matches)
         code_blocks.extend(single_matches)
-
+    
         # Store the analysis result and code blocks
         await self._session_manager.update_session_metadata(
             session_id,
@@ -255,7 +276,7 @@ Important:
                 }
             }
         )
-
+    
         log.info(f"Stored analysis data with {len(code_blocks)} code blocks")
     
     async def handle_user_message(
@@ -397,7 +418,7 @@ The files parameter must be a dictionary with this structure:
         original_get_file_content = get_file_content
         
         @tool
-        async def tracked_get_file_content(file_path: str, project_id: str, ref: str = "HEAD") -> str:
+        async def tracked_get_file_content(file_path: str, project_id: str, ref: str = "HEAD") -> Dict[str, Any]:
             """Get content of a file from GitLab repository"""
             result = await original_get_file_content(file_path, project_id, ref)
             
@@ -417,7 +438,7 @@ The files parameter must be a dictionary with this structure:
                     return f"Error: {result.get('error', 'Failed to get file content')}"
             
             # If result is already a string, return it
-            return str(result)
+            return result
         
         # Create tools list including session-specific tool
         tools = [

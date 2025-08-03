@@ -83,231 +83,231 @@ async def handle_gitlab_webhook(request: Request):
         project_id = str(data.get("project", {}).get("id"))
         ref = data.get("object_attributes", {}).get("ref")
         
-        # Handle successful pipelines - check if they resolve any sessions
+        # Handle successful pipelines
         if pipeline_status == "success":
-            # Check if this is a fix branch that succeeded
-            if ref and ref.startswith("fix/"):
-                # Find sessions with this branch
-                sessions = await session_manager.get_active_sessions()
-                for session in sessions:
-                    if (session.get("project_id") == project_id and 
-                        session.get("current_fix_branch") == ref and
-                        session.get("status") == "active"):
-                        
-                        # Update fix attempt status
-                        fix_attempts = await session_manager.get_fix_attempts(session["id"])
-                        for attempt in fix_attempts:
-                            if attempt["branch_name"] == ref and attempt["status"] == "pending":
-                                await session_manager.update_fix_attempt(
-                                    session["id"],
-                                    attempt["attempt_number"],
-                                    "success"
-                                )
-                        
-                        await session_manager.mark_session_resolved(session["id"])
-                        log.info(f"Marked session {session['id']} as resolved - fix branch pipeline succeeded")
-                        
-            # Check if this is main/master branch after merge
-            elif ref in ["main", "master"]:
-                # Look for sessions with MRs that might have been merged
-                sessions = await session_manager.get_active_sessions()
-                
-                for session in sessions:
-                    if (session.get("project_id") == project_id and 
-                        session.get("merge_request_url") and
-                        session.get("status") == "active"):
-                        
-                        # Check if the session's fix branch was recently merged
-                        if session.get("current_fix_branch"):
-                            # Mark as resolved
-                            await session_manager.mark_session_resolved(session["id"])
-                            log.info(f"Marked session {session['id']} as resolved - main branch pipeline succeeded after merge")
-            
-            return {"status": "processed", "action": "checked_for_resolution"}
+            return await handle_pipeline_success(project_id, ref)
         
-        # Only process failures from here
+        # Only process failures
         if pipeline_status != "failed":
             return {"status": "ignored", "reason": "Not a failure event"}
         
-        # Check if this is a quality gate failure by analyzing logs
+        # Check if this is a quality gate failure
         is_quality_failure = await check_quality_gate_in_logs(data)
         
+        # Check for existing sessions and handle fix branch failures
+        existing_sessions = await session_manager.get_active_sessions()
+        
+        # Determine session type based on failure type
         if is_quality_failure:
-            # Extract project info
-            project = data.get("project", {})
-            pipeline = data.get("object_attributes", {})
-            
-            # Try to get SonarQube project key
-            sonarqube_key = project.get("name")  # Default to project name
-            gitlab_project_id = str(project.get("id"))
-            
-            # Get the failed job to extract more details
-            failed_jobs = [job for job in data.get("builds", []) if job.get("status") == "failed"]
-            failed_jobs.sort(key=lambda x: x.get("finished_at", ""), reverse=True)
-            failed_job = failed_jobs[0] if failed_jobs else {}
-            
-            metadata = {
-                "sonarqube_key": sonarqube_key,
-                "project_name": project.get("name"),
-                "quality_gate_status": "ERROR",
-                "branch": pipeline.get("ref", "main"),
-                "webhook_data": data,
-                "gitlab_project_id": gitlab_project_id,
-                "pipeline_id": str(pipeline.get("id")),
-                "pipeline_url": pipeline.get("url"),
-                "job_name": failed_job.get("name", "sonarqube-check"),
-                "failed_stage": failed_job.get("stage", "scan")
-            }
-            
-            # Check if there's already an active quality session for this project
-            existing_sessions = await session_manager.get_active_sessions()
-            for session in existing_sessions:
-                if (session.get("session_type") == "quality" and 
-                    session.get("project_id") == gitlab_project_id and
-                    session.get("status") == "active"):
-                    
-                    # Check if this is a fix branch failure
-                    current_branch = pipeline.get("ref", "")
-                    if current_branch.startswith("fix/sonarqube_"):
-                        # Update fix attempt status
-                        fix_attempts = await session_manager.get_fix_attempts(session['id'])
-                        for attempt in fix_attempts:
-                            if attempt["branch_name"] == current_branch and attempt["status"] == "pending":
-                                await session_manager.update_fix_attempt(
-                                    session['id'],
-                                    attempt["attempt_number"],
-                                    "failed",
-                                    error_details="Quality gate still failing"
-                                )
-                        log.info(f"Updated failed fix attempt for quality session {session['id']}")
-                    
-                    log.info(f"Found existing quality session {session['id']} for project {gitlab_project_id}, ignoring duplicate webhook")
-                    return {
-                        "status": "ignored",
-                        "reason": "Active quality session already exists",
-                        "session_id": session['id']
-                    }
-            
-            # Create quality session instead of pipeline session
-            session_id = str(uuid.uuid4())
-            session = await session_manager.create_session(
-                session_id=session_id,
-                session_type="quality",
-                project_id=gitlab_project_id,
-                metadata=metadata
-            )
-            
-            # Add initial message
-            await session_manager.add_message(
-                session_id,
-                "system",
-                f"Quality gate failure detected for {metadata['project_name']} in pipeline #{metadata['pipeline_id']}"
-            )
-            
-            # Start quality analysis in background
-            asyncio.create_task(analyze_quality_from_pipeline(
-                session_id,
-                sonarqube_key,
-                gitlab_project_id,
-                data
-            ))
-            
-            log.info(f"Created quality session {session_id} for pipeline quality gate failure")
-            return {
-                "status": "analyzing",
-                "session_id": session_id,
-                "session_type": "quality",
-                "message": "Quality gate failure analysis started"
-            }
-
-        # Regular pipeline failure handling
+            session_type = "quality"
+            fix_branch_prefix = "fix/sonarqube_"
+        else:
+            session_type = "pipeline"
+            fix_branch_prefix = "fix/pipeline_"
+        
         # Check if this is a fix branch failure for an existing session
-        if ref and ref.startswith("fix/pipeline_"):
-            existing_sessions = await session_manager.get_active_sessions()
+        if ref and ref.startswith(fix_branch_prefix):
             for session in existing_sessions:
-                if (session.get("session_type") == "pipeline" and 
+                if (session.get("session_type") == session_type and 
                     session.get("project_id") == project_id and
                     session.get("current_fix_branch") == ref and
                     session.get("status") == "active"):
                     
                     # Update fix attempt status
-                    fix_attempts = await session_manager.get_fix_attempts(session['id'])
-                    for attempt in fix_attempts:
-                        if attempt["branch_name"] == ref and attempt["status"] == "pending":
-                            await session_manager.update_fix_attempt(
-                                session['id'],
-                                attempt["attempt_number"],
-                                "failed",
-                                error_details="Pipeline still failing"
-                            )
+                    await update_fix_attempt_status(session['id'], ref, "failed", 
+                                                  f"{session_type.capitalize()} still failing")
                     
-                    log.info(f"Updated failed fix attempt for pipeline session {session['id']}")
-                    # Don't create a new session, just update the existing one
+                    # Add system message for user awareness
+                    await session_manager.add_message(
+                        session['id'],
+                        "system",
+                        f"Fix attempt on branch {ref} failed - {session_type} still not passing"
+                    )
+                    
+                    log.info(f"Updated failed fix attempt for {session_type} session {session['id']}")
                     return {
                         "status": "updated",
                         "session_id": session['id'],
-                        "message": "Fix attempt failed, session updated"
+                        "message": "Fix attempt failed, ready for next iteration"
                     }
         
-        # Extract metadata for new session
-        project = data.get("project", {})
-        pipeline = data.get("object_attributes", {})
+        # Check for existing active session (non-fix branch)
+        for session in existing_sessions:
+            if (session.get("session_type") == session_type and 
+                session.get("project_id") == project_id and
+                session.get("status") == "active"):
+                
+                log.info(f"Found existing {session_type} session {session['id']} for project {project_id}")
+                return {
+                    "status": "ignored",
+                    "reason": f"Active {session_type} session already exists",
+                    "session_id": session['id']
+                }
         
-        metadata = {
-            "project_id": str(project.get("id")),
-            "project_name": project.get("name"),
-            "pipeline_id": str(pipeline.get("id")),
-            "pipeline_url": pipeline.get("url"),
-            "branch": pipeline.get("ref"),
-            "commit_sha": pipeline.get("sha"),
-            "webhook_data": data
-        }
-        
-        # Extract failed job info - get the most recent one
-        failed_jobs = [job for job in data.get("builds", []) if job.get("status") == "failed"]
-        if failed_jobs:
-            # Sort by finished_at to get most recent
-            failed_jobs.sort(key=lambda x: x.get("finished_at", ""), reverse=True)
-            first_failed = failed_jobs[0]
-            metadata["job_name"] = first_failed.get("name")
-            metadata["failed_stage"] = first_failed.get("stage")
-            log.info(f"Most recent failed job: {metadata['job_name']} (ID: {first_failed.get('id')})")
-        
-        # Create session
-        session_id = str(uuid.uuid4())
-        session = await session_manager.create_session(
-            session_id=session_id,
-            session_type="pipeline",
-            project_id=metadata["project_id"],
-            metadata=metadata
-        )
-        
-        # Add initial message
-        await session_manager.add_message(
-            session_id,
-            "system",
-            f"Pipeline failure detected for {metadata['project_name']} - Pipeline #{metadata['pipeline_id']}"
-        )
-        
-        # Start analysis in background
-        asyncio.create_task(analyze_pipeline_failure(
-            session_id,
-            metadata["project_id"],
-            metadata["pipeline_id"],
-            data
-        ))
-        
-        log.info(f"Created pipeline session {session_id}")
-        return {
-            "status": "analyzing",
-            "session_id": session_id,
-            "session_type": "pipeline",
-            "message": "Pipeline analysis started"
-        }
+        # Create new session
+        if is_quality_failure:
+            return await create_quality_session(data)
+        else:
+            return await create_pipeline_session(data)
         
     except Exception as e:
         log.error(f"Webhook processing failed: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
+
+
+async def handle_pipeline_success(project_id: str, ref: str):
+    """Handle successful pipeline runs"""
+    sessions = await session_manager.get_active_sessions()
+    
+    # Check if this is a fix branch that succeeded
+    if ref and ref.startswith("fix/"):
+        for session in sessions:
+            if (session.get("project_id") == project_id and 
+                session.get("current_fix_branch") == ref and
+                session.get("status") == "active"):
+                
+                # Update fix attempt status
+                await update_fix_attempt_status(session["id"], ref, "success")
+                await session_manager.mark_session_resolved(session["id"])
+                log.info(f"Marked session {session['id']} as resolved - fix branch succeeded")
+                
+    # Check if this is main/master branch after merge
+    elif ref in ["main", "master"]:
+        for session in sessions:
+            if (session.get("project_id") == project_id and 
+                session.get("merge_request_url") and
+                session.get("status") == "active" and
+                session.get("current_fix_branch")):
+                
+                await session_manager.mark_session_resolved(session["id"])
+                log.info(f"Marked session {session['id']} as resolved - main branch succeeded after merge")
+    
+    return {"status": "processed", "action": "checked_for_resolution"}
+
+
+async def update_fix_attempt_status(session_id: str, branch_name: str, status: str, error_details: str = None):
+    """Update fix attempt status for a session"""
+    fix_attempts = await session_manager.get_fix_attempts(session_id)
+    for attempt in fix_attempts:
+        if attempt["branch_name"] == branch_name and attempt["status"] == "pending":
+            await session_manager.update_fix_attempt(
+                session_id,
+                attempt["attempt_number"],
+                status,
+                error_details=error_details
+            )
+
+
+async def create_quality_session(data: Dict[str, Any]):
+    """Create a new quality analysis session"""
+    project = data.get("project", {})
+    pipeline = data.get("object_attributes", {})
+    
+    sonarqube_key = project.get("name")
+    gitlab_project_id = str(project.get("id"))
+    
+    # Get failed job details
+    failed_jobs = [job for job in data.get("builds", []) if job.get("status") == "failed"]
+    failed_jobs.sort(key=lambda x: x.get("finished_at", ""), reverse=True)
+    failed_job = failed_jobs[0] if failed_jobs else {}
+    
+    metadata = {
+        "sonarqube_key": sonarqube_key,
+        "project_name": project.get("name"),
+        "quality_gate_status": "ERROR",
+        "branch": pipeline.get("ref", "main"),
+        "webhook_data": data,
+        "gitlab_project_id": gitlab_project_id,
+        "pipeline_id": str(pipeline.get("id")),
+        "pipeline_url": pipeline.get("url"),
+        "job_name": failed_job.get("name", "sonarqube-check"),
+        "failed_stage": failed_job.get("stage", "scan")
+    }
+    
+    session_id = str(uuid.uuid4())
+    session = await session_manager.create_session(
+        session_id=session_id,
+        session_type="quality",
+        project_id=gitlab_project_id,
+        metadata=metadata
+    )
+    
+    await session_manager.add_message(
+        session_id,
+        "system",
+        f"Quality gate failure detected for {metadata['project_name']} in pipeline #{metadata['pipeline_id']}"
+    )
+    
+    # Start analysis in background
+    asyncio.create_task(analyze_quality_from_pipeline(
+        session_id,
+        sonarqube_key,
+        gitlab_project_id,
+        data
+    ))
+    
+    log.info(f"Created quality session {session_id}")
+    return {
+        "status": "analyzing",
+        "session_id": session_id,
+        "session_type": "quality",
+        "message": "Quality gate failure analysis started"
+    }
+
+
+async def create_pipeline_session(data: Dict[str, Any]):
+    """Create a new pipeline failure session"""
+    project = data.get("project", {})
+    pipeline = data.get("object_attributes", {})
+    
+    metadata = {
+        "project_id": str(project.get("id")),
+        "project_name": project.get("name"),
+        "pipeline_id": str(pipeline.get("id")),
+        "pipeline_url": pipeline.get("url"),
+        "branch": pipeline.get("ref"),
+        "commit_sha": pipeline.get("sha"),
+        "webhook_data": data
+    }
+    
+    # Extract failed job info
+    failed_jobs = [job for job in data.get("builds", []) if job.get("status") == "failed"]
+    if failed_jobs:
+        failed_jobs.sort(key=lambda x: x.get("finished_at", ""), reverse=True)
+        first_failed = failed_jobs[0]
+        metadata["job_name"] = first_failed.get("name")
+        metadata["failed_stage"] = first_failed.get("stage")
+        log.info(f"Most recent failed job: {metadata['job_name']} (ID: {first_failed.get('id')})")
+    
+    session_id = str(uuid.uuid4())
+    session = await session_manager.create_session(
+        session_id=session_id,
+        session_type="pipeline",
+        project_id=metadata["project_id"],
+        metadata=metadata
+    )
+    
+    await session_manager.add_message(
+        session_id,
+        "system",
+        f"Pipeline failure detected for {metadata['project_name']} - Pipeline #{metadata['pipeline_id']}"
+    )
+    
+    # Start analysis in background
+    asyncio.create_task(analyze_pipeline_failure(
+        session_id,
+        metadata["project_id"],
+        metadata["pipeline_id"],
+        data
+    ))
+    
+    log.info(f"Created pipeline session {session_id}")
+    return {
+        "status": "analyzing",
+        "session_id": session_id,
+        "session_type": "pipeline",
+        "message": "Pipeline analysis started"
+    }
 
 @router.post("/sonarqube")
 async def handle_sonarqube_webhook(request: Request):
@@ -603,6 +603,9 @@ async def analyze_quality_issues(session_id: str, project_key: str, gitlab_proje
         log.info(f"Quality analysis complete for session {session_id}")
         
     except Exception as e:
+        if "{" in error_msg or "}" in error_msg:
+            error_msg = error_msg.replace("{", "{{").replace("}", "}}")
+
         log.error(f"Quality analysis failed: {e}", exc_info=True)
         await session_manager.add_message(
             session_id,
