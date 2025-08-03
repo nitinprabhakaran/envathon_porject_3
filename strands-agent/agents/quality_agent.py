@@ -148,21 +148,21 @@ class QualityAgent:
         log.info("Quality agent initialized")
     
     async def analyze_quality_issues(
-        self,
-        session_id: str,
-        project_key: str,
-        gitlab_project_id: str,
-        webhook_data: Dict[str, Any]
-    ) -> str:
+    self,
+    session_id: str,
+    project_key: str,
+    gitlab_project_id: str,
+    webhook_data: Dict[str, Any]
+) -> str:
         """Analyze quality gate failure and return findings"""
         log.info(f"Analyzing quality issues for {project_key} in session {session_id}")
-        
+
         # Check if issues are already fetched
         total_issues = 0
         if 'quality_metrics' in webhook_data:
             metrics = webhook_data['quality_metrics']
             total_issues = metrics.get('total_issues', 0)
-        
+
         prompt = f"""Analyze this SonarQube quality gate failure:
 
 SonarQube Project Key: {project_key}
@@ -179,18 +179,15 @@ Analysis approach:
 4. File paths in SonarQube format: "project_key:path/to/file.ext"
 5. Extract the path after the colon for file retrieval
 6. Only create MR if you successfully retrieved files with issues"""
-        
+    
         # Create wrapped get_file_content that stores files immediately
         original_get_file_content = get_file_content
-        
+
         @tool
         async def tracked_get_file_content(file_path: str, project_id: str, ref: str = "HEAD") -> Dict[str, Any]:
             """Get content of a file from GitLab repository"""
-            if current_fix_branch and ref == "HEAD":
-                ref = current_fix_branch
-
             result = await original_get_file_content(file_path, project_id, ref)
-            
+
             # Store file immediately in database
             if isinstance(result, dict):
                 await self._session_manager.store_tracked_file(
@@ -199,7 +196,7 @@ Analysis approach:
                     result.get("content") if result.get("status") == "success" else None,
                     result.get("status", "error")
                 )
-            
+
             return result
         
         # Create tools list with tracked version
@@ -279,45 +276,47 @@ Analysis approach:
     
         log.info(f"Stored analysis data with {len(code_blocks)} code blocks")
     
-    async def handle_user_message(
-        self,
-        session_id: str,
-        message: str,
-        conversation_history: List[Dict[str, Any]],
-        context: SessionContext
-    ) -> str:
-        """Handle user message in conversation"""
-        log.info(f"Handling user message for quality session {session_id}")
-        
-        # Create a tool to get stored analysis and files for THIS session
-        @tool
-        async def get_session_data() -> Dict[str, Any]:
-            """Get stored analysis and tracked files from the current session"""
-            session_data = await self._session_manager.get_session(session_id)
-            tracked_files = await self._session_manager.get_tracked_files(session_id)
-            
-            return {
-                'analysis_result': session_data.get('webhook_data', {}).get('analysis_result', ''),
-                'code_blocks': session_data.get('webhook_data', {}).get('code_blocks', []),
-                'tracked_files': tracked_files,
-                'current_fix_branch': session_data.get('current_fix_branch'),
-                'fix_iteration': session_data.get('fix_iteration', 0)
-            }
-        
-        # Check message intent
-        is_retry = "still failing" in message.lower() or "same error" in message.lower() or "try again" in message.lower()
-        is_mr_request = "create" in message.lower() and ("mr" in message.lower() or "merge request" in message.lower())
-        is_apply_fix = "apply" in message.lower() and "fix" in message.lower()
-        
-        # Get session data to check current state
+    """Fix for quality_agent.py - handle_user_message method"""
+
+async def handle_user_message(
+    self,
+    session_id: str,
+    message: str,
+    conversation_history: List[Dict[str, Any]],
+    context: SessionContext
+) -> str:
+    """Handle user message in conversation"""
+    log.info(f"Handling user message for quality session {session_id}")
+    
+    # Create a tool to get stored analysis and files for THIS session
+    @tool
+    async def get_session_data() -> Dict[str, Any]:
+        """Get stored analysis and tracked files from the current session"""
         session_data = await self._session_manager.get_session(session_id)
-        current_fix_branch = session_data.get('current_fix_branch')
-        fix_attempts = await self._session_manager.get_fix_attempts(session_id)
+        tracked_files = await self._session_manager.get_tracked_files(session_id)
         
-        # Check iteration limit
-        if is_retry or is_apply_fix or (is_mr_request and len(fix_attempts) > 0):
-            if await self._session_manager.check_iteration_limit(session_id):
-                return """### ❌ Iteration Limit Reached
+        return {
+            'analysis_result': session_data.get('webhook_data', {}).get('analysis_result', ''),
+            'code_blocks': session_data.get('webhook_data', {}).get('code_blocks', []),
+            'tracked_files': tracked_files,
+            'current_fix_branch': session_data.get('current_fix_branch'),
+            'fix_iteration': session_data.get('fix_iteration', 0)
+        }
+    
+    # Check message intent
+    is_retry = "still failing" in message.lower() or "same error" in message.lower() or "try again" in message.lower()
+    is_mr_request = "create" in message.lower() and ("mr" in message.lower() or "merge request" in message.lower())
+    is_apply_fix = "apply" in message.lower() and "fix" in message.lower()
+    
+    # Get session data to check current state
+    session_data = await self._session_manager.get_session(session_id)
+    current_fix_branch = session_data.get('current_fix_branch')
+    fix_attempts = await self._session_manager.get_fix_attempts(session_id)
+    
+    # Check iteration limit
+    if is_retry or is_apply_fix or (is_mr_request and len(fix_attempts) > 0):
+        if await self._session_manager.check_iteration_limit(session_id):
+            return """### ❌ Iteration Limit Reached
 
 I've attempted to fix quality issues 5 times but the quality gate continues to fail. This suggests:
 
@@ -333,9 +332,9 @@ I've attempted to fix quality issues 5 times but the quality gate continues to f
 
 ### 📋 Fix Attempts Made:
 """ + "\n".join([f"- Attempt #{att['attempt_number']}: {att['branch_name']} - {att['status']}" for att in fix_attempts])
-        
-        # Build context prompt
-        context_prompt = f"""
+    
+    # Build context prompt
+    context_prompt = f"""
 Session Context:
 - Project: {context.project_name}
 - SonarQube Key: {context.sonarqube_key}
@@ -345,19 +344,19 @@ Session Context:
 - Current Fix Branch: {current_fix_branch or 'None'}
 - Fix Iteration: {len(fix_attempts)}
 """
-        
-        # Add conversation summary (last analysis)
-        if conversation_history:
-            for msg in reversed(conversation_history):
-                if msg["role"] == "assistant" and msg.get("content"):
-                    context_prompt += f"\n\nPrevious Analysis:\n{msg['content']}"
-                    break
-        
-        # Prepare final prompt based on context
-        if is_mr_request:
-            if current_fix_branch and len(fix_attempts) > 0:
-                # Update existing branch
-                final_prompt = f"""{context_prompt}
+    
+    # Add conversation summary (last analysis)
+    if conversation_history:
+        for msg in reversed(conversation_history):
+            if msg["role"] == "assistant" and msg.get("content"):
+                context_prompt += f"\n\nPrevious Analysis:\n{msg['content']}"
+                break
+    
+    # Prepare final prompt based on context
+    if is_mr_request:
+        if current_fix_branch and len(fix_attempts) > 0:
+            # Update existing branch
+            final_prompt = f"""{context_prompt}
 
 The user wants to apply additional fixes to the existing branch.
 
@@ -376,12 +375,12 @@ Use these parameters for create_merge_request:
 - update_mode: true
 
 CRITICAL: Set update_mode=true since we're updating an existing branch."""
-            else:
-                # Create new branch and MR
-                timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
-                branch_name = f"fix/sonarqube_{timestamp}"
-                
-                final_prompt = f"""{context_prompt}
+        else:
+            # Create new branch and MR
+            timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+            branch_name = f"fix/sonarqube_{timestamp}"
+            
+            final_prompt = f"""{context_prompt}
 
 The user wants to create a merge request with the quality fixes.
 
@@ -411,89 +410,93 @@ The files parameter must be a dictionary with this structure:
         "path/to/new/file.ext": "complete file content here"
     }}
 }}"""
-        else:
-            final_prompt = f"{context_prompt}\n\nUser Question: {message}"
-        
-        # Create wrapped get_file_content for this session
-        original_get_file_content = get_file_content
-        
-        @tool
-        async def tracked_get_file_content(file_path: str, project_id: str, ref: str = "HEAD") -> Dict[str, Any]:
-            """Get content of a file from GitLab repository"""
-            result = await original_get_file_content(file_path, project_id, ref)
+    else:
+        final_prompt = f"{context_prompt}\n\nUser Question: {message}"
+    
+    # Create wrapped get_file_content for this session
+    original_get_file_content = get_file_content
+    
+    @tool
+    async def tracked_get_file_content(file_path: str, project_id: str, ref: str = "HEAD") -> Dict[str, Any]:
+        """Get content of a file from GitLab repository"""
+        # Use current fix branch if available
+        if current_fix_branch and ref == "HEAD":
+            ref = current_fix_branch
             
-            # Store file immediately in database
-            if isinstance(result, dict):
-                await self._session_manager.store_tracked_file(
-                    session_id,
-                    file_path,
-                    result.get("content") if result.get("status") == "success" else None,
-                    result.get("status", "error")
-                )
-                
-                # Return appropriate string based on status
-                if result.get("status") == "success":
-                    return result.get("content", "")
-                else:
-                    return f"Error: {result.get('error', 'Failed to get file content')}"
+        result = await original_get_file_content(file_path, project_id, ref)
+        
+        # Store file immediately in database
+        if isinstance(result, dict):
+            await self._session_manager.store_tracked_file(
+                session_id,
+                file_path,
+                result.get("content") if result.get("status") == "success" else None,
+                result.get("status", "error")
+            )
             
-            # If result is already a string, return it
-            return result
+            # Return appropriate string based on status
+            if result.get("status") == "success":
+                return result.get("content", "")
+            else:
+                return f"Error: {result.get('error', 'Failed to get file content')}"
         
-        # Create tools list including session-specific tool
-        tools = [
-            get_project_quality_gate_status,
-            get_project_issues,
-            get_project_metrics,
-            get_issue_details,
-            get_rule_description,
-            tracked_get_file_content,
-            create_merge_request,
-            get_project_info,
-            get_session_data
-        ]
-        
-        # Create fresh agent and invoke
-        agent = Agent(
-            model=self.model,
-            system_prompt=QUALITY_SYSTEM_PROMPT,
-            tools=tools
-        )
-        
-        result = await agent.invoke_async(final_prompt)
-        
-        # Check if MR was created/updated
-        result_text = result.message if hasattr(result, 'message') else str(result)
-        
-        # Track fix attempt if MR was created
-        if is_mr_request and "web_url" in result_text:
-            import re
-            # Extract branch name from result
-            branch_match = re.search(r'Source Branch: ([^\s]+)', result_text)
-            if branch_match:
-                branch_name = branch_match.group(1)
-                attempt_num = await self._session_manager.create_fix_attempt(
+        # If result is already a string, return it
+        return result
+    
+    # Create tools list including session-specific tool
+    tools = [
+        get_project_quality_gate_status,
+        get_project_issues,
+        get_project_metrics,
+        get_issue_details,
+        get_rule_description,
+        tracked_get_file_content,
+        create_merge_request,
+        get_project_info,
+        get_session_data
+    ]
+    
+    # Create fresh agent and invoke
+    agent = Agent(
+        model=self.model,
+        system_prompt=QUALITY_SYSTEM_PROMPT,
+        tools=tools
+    )
+    
+    result = await agent.invoke_async(final_prompt)
+    
+    # Check if MR was created/updated
+    result_text = result.message if hasattr(result, 'message') else str(result)
+    
+    # Track fix attempt if MR was created
+    if is_mr_request and "web_url" in result_text:
+        import re
+        # Extract branch name from result
+        branch_match = re.search(r'Source Branch: ([^\s]+)', result_text)
+        if branch_match:
+            branch_name = branch_match.group(1)
+            attempt_num = await self._session_manager.create_fix_attempt(
+                session_id,
+                branch_name,
+                []  # Files will be updated later
+            )
+            
+            # Extract MR URL and ID
+            mr_url_match = re.search(r'https?://[^\s<>"{}|\\^`\[\]]+/merge_requests/\d+', result_text)
+            if mr_url_match:
+                mr_url = mr_url_match.group(0)
+                mr_id = mr_url.split('/')[-1]
+                await self._session_manager.update_fix_attempt(
                     session_id,
-                    branch_name,
-                    []  # Files will be updated later
+                    attempt_num,
+                    "pending",
+                    mr_id,
+                    mr_url
                 )
-                
-                # Extract MR URL and ID
-                mr_url_match = re.search(r'https?://[^\s<>"{}|\\^`\[\]]+/merge_requests/\d+', result_text)
-                if mr_url_match:
-                    mr_url = mr_url_match.group(0)
-                    mr_id = mr_url.split('/')[-1]
-                    await self._session_manager.update_fix_attempt(
-                        session_id,
-                        attempt_num,
-                        "pending",
-                        mr_id,
-                        mr_url
-                    )
-        
-        log.debug(f"Generated response for session {session_id}")
-        
-        return result_text
+    
+    log.debug(f"Generated response for session {session_id}")
+    
+    return result_text
     
     def _format_conversation_history(self, conversation_history: List[Dict[str, Any]], max_messages: int = 6) -> str:
         """Format conversation history for context, limiting to recent messages"""
