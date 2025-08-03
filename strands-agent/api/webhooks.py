@@ -231,6 +231,20 @@ async def handle_pipeline_success(project_id: str, ref: str):
                             "success"
                         )
                         
+                        # Update webhook_data for UI
+                        webhook_data = session.get("webhook_data", {})
+                        fix_attempts_data = webhook_data.get("fix_attempts", [])
+                        
+                        # Update the status in webhook_data
+                        for fa in fix_attempts_data:
+                            if fa.get("branch") == ref:
+                                fa["status"] = "success"
+                                fa["succeeded_at"] = datetime.utcnow().isoformat()
+                                break
+                        
+                        webhook_data["fix_attempts"] = fix_attempts_data
+                        await session_manager.update_session_metadata(session["id"], {"webhook_data": webhook_data})
+                        
                         # Add success message with pipeline URL
                         pipeline_url = f"{settings.gitlab_url}/{session.get('project_name')}/-/pipelines"
                         await session_manager.add_message(

@@ -538,6 +538,21 @@ Note: When retrieving logs, always use max_size=30000 to prevent overflow."""
                     mr_url
                 )
                 log.info(f"Updated fix attempt #{attempt_num} for branch {branch_name}")
+                
+                # Get current session data for webhook_data update
+                current_session = await self._session_manager.get_session(session_id)
+                if current_session:
+                    webhook_data = current_session.get("webhook_data", {})
+                    fix_attempts_data = webhook_data.get("fix_attempts", [])
+                    fix_attempts_data.append({
+                        "branch": branch_name,
+                        "mr_id": mr_id,
+                        "mr_url": mr_url,
+                        "status": "pending",
+                        "timestamp": datetime.utcnow().isoformat()
+                    })
+                    webhook_data["fix_attempts"] = fix_attempts_data
+                    await self._session_manager.update_session_metadata(session_id, {"webhook_data": webhook_data})
         
         log.debug(f"Generated response for session {session_id}")
         
