@@ -205,10 +205,17 @@ class SessionManager:
     async def create_fix_attempt(self, session_id: str, branch_name: str, files_changed: List[str]) -> int:
         """Create a new fix attempt record"""
         async with self.get_connection() as conn:
+            # Ensure session_id is properly formatted
+            import uuid
+            if isinstance(session_id, str):
+                session_uuid = uuid.UUID(session_id)
+            else:
+                session_uuid = session_id
+                
             # Get current fix iteration
             current_iteration = await conn.fetchval(
                 "SELECT COALESCE(MAX(attempt_number), 0) FROM fix_attempts WHERE session_id = $1",
-                session_id
+                session_uuid
             )
             
             new_attempt = current_iteration + 1
@@ -219,7 +226,7 @@ class SessionManager:
                 INSERT INTO fix_attempts (session_id, attempt_number, branch_name, files_changed, status)
                 VALUES ($1, $2, $3, $4, 'pending')
                 """,
-                session_id, new_attempt, branch_name, json.dumps(files_changed)
+                session_uuid, new_attempt, branch_name, json.dumps(files_changed)
             )
             
             # Update session
@@ -229,7 +236,7 @@ class SessionManager:
                 SET current_fix_branch = $2, fix_iteration = $3
                 WHERE id = $1
                 """,
-                session_id, branch_name, new_attempt
+                session_uuid, branch_name, new_attempt
             )
             
             log.info(f"Created fix attempt #{new_attempt} for session {session_id}")
@@ -240,6 +247,13 @@ class SessionManager:
                                 error_details: Optional[str] = None):
         """Update fix attempt status"""
         async with self.get_connection() as conn:
+            # Ensure session_id is properly formatted
+            import uuid
+            if isinstance(session_id, str):
+                session_uuid = uuid.UUID(session_id)
+            else:
+                session_uuid = session_id
+                
             await conn.execute(
                 """
                 UPDATE fix_attempts
@@ -250,7 +264,7 @@ class SessionManager:
                     completed_at = CASE WHEN $3 IN ('success', 'failed') THEN CURRENT_TIMESTAMP ELSE NULL END
                 WHERE session_id = $1 AND attempt_number = $2
                 """,
-                session_id, attempt_number, status, mr_id, mr_url, error_details
+                session_uuid, attempt_number, status, mr_id, mr_url, error_details
             )
             
             # Update session MR info if successful
@@ -261,21 +275,30 @@ class SessionManager:
                     SET merge_request_url = $2, merge_request_id = $3
                     WHERE id = $1
                     """,
-                    session_id, mr_url, mr_id
+                    session_uuid, mr_url, mr_id
                 )
     
     async def get_fix_attempts(self, session_id: str) -> List[Dict[str, Any]]:
         """Get all fix attempts for a session"""
         async with self.get_connection() as conn:
+            # Convert session_id to UUID if it's a string
+            import uuid
+            if isinstance(session_id, str):
+                session_uuid = uuid.UUID(session_id)
+            else:
+                session_uuid = session_id
+
             attempts = await conn.fetch(
                 """
                 SELECT * FROM fix_attempts
                 WHERE session_id = $1
                 ORDER BY attempt_number ASC
                 """,
-                session_id
+                session_uuid
             )
-            
+
+            log.debug(f"Found {len(attempts)} fix attempts for session {session_id}")
+
             results = []
             for attempt in attempts:
                 result = dict(attempt)

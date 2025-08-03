@@ -481,46 +481,62 @@ Note: When retrieving logs, always use max_size=30000 to prevent overflow."""
         
         result = await agent.invoke_async(final_prompt)
         
-        # Check if MR was created/updated
-        result_text = result.message if hasattr(result, 'message') else str(result)
+        # Extract text from result
+        result_text = self.extract_text_from_response(result)
         
-        # Track fix attempt if MR was created
-        if is_mr_request and "web_url" in result_text:
-            import re
-            # Extract branch name and MR details from result
-            branch_match = re.search(r'(?:Source Branch|Branch):\s*([^\s\n]+)', result_text)
-            mr_url_match = re.search(r'https?://[^\s<>"{}|\\^`\[\]]+/merge_requests/\d+', result_text)
-
-            if branch_match and mr_url_match:
-                branch_name = branch_match.group(1)
-                mr_url = mr_url_match.group(0)
-                mr_id = mr_url.split('/')[-1]
-
-                # Extract files changed from the result
-                files_changed = []
-                # Look for file paths in the response
-                file_pattern = r'(?:File|Updated?|Changed?|Modified?):\s*`?([^\s`\n]+\.[a-zA-Z]+)`?'
-                file_matches = re.findall(file_pattern, result_text)
-                files_changed.extend(file_matches)
-
-                # Also check for files in structured response
-                if "files_processed" in result_text:
-                    processed_pattern = r'(?:UPDATE|CREATE):\s*([^\s\n]+)'
-                    processed_matches = re.findall(processed_pattern, result_text)
-                    files_changed.extend(processed_matches)
-
-                # Remove duplicates
-                files_changed = list(set(files_changed))
-
-                # Create fix attempt record
+        # Always check for MR creation in the response
+        mr_url_pattern = r'(https?://[^\s]+/merge_requests/\d+)'
+        mr_url_match = re.search(mr_url_pattern, result_text) if isinstance(result_text, str) else None
+        
+        if mr_url_match:
+            mr_url = mr_url_match.group(1)
+            mr_id = mr_url.split('/')[-1]
+            
+            # Extract branch name - try multiple patterns
+            branch_patterns = [
+                r'(?:Source Branch|Branch):\s*([^\s\n]+)',
+                r'(fix/[^\s\n]+)',
+                r'branch["\s:]+([^\s",]+)'
+            ]
+            
+            branch_name = None
+            for pattern in branch_patterns:
+                match = re.search(pattern, result_text, re.IGNORECASE)
+                if match:
+                    branch_name = match.group(1).strip(':')
+                    break
+            
+            if not branch_name:
+                # Fallback: construct from timestamp
+                timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+                branch_name = f"fix/pipeline_{timestamp}"
+            
+            log.info(f"MR detected: {mr_url}, branch: {branch_name}")
+            
+            # Extract files
+            files_changed = []
+            file_patterns = [
+                r'(?:Created?|Updated?|Modified?):\s*([^\s\n]+\.[a-zA-Z]+)',
+                r'src/[^\s\n]+\.[a-zA-Z]+',
+                r'"([^"]+\.[a-zA-Z]+)"'
+            ]
+            
+            for pattern in file_patterns:
+                matches = re.findall(pattern, result_text)
+                files_changed.extend(matches)
+            
+            files_changed = list(set(files_changed))
+            
+            # Create fix attempt
+            try:
                 attempt_num = await self._session_manager.create_fix_attempt(
                     session_id,
                     branch_name,
                     files_changed
                 )
-                log.info(f"Created fix attempt #{attempt_num} for branch {branch_name}")
-
-                # Update session with MR info and current fix branch
+                log.info(f"Created fix attempt #{attempt_num}")
+                
+                # Update session
                 await self._session_manager.update_session_metadata(
                     session_id,
                     {
@@ -529,7 +545,8 @@ Note: When retrieving logs, always use max_size=30000 to prevent overflow."""
                         "current_fix_branch": branch_name
                     }
                 )
-
+                
+                # Update fix attempt
                 await self._session_manager.update_fix_attempt(
                     session_id,
                     attempt_num,
@@ -537,26 +554,60 @@ Note: When retrieving logs, always use max_size=30000 to prevent overflow."""
                     mr_id,
                     mr_url
                 )
-                log.info(f"Updated fix attempt #{attempt_num} for branch {branch_name}")
                 
-                # Get current session data for webhook_data update
+                # Update webhook_data
                 current_session = await self._session_manager.get_session(session_id)
                 if current_session:
                     webhook_data = current_session.get("webhook_data", {})
-                    fix_attempts_data = webhook_data.get("fix_attempts", [])
-                    fix_attempts_data.append({
+                    fix_attempts_list = webhook_data.get("fix_attempts", [])
+                    fix_attempts_list.append({
                         "branch": branch_name,
                         "mr_id": mr_id,
                         "mr_url": mr_url,
                         "status": "pending",
                         "timestamp": datetime.utcnow().isoformat()
                     })
-                    webhook_data["fix_attempts"] = fix_attempts_data
+                    webhook_data["fix_attempts"] = fix_attempts_list
                     await self._session_manager.update_session_metadata(session_id, {"webhook_data": webhook_data})
+                    log.info("Updated webhook_data with fix attempt")
+                    
+            except Exception as e:
+                log.error(f"Failed to create fix attempt: {e}", exc_info=True)
         
         log.debug(f"Generated response for session {session_id}")
         
         return result_text
+    
+    def extract_text_from_response(self, response):
+        """Extract text from any response format"""
+        if isinstance(response, str):
+            return response
+        
+        if hasattr(response, 'message'):
+            return str(response.message)
+        
+        if hasattr(response, 'content'):
+            return str(response.content)
+        
+        if isinstance(response, dict):
+            # Handle dict response
+            if "content" in response:
+                content = response["content"]
+                if isinstance(content, list):
+                    texts = []
+                    for item in content:
+                        if isinstance(item, dict) and "text" in item:
+                            texts.append(str(item["text"]))
+                    return "".join(texts)
+                elif isinstance(content, str):
+                    return content
+                else:
+                    return str(content)
+            # Try message field
+            elif "message" in response:
+                return str(response["message"])
+        
+        return str(response)
     
     def _format_conversation_history(self, conversation_history: List[Dict[str, Any]], max_messages: int = 6) -> str:
         """Format conversation history for context, limiting to recent messages"""
