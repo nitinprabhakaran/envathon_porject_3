@@ -180,7 +180,7 @@ Important:
         original_get_file_content = get_file_content
         
         @tool
-        async def tracked_get_file_content(file_path: str, project_id: str, ref: str = "HEAD") -> Dict[str, Any]:
+        async def tracked_get_file_content(file_path: str, project_id: str, ref: str = "HEAD") -> str:
             """Get content of a file from GitLab repository"""
             result = await original_get_file_content(file_path, project_id, ref)
             

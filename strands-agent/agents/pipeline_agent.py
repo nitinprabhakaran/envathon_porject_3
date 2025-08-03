@@ -434,7 +434,7 @@ Note: When retrieving logs, always use max_size=30000 to prevent overflow."""
         original_get_file_content = get_file_content
         
         @tool
-        async def tracked_get_file_content(file_path: str, project_id: str, ref: str = "HEAD") -> Dict[str, Any]:
+        async def tracked_get_file_content(file_path: str, project_id: str, ref: str = "HEAD") -> str:
             """Get content of a file from GitLab repository"""
             # Use current fix branch if available
             if current_fix_branch and ref == "HEAD":
