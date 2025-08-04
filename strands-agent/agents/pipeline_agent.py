@@ -496,14 +496,14 @@ Note: When retrieving logs, always use max_size=30000 to prevent overflow."""
             branch_patterns = [
                 r'(?:Source Branch|Branch):\s*([^\s\n]+)',
                 r'(fix/[^\s\n]+)',
-                r'branch["\s:]+([^\s",]+)'
+                r'branch["\s:]+([^\s",\n]+)'
             ]
             
             branch_name = None
             for pattern in branch_patterns:
                 match = re.search(pattern, result_text, re.IGNORECASE)
                 if match:
-                    branch_name = match.group(1).strip(':')
+                    branch_name = match.group(1).strip().rstrip('-')
                     break
             
             if not branch_name:

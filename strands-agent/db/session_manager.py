@@ -204,6 +204,7 @@ class SessionManager:
     
     async def create_fix_attempt(self, session_id: str, branch_name: str, files_changed: List[str]) -> int:
         """Create a new fix attempt record"""
+        branch_name = branch_name.strip()
         async with self.get_connection() as conn:
             # Ensure session_id is properly formatted
             import uuid
