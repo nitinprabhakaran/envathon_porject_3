@@ -237,7 +237,7 @@ async def handle_pipeline_success(project_id: str, ref: str):
                         
                         # Update the status in webhook_data
                         for fa in fix_attempts_data:
-                            if fa.get("branch") == ref:
+                            if fa.get("branch").strip() == ref.strip():
                                 fa["status"] = "success"
                                 fa["succeeded_at"] = datetime.utcnow().isoformat()
                                 break
@@ -288,7 +288,6 @@ async def handle_pipeline_success(project_id: str, ref: str):
                             return {"status": "resolved", "action": "target_branch_success"}
     
     return {"status": "processed", "action": "checked_for_resolution"}
-
 
 async def update_fix_attempt_status(session_id: str, branch_name: str, status: str, error_details: str = None):
     """Update fix attempt status for a session"""

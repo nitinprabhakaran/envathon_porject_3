@@ -68,7 +68,17 @@ Use this exact format for your responses:
 - Branch names should be: fix/pipeline_[job_name]_[timestamp]
 - When creating MR, ALWAYS include the full MR URL in your response
 - When calling get_job_logs, ALWAYS use max_size parameter (recommended: 30000)
-- When you analyze files, ALWAYS retrieve them using get_file_content to see the actual content"""
+- When you analyze files, ALWAYS retrieve them using get_file_content to see the actual content
+
+## CRITICAL: Merge Request Response Format
+When creating a merge request and reporting back, you MUST include these exact fields in your response:
+- Branch: fix/pipeline_[job_name]_[timestamp]
+- MR URL: [full URL]
+
+Do NOT use markdown formatting like bullet points or dashes for the branch name. 
+Write it as plain text: "Branch: fix/pipeline_build_20250804_163803"
+NOT as: "- Branch: fix/pipeline_build_20250804_163803"
+"""
 
 class PipelineAgent:
     def __init__(self):
@@ -483,49 +493,34 @@ Note: When retrieving logs, always use max_size=30000 to prevent overflow."""
         
         # Extract text from result
         result_text = self.extract_text_from_response(result)
+
+        # Initialize variables
+        mr_url = None
+        mr_id = None
+        branch_name = None
         
-        # Always check for MR creation in the response
-        mr_url_pattern = r'(https?://[^\s]+/merge_requests/\d+)'
-        mr_url_match = re.search(mr_url_pattern, result_text) if isinstance(result_text, str) else None
+        # Look for structured tool response from create_merge_request
+        if '"status": "success"' in result_text and '"source_branch":' in result_text:
+            # Extract clean values from the tool's JSON response
+            branch_match = re.search(r'"source_branch":\s*"([^"]+)"', result_text)
+            url_match = re.search(r'"web_url":\s*"([^"]+)"', result_text)
+            id_match = re.search(r'"id":\s*"?(\d+)"?', result_text)
+            
+            if branch_match and url_match:
+                branch_name = branch_match.group(1)
+                mr_url = url_match.group(1)
+                mr_id = id_match.group(1) if id_match else mr_url.split('/')[-1]
+                
+                log.info(f"MR detected from tool response: {mr_url}, branch: {branch_name}")
         
-        if mr_url_match:
-            mr_url = mr_url_match.group(1)
-            mr_id = mr_url.split('/')[-1]
-            
-            # Extract branch name - try multiple patterns
-            branch_patterns = [
-                r'(?:Source Branch|Branch):\s*([^\s\n]+)',
-                r'(fix/[^\s\n]+)',
-                r'branch["\s:]+([^\s",\n]+)'
-            ]
-            
-            branch_name = None
-            for pattern in branch_patterns:
-                match = re.search(pattern, result_text, re.IGNORECASE)
-                if match:
-                    branch_name = match.group(1).strip().rstrip('-')
-                    break
-            
-            if not branch_name:
-                # Fallback: construct from timestamp
-                timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
-                branch_name = f"fix/pipeline_{timestamp}"
-            
-            log.info(f"MR detected: {mr_url}, branch: {branch_name}")
-            
-            # Extract files
+        # Only proceed if we found both URL and branch from tool response
+        if mr_url and branch_name:
+            # Extract files changed
             files_changed = []
-            file_patterns = [
-                r'(?:Created?|Updated?|Modified?):\s*([^\s\n]+\.[a-zA-Z]+)',
-                r'src/[^\s\n]+\.[a-zA-Z]+',
-                r'"([^"]+\.[a-zA-Z]+)"'
-            ]
-            
-            for pattern in file_patterns:
-                matches = re.findall(pattern, result_text)
-                files_changed.extend(matches)
-            
-            files_changed = list(set(files_changed))
+            files_match = re.search(r'"files_processed":\s*\[([^\]]+)\]', result_text)
+            if files_match:
+                files_str = files_match.group(1)
+                files_changed = [f.strip(' "\'') for f in files_str.split(',')]
             
             # Create fix attempt
             try:
@@ -573,6 +568,8 @@ Note: When retrieving logs, always use max_size=30000 to prevent overflow."""
                     
             except Exception as e:
                 log.error(f"Failed to create fix attempt: {e}", exc_info=True)
+        else:
+            log.warning("Could not extract MR details from tool response")
         
         log.debug(f"Generated response for session {session_id}")
         
