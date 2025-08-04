@@ -376,3 +376,34 @@ async def get_project_info(project_id: str) -> Dict[str, Any]:
         except Exception as e:
             log.error(f"Failed to get project info: {e}")
             return {"error": str(e)}
+
+@tool
+async def get_merge_request_details(project_id: str, mr_iid: str) -> Dict[str, Any]:
+    """Get merge request details by IID
+    
+    Args:
+        project_id: GitLab project ID
+        mr_iid: Merge request internal ID
+    
+    Returns:
+        MR details including source_branch, web_url, etc.
+    """
+    log.info(f"Getting MR details for !{mr_iid} in project {project_id}")
+    
+    async with await get_gitlab_client() as client:
+        try:
+            response = await client.get(f"/projects/{project_id}/merge_requests/{mr_iid}")
+            response.raise_for_status()
+            mr = response.json()
+            
+            return {
+                "iid": mr.get("iid"),
+                "web_url": mr.get("web_url"),
+                "source_branch": mr.get("source_branch"),
+                "target_branch": mr.get("target_branch"),
+                "title": mr.get("title"),
+                "state": mr.get("state")
+            }
+        except Exception as e:
+            log.error(f"Failed to get MR details: {e}")
+            return {"error": str(e)}

@@ -420,7 +420,8 @@ INSTRUCTIONS:
    - If it's a new file that needs to be created, create it
    - Apply the fixes that were discussed in the analysis
 4. Create a merge request with ALL necessary files
-5. Include the complete MR URL in your response
+5. IMPORTANT: After creating the MR, use get_merge_request_details to retrieve the exact branch name and MR details
+6. Include the complete MR URL in your response
 
 Use these parameters for create_merge_request:
 - Project ID: {context.project_id}
@@ -437,7 +438,9 @@ The files parameter must be a dictionary with this structure:
     "creates": {{
         "path/to/new/file.ext": "complete file content here"
     }}
-}}"""
+}}
+
+After creating the MR, call get_merge_request_details with the project_id and MR IID to get the exact details."""
         else:
             final_prompt = f"""{context_prompt}
 
@@ -494,82 +497,77 @@ Note: When retrieving logs, always use max_size=30000 to prevent overflow."""
         # Extract text from result
         result_text = self.extract_text_from_response(result)
 
-        # Initialize variables
-        mr_url = None
-        mr_id = None
-        branch_name = None
-        
-        # Look for structured tool response from create_merge_request
-        if '"status": "success"' in result_text and '"source_branch":' in result_text:
-            # Extract clean values from the tool's JSON response
-            branch_match = re.search(r'"source_branch":\s*"([^"]+)"', result_text)
-            url_match = re.search(r'"web_url":\s*"([^"]+)"', result_text)
-            id_match = re.search(r'"id":\s*"?(\d+)"?', result_text)
+        # Track fix attempt if MR was created
+        if is_mr_request and ("web_url" in result_text or "merge_requests" in result_text):
+            # Extract MR details from the response
+            mr_url = None
+            mr_id = None
+            branch_name = None
             
-            if branch_match and url_match:
-                branch_name = branch_match.group(1)
-                mr_url = url_match.group(1)
-                mr_id = id_match.group(1) if id_match else mr_url.split('/')[-1]
+            # Look for MR URL in the response
+            mr_url_match = re.search(r'(https?://[^\s]+/merge_requests/\d+)', result_text)
+            if mr_url_match:
+                mr_url = mr_url_match.group(1)
+                mr_id = mr_url.split('/')[-1]
                 
-                log.info(f"MR detected from tool response: {mr_url}, branch: {branch_name}")
-        
-        # Only proceed if we found both URL and branch from tool response
-        if mr_url and branch_name:
-            # Extract files changed
-            files_changed = []
-            files_match = re.search(r'"files_processed":\s*\[([^\]]+)\]', result_text)
-            if files_match:
-                files_str = files_match.group(1)
-                files_changed = [f.strip(' "\'') for f in files_str.split(',')]
-            
-            # Create fix attempt
-            try:
-                attempt_num = await self._session_manager.create_fix_attempt(
-                    session_id,
-                    branch_name,
-                    files_changed
-                )
-                log.info(f"Created fix attempt #{attempt_num}")
-                
-                # Update session
-                await self._session_manager.update_session_metadata(
-                    session_id,
-                    {
-                        "merge_request_url": mr_url,
-                        "merge_request_id": mr_id,
-                        "current_fix_branch": branch_name
-                    }
-                )
-                
-                # Update fix attempt
-                await self._session_manager.update_fix_attempt(
-                    session_id,
-                    attempt_num,
-                    "pending",
-                    mr_id,
-                    mr_url
-                )
-                
-                # Update webhook_data
-                current_session = await self._session_manager.get_session(session_id)
-                if current_session:
-                    webhook_data = current_session.get("webhook_data", {})
-                    fix_attempts_list = webhook_data.get("fix_attempts", [])
-                    fix_attempts_list.append({
-                        "branch": branch_name,
-                        "mr_id": mr_id,
-                        "mr_url": mr_url,
-                        "status": "pending",
-                        "timestamp": datetime.utcnow().isoformat()
-                    })
-                    webhook_data["fix_attempts"] = fix_attempts_list
-                    await self._session_manager.update_session_metadata(session_id, {"webhook_data": webhook_data})
-                    log.info("Updated webhook_data with fix attempt")
+                # Look for branch name
+                branch_match = re.search(r'Branch:\s*(\S+)', result_text)
+                if branch_match:
+                    branch_name = branch_match.group(1)
                     
-            except Exception as e:
-                log.error(f"Failed to create fix attempt: {e}", exc_info=True)
-        else:
-            log.warning("Could not extract MR details from tool response")
+                if branch_name and mr_url:
+                    # Extract files changed
+                    files_changed = []
+                    if "CREATE:" in result_text:
+                        create_matches = re.findall(r'CREATE:\s*([^\s\n]+)', result_text)
+                        files_changed.extend(create_matches)
+                    
+                    # Create fix attempt
+                    try:
+                        attempt_num = await self._session_manager.create_fix_attempt(
+                            session_id,
+                            branch_name,
+                            files_changed
+                        )
+                        log.info(f"Created fix attempt #{attempt_num}")
+                        
+                        # Update session
+                        await self._session_manager.update_session_metadata(
+                            session_id,
+                            {
+                                "merge_request_url": mr_url,
+                                "merge_request_id": mr_id,
+                                "current_fix_branch": branch_name
+                            }
+                        )
+                        
+                        # Update fix attempt
+                        await self._session_manager.update_fix_attempt(
+                            session_id,
+                            attempt_num,
+                            "pending",
+                            mr_id,
+                            mr_url
+                        )
+                        
+                        # Update webhook_data
+                        current_session = await self._session_manager.get_session(session_id)
+                        if current_session:
+                            webhook_data = current_session.get("webhook_data", {})
+                            fix_attempts_list = webhook_data.get("fix_attempts", [])
+                            fix_attempts_list.append({
+                                "branch": branch_name,
+                                "mr_id": mr_id,
+                                "mr_url": mr_url,
+                                "status": "pending",
+                                "timestamp": datetime.utcnow().isoformat()
+                            })
+                            webhook_data["fix_attempts"] = fix_attempts_list
+                            await self._session_manager.update_session_metadata(session_id, {"webhook_data": webhook_data})
+                            log.info("Updated webhook_data with fix attempt")
+                            
+                    except Exception as e:
+                        log.error(f"Failed to create fix attempt: {e}", exc_info=True)
         
         log.debug(f"Generated response for session {session_id}")
         
