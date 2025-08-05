@@ -2,6 +2,7 @@
 import streamlit as st
 import asyncio
 import json
+import time
 from datetime import datetime, timedelta
 from utils.api_client import APIClient
 from utils.logger import setup_logger
@@ -129,15 +130,24 @@ with col1:
                         # Get fix attempts count
                         fix_attempts = session.get("webhook_data", {}).get("fix_attempts", [])
                         
-                        # Color code based on time remaining
-                        if time_remaining == "Expired":
-                            time_color = "🔴"
-                        elif "m" in time_remaining and not "h" in time_remaining:
-                            time_color = "🟡"
+                        # Color code based on fix status
+                        if fix_attempts:
+                            if any(att.get("status") == "success" for att in fix_attempts):
+                                status_color = "🟢"
+                            elif any(att.get("status") == "pending" for att in fix_attempts):
+                                status_color = "🟡"
+                            else:
+                                status_color = "🔴"
                         else:
-                            time_color = "🟢"
+                            # Color code based on time remaining
+                            if time_remaining == "Expired":
+                                status_color = "🔴"
+                            elif "m" in time_remaining and not "h" in time_remaining:
+                                status_color = "🟡"
+                            else:
+                                status_color = "🟢"
                         
-                        button_label = f"{job_name}\n{time_color} {time_remaining}"
+                        button_label = f"{status_color} {job_name}\n⏰ {time_remaining}"
                         if fix_attempts:
                             button_label += f"\n🔄 {len(fix_attempts)} fix(es)"
                         
@@ -179,7 +189,20 @@ with col2:
             if fix_attempts:
                 col_iter1, col_iter2 = st.columns([3, 1])
                 with col_iter1:
-                    st.warning(f"🔄 Fix Iterations: {len(fix_attempts)}/5")
+                    # Check if any attempts are pending
+                    pending_attempts = [att for att in fix_attempts if att.get("status") == "pending"]
+                    successful_attempts = [att for att in fix_attempts if att.get("status") == "success"]
+                    
+                    if successful_attempts:
+                        st.success(f"✅ Fix Iterations: {len(fix_attempts)}/5 ({len(successful_attempts)} successful)")
+                    elif pending_attempts:
+                        st.warning(f"🔄 Fix Iterations: {len(fix_attempts)}/5 (Checking status...)")
+                        # Auto-refresh every 5 seconds if there are pending fixes
+                        time.sleep(5)
+                        st.rerun()
+                    else:
+                        st.error(f"❌ Fix Iterations: {len(fix_attempts)}/5 (all failed)")
+                
                 with col_iter2:
                     with st.expander("Fix History"):
                         for i, attempt in enumerate(fix_attempts):
@@ -198,8 +221,13 @@ with col2:
                 current_branch = full_session.get("branch", "")
                 is_fix_branch = current_branch.startswith("fix/pipeline_")
                 
-                # Check if we've hit iteration limit
-                if len(fix_attempts) >= 5:
+                # Check fix status
+                all_successful = all(att.get("status") == "success" for att in fix_attempts) if fix_attempts else False
+                
+                if all_successful and mr_url:
+                    st.success("✅ Fix Applied Successfully!")
+                    st.link_button("📄 View MR", mr_url, use_container_width=True, type="primary")
+                elif len(fix_attempts) >= 5:
                     st.error("❌ Max attempts reached")
                 elif is_fix_branch and not mr_url:
                     # This is analyzing a failure on OUR fix branch - show Apply Fix
@@ -253,7 +281,7 @@ with col2:
             st.markdown("### 📋 Analysis & Discussion")
             
             # Create a container for messages with fixed height and scroll
-            message_container = st.container(height=400)
+            message_container = st.container(height=1400)
             
             with message_container:
                 for msg in messages:
@@ -330,15 +358,35 @@ with col2:
                     time_remaining = calculate_time_remaining(latest_session.get('expires_at'))
                     fix_attempts = latest_session.get("webhook_data", {}).get("fix_attempts", [])
                     
-                    # Create card
+                    # Determine actual status based on fix attempts
+                    if fix_attempts:
+                        # Check if any fix is successful
+                        successful_fixes = [att for att in fix_attempts if att.get("status") == "success"]
+                        pending_fixes = [att for att in fix_attempts if att.get("status") == "pending"]
+                        
+                        if successful_fixes:
+                            display_status = "fixed"
+                            status_emoji = "🟢"
+                            status_text = "Fixed"
+                        elif pending_fixes:
+                            display_status = "fixing"
+                            status_emoji = "🟡"
+                            status_text = "Fixing..."
+                        else:
+                            display_status = "failed"
+                            status_emoji = "🔴"
+                            status_text = f"Failed ({len(fix_attempts)} attempts)"
+                    else:
+                        display_status = status
+                        status_emoji = "🔴" if status == "active" else "🟢" if status == "resolved" else "🟡"
+                        status_text = "Failed" if status == "active" else "Fixed" if status == "resolved" else "Analyzing"
+                    
+                    # Create card with proper coloring
                     with st.container():
                         col_info, col_action = st.columns([4, 1])
                         
                         with col_info:
-                            status_emoji = "🔴" if status == "active" else "🟢" if status == "resolved" else "🟡"
-                            status_text = "Failed" if status == "active" else "Fixed" if status == "resolved" else "Analyzing"
-                            
-                            # Color for time
+                            # Time color based on remaining time
                             if time_remaining == "Expired":
                                 time_emoji = "🔴"
                             elif "m" in time_remaining and not "h" in time_remaining:
@@ -346,15 +394,37 @@ with col2:
                             else:
                                 time_emoji = "🟢"
                             
-                            st.markdown(f"""
-                            **{status_emoji} {job_name}** - {status_text}
-                            
-                            Stage: {latest_session.get("failed_stage", "Unknown")} | 
-                            {len(job_sessions)} occurrence(s) | 
-                            Fixes: {len(fix_attempts)} |
-                            Last: {datetime.fromisoformat(latest_session.get("created_at", datetime.now().isoformat())).strftime("%b %d, %H:%M")} |
-                            {time_emoji} Expires: {time_remaining}
-                            """)
+                            # Use colored text based on status
+                            if display_status == "fixed":
+                                st.markdown(f"""
+                                **{status_emoji} {job_name}** - :green[{status_text}]
+                                
+                                Stage: {latest_session.get("failed_stage", "Unknown")} | 
+                                {len(job_sessions)} occurrence(s) | 
+                                Fixes: {len(fix_attempts)} |
+                                Last: {datetime.fromisoformat(latest_session.get("created_at", datetime.now().isoformat())).strftime("%b %d, %H:%M")} |
+                                {time_emoji} Expires: {time_remaining}
+                                """)
+                            elif display_status == "fixing":
+                                st.markdown(f"""
+                                **{status_emoji} {job_name}** - :orange[{status_text}]
+                                
+                                Stage: {latest_session.get("failed_stage", "Unknown")} | 
+                                {len(job_sessions)} occurrence(s) | 
+                                Fixes: {len(fix_attempts)} |
+                                Last: {datetime.fromisoformat(latest_session.get("created_at", datetime.now().isoformat())).strftime("%b %d, %H:%M")} |
+                                {time_emoji} Expires: {time_remaining}
+                                """)
+                            else:
+                                st.markdown(f"""
+                                **{status_emoji} {job_name}** - :red[{status_text}]
+                                
+                                Stage: {latest_session.get("failed_stage", "Unknown")} | 
+                                {len(job_sessions)} occurrence(s) | 
+                                Fixes: {len(fix_attempts)} |
+                                Last: {datetime.fromisoformat(latest_session.get("created_at", datetime.now().isoformat())).strftime("%b %d, %H:%M")} |
+                                {time_emoji} Expires: {time_remaining}
+                                """)
                         
                         with col_action:
                             if st.button("View", key=f"view_{latest_session['id']}"):
@@ -362,6 +432,22 @@ with col2:
                                 st.rerun()
                     
                     st.divider()
+                    
+            # Auto-refresh check for pending fixes
+            has_pending = False
+            for branch, sessions in project_data.items():
+                for session in sessions:
+                    fix_attempts = session.get("webhook_data", {}).get("fix_attempts", [])
+                    if any(att.get("status") == "pending" for att in fix_attempts):
+                        has_pending = True
+                        break
+                if has_pending:
+                    break
+            
+            if has_pending:
+                # Auto-refresh every 5 seconds
+                time.sleep(5)
+                st.rerun()
         else:
             st.info("Select a project from the left to view failures")
 
@@ -383,6 +469,11 @@ with col3:
         if fix_attempts:
             st.markdown("**Fix Information:**")
             st.caption(f"Iterations: {len(fix_attempts)}/5")
+            
+            successful = [att for att in fix_attempts if att.get("status") == "success"]
+            if successful:
+                st.success(f"✅ {len(successful)} successful fix(es)")
+            
             st.caption(f"Current Branch: {fix_attempts[-1]['branch']}")
         
         # Session timing

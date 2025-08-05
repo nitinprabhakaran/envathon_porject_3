@@ -500,76 +500,106 @@ Note: When retrieving logs, always use max_size=30000 to prevent overflow."""
         # Track fix attempt if MR was created
         if is_mr_request and ("web_url" in result_text or "merge_requests" in result_text):
             # Extract MR details from the response
-            mr_url = None
-            mr_id = None
-            branch_name = None
-            
-            # Look for MR URL in the response
-            mr_url_match = re.search(r'(https?://[^\s]+/merge_requests/\d+)', result_text)
+            mr_url_match = re.search(r'(https?://[^\s<>"]+/merge_requests/\d+)', result_text)
+    
             if mr_url_match:
                 mr_url = mr_url_match.group(1)
                 mr_id = mr_url.split('/')[-1]
-                
-                # Look for branch name
-                branch_match = re.search(r'Branch:\s*(\S+)', result_text)
-                if branch_match:
-                    branch_name = branch_match.group(1)
-                    
-                if branch_name and mr_url:
-                    # Extract files changed
-                    files_changed = []
-                    if "CREATE:" in result_text:
-                        create_matches = re.findall(r'CREATE:\s*([^\s\n]+)', result_text)
-                        files_changed.extend(create_matches)
-                    
-                    # Create fix attempt
-                    try:
-                        attempt_num = await self._session_manager.create_fix_attempt(
-                            session_id,
-                            branch_name,
-                            files_changed
-                        )
-                        log.info(f"Created fix attempt #{attempt_num}")
-                        
-                        # Update session
-                        await self._session_manager.update_session_metadata(
-                            session_id,
-                            {
-                                "merge_request_url": mr_url,
-                                "merge_request_id": mr_id,
-                                "current_fix_branch": branch_name
-                            }
-                        )
-                        
-                        # Update fix attempt
-                        await self._session_manager.update_fix_attempt(
-                            session_id,
-                            attempt_num,
-                            "pending",
-                            mr_id,
-                            mr_url
-                        )
-                        
-                        # Update webhook_data
-                        current_session = await self._session_manager.get_session(session_id)
-                        if current_session:
-                            webhook_data = current_session.get("webhook_data", {})
-                            fix_attempts_list = webhook_data.get("fix_attempts", [])
-                            fix_attempts_list.append({
-                                "branch": branch_name,
-                                "mr_id": mr_id,
-                                "mr_url": mr_url,
-                                "status": "pending",
-                                "timestamp": datetime.utcnow().isoformat()
-                            })
-                            webhook_data["fix_attempts"] = fix_attempts_list
-                            await self._session_manager.update_session_metadata(session_id, {"webhook_data": webhook_data})
-                            log.info("Updated webhook_data with fix attempt")
-                            
-                    except Exception as e:
-                        log.error(f"Failed to create fix attempt: {e}", exc_info=True)
+
+                # Query GitLab API to get the actual MR details
+                from tools.gitlab import get_gitlab_client
+
+                try:
+                    async with await get_gitlab_client() as client:
+                        response = await client.get(f"/projects/{context.project_id}/merge_requests/{mr_id}")
+
+                        if response.status_code == 200:
+                            mr_data = response.json()
+                            branch_name = mr_data.get('source_branch')
+
+                            # Also get the files changed from the MR API
+                            changes_response = await client.get(f"/projects/{context.project_id}/merge_requests/{mr_id}/changes")
+                            files_changed = []
+
+                            if changes_response.status_code == 200:
+                                changes_data = changes_response.json()
+                                for change in changes_data.get('changes', []):
+                                    files_changed.append(change.get('new_path', change.get('old_path', '')))
+
+                            log.info(f"Retrieved from GitLab API - MR ID: {mr_id}, Branch: {branch_name}, Files: {files_changed}")
+
+                            if branch_name:
+                                # Create fix attempt
+                                try:
+                                    attempt_num = await self._session_manager.create_fix_attempt(
+                                        session_id,
+                                        branch_name,
+                                        files_changed
+                                    )
+                                    log.info(f"Created fix attempt #{attempt_num}")
+
+                                    # Update session
+                                    await self._session_manager.update_session_metadata(
+                                        session_id,
+                                        {
+                                            "merge_request_url": mr_url,
+                                            "merge_request_id": mr_id,
+                                            "current_fix_branch": branch_name
+                                        }
+                                    )
+
+                                    # Update fix attempt
+                                    await self._session_manager.update_fix_attempt(
+                                        session_id,
+                                        attempt_num,
+                                        "pending",
+                                        mr_id,
+                                        mr_url
+                                    )
+
+                                    # Update webhook_data for UI
+                                    current_session = await self._session_manager.get_session(session_id)
+                                    if current_session:
+                                        webhook_data = current_session.get("webhook_data", {})
+                                        fix_attempts_list = webhook_data.get("fix_attempts", [])
+                                        fix_attempts_list.append({
+                                            "branch": branch_name,
+                                            "mr_id": mr_id,
+                                            "mr_url": mr_url,
+                                            "status": "pending",
+                                            "timestamp": datetime.utcnow().isoformat()
+                                        })
+                                        webhook_data["fix_attempts"] = fix_attempts_list
+                                        await self._session_manager.update_session_metadata(session_id, {"webhook_data": webhook_data})
+                                        log.info("Updated webhook_data with fix attempt")
+
+                                except Exception as e:
+                                    log.error(f"Failed to create fix attempt: {e}", exc_info=True)
+                        else:
+                            log.error(f"Failed to get MR details: {response.status_code}")
+
+                except Exception as e:
+                    log.error(f"Error querying GitLab API for MR details: {e}", exc_info=True)
         
         log.debug(f"Generated response for session {session_id}")
+
+        # Extract text from result
+        if hasattr(result, 'message'):
+            result_text = result.message
+        elif hasattr(result, 'content'):
+            result_text = result.content
+        elif isinstance(result, dict):
+            # Handle dict response
+            if "content" in result:
+                content = result["content"]
+                if isinstance(content, list) and len(content) > 0:
+                    result_text = content[0].get("text", str(result))
+                else:
+                    result_text = str(content)
+            else:
+                result_text = result.get("message", str(result))
+        else:
+            result_text = str(result)
         
         return result_text
     

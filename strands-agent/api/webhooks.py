@@ -6,6 +6,7 @@ import uuid
 import asyncio
 from datetime import datetime
 from utils.logger import log
+from config import settings
 from db.session_manager import SessionManager
 from agents.pipeline_agent import PipelineAgent
 from agents.quality_agent import QualityAgent
@@ -206,6 +207,8 @@ async def handle_gitlab_webhook(request: Request):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+# In handle_pipeline_success function, update the branch comparison:
+
 async def handle_pipeline_success(project_id: str, ref: str):
     """Handle successful pipeline runs"""
     log.info(f"handle_pipeline_success called: project={project_id}, ref={ref}")
@@ -222,8 +225,13 @@ async def handle_pipeline_success(project_id: str, ref: str):
                 fix_attempts = await session_manager.get_fix_attempts(session["id"])
                 log.info(f"Found {len(fix_attempts)} fix attempts for session {session['id']}")
                 for attempt in fix_attempts:
-                    log.info(f"Fix attempt: branch={attempt.get('branch_name')}, status={attempt.get('status')}")
-                    if attempt.get("branch_name").strip() == ref.strip() and attempt["status"] == "pending":
+                    # Clean both branch names before comparison
+                    stored_branch = attempt.get('branch_name', '').strip()
+                    incoming_branch = ref.strip()
+                    
+                    log.info(f"Comparing branches - stored: '{stored_branch}', incoming: '{incoming_branch}'")
+                    
+                    if stored_branch == incoming_branch and attempt["status"] == "pending":
                         # This is OUR fix branch that succeeded
                         await session_manager.update_fix_attempt(
                             session["id"],
@@ -237,7 +245,7 @@ async def handle_pipeline_success(project_id: str, ref: str):
                         
                         # Update the status in webhook_data
                         for fa in fix_attempts_data:
-                            if fa.get("branch").strip() == ref.strip():
+                            if fa.get("branch", "").strip() == incoming_branch:
                                 fa["status"] = "success"
                                 fa["succeeded_at"] = datetime.utcnow().isoformat()
                                 break
