@@ -4,6 +4,7 @@ from typing import Dict, Any, List, Optional
 import json
 import uuid
 import asyncio
+import os
 from datetime import datetime
 from utils.logger import log
 from config import settings
@@ -176,10 +177,77 @@ async def handle_gitlab_webhook(request: Request):
                             await session_manager.update_session_metadata(session['id'], {"webhook_data": webhook_data})
 
                             log.info(f"Updated failed fix attempt for {session_type} session {session['id']}")
+                            
+                            # AUTO-RETRY: Check if we can retry (under configured limit)
+                            max_retry_attempts = settings.max_fix_attempts
+                            if len(fix_attempts) < max_retry_attempts:
+                                log.info(f"Auto-triggering retry for session {session['id']} (attempt {len(fix_attempts) + 1}/{max_retry_attempts})")
+                                
+                                # Get session context for the agent
+                                context = await session_manager.get_session_context(session['id'])
+                                
+                                # Prepare retry message
+                                retry_message = (
+                                    f"The pipeline on branch {ref} is still failing with the same {session_type} issues. "
+                                    f"Let me analyze the latest logs and apply additional fixes to the same branch."
+                                )
+                                
+                                # Add user message for retry
+                                await session_manager.add_message(session['id'], "user", retry_message)
+                                
+                                # Get conversation history
+                                full_session = await session_manager.get_session(session['id'])
+                                conversation_history = full_session.get("conversation_history", [])
+                                
+                                # Trigger the appropriate agent
+                                if session_type == "quality":
+                                    response = await quality_agent.handle_user_message(
+                                        session['id'], 
+                                        retry_message,
+                                        conversation_history,
+                                        context
+                                    )
+                                else:
+                                    response = await pipeline_agent.handle_user_message(
+                                        session['id'],
+                                        retry_message,
+                                        conversation_history, 
+                                        context
+                                    )
+                                
+                                # Extract text from response
+                                if hasattr(response, 'message'):
+                                    response_text = response.message
+                                elif isinstance(response, dict) and "content" in response:
+                                    content = response["content"]
+                                    if isinstance(content, list):
+                                        response_text = content[0].get("text", str(response))
+                                    else:
+                                        response_text = str(content)
+                                else:
+                                    response_text = str(response)
+                                
+                                # Store agent response
+                                await session_manager.add_message(session['id'], "assistant", response_text)
+                                
+                                return {
+                                    "status": "retrying",
+                                    "session_id": session['id'],
+                                    "message": f"Auto-retry initiated (attempt {len(fix_attempts) + 1}/{max_retry_attempts})",
+                                    "response": response_text
+                                }
+                            else:
+                                log.warning(f"Maximum retry attempts ({max_retry_attempts}) reached for session {session['id']}")
+                                await session_manager.add_message(
+                                    session['id'],
+                                    "assistant",
+                                    f"⚠️ Maximum fix attempts ({max_retry_attempts}) reached. Manual intervention required to resolve the remaining issues."
+                                )
+                            
                             return {
                                 "status": "updated",
                                 "session_id": session['id'],
-                                "message": "Fix attempt failed, ready for next iteration"
+                                "message": "Fix attempt failed, ready for next iteration" if len(fix_attempts) < max_retry_attempts else "Max attempts reached"
                             }
 
         # Check for existing active session (non-fix branch)
@@ -206,8 +274,6 @@ async def handle_gitlab_webhook(request: Request):
         log.error(f"Webhook processing failed: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
-
-# In handle_pipeline_success function, update the branch comparison:
 
 async def handle_pipeline_success(project_id: str, ref: str):
     """Handle successful pipeline runs"""
@@ -296,19 +362,6 @@ async def handle_pipeline_success(project_id: str, ref: str):
                             return {"status": "resolved", "action": "target_branch_success"}
     
     return {"status": "processed", "action": "checked_for_resolution"}
-
-async def update_fix_attempt_status(session_id: str, branch_name: str, status: str, error_details: str = None):
-    """Update fix attempt status for a session"""
-    fix_attempts = await session_manager.get_fix_attempts(session_id)
-    for attempt in fix_attempts:
-        if attempt["branch_name"] == branch_name and attempt["status"] == "pending":
-            await session_manager.update_fix_attempt(
-                session_id,
-                attempt["attempt_number"],
-                status,
-                error_details=error_details
-            )
-
 
 async def create_quality_session(data: Dict[str, Any]):
     """Create a new quality analysis session"""
@@ -819,129 +872,3 @@ async def get_gitlab_project_id(sonarqube_key: str) -> Optional[str]:
             log.error(f"Error looking up GitLab project: {e}")
             return None
 
-# @router.post("/gitlab/pipeline-status")
-# async def handle_pipeline_status_webhook(request: Request):
-#     """Handle pipeline status updates to track fix effectiveness"""
-#     data = await request.json()
-    
-#     if data.get("object_kind") != "pipeline":
-#         return {"status": "ignored"}
-    
-#     # Check if this is a feature branch pipeline
-#     ref = data.get("object_attributes", {}).get("ref", "")
-#     if not ref.startswith("fix/"):
-#         return {"status": "ignored"}
-    
-#     # Find the related session
-#     project_id = str(data.get("project", {}).get("id"))
-#     status = data.get("object_attributes", {}).get("status")
-    
-#     # Update fix attempt status
-#     sessions = await session_manager.get_active_sessions()
-#     for session in sessions:
-#         if session.get("project_id") == project_id:
-#             fix_attempts = session.get("webhook_data", {}).get("fix_attempts", [])
-#             for attempt in fix_attempts:
-#                 if attempt["branch"] == ref:
-#                     attempt["status"] = status
-#                     await session_manager.update_session_metadata(
-#                         session["id"], 
-#                         {"webhook_data": session["webhook_data"]}
-#                     )
-                    
-#                     # If still failed, prepare for next iteration
-#                     if status == "failed":
-#                         await session_manager.add_message(
-#                             session["id"],
-#                             "system",
-#                             f"Fix attempt on branch {ref} failed. Pipeline still has issues."
-#                         )
-    
-#     return {"status": "processed"}
-
-# @router.post("/webhooks/gitlab/pipeline-status")
-# async def handle_pipeline_status_webhook(request: Request):
-#     """Handle pipeline status updates to track fix effectiveness"""
-#     try:
-#         data = await request.json()
-        
-#         if data.get("object_kind") != "pipeline":
-#             return {"status": "ignored"}
-        
-#         status = data.get("object_attributes", {}).get("status")
-#         if status not in ["success", "failed"]:
-#             return {"status": "ignored"}
-        
-#         pipeline_id = str(data.get("object_attributes", {}).get("id"))
-#         project_id = str(data.get("project", {}).get("id"))
-#         ref = data.get("object_attributes", {}).get("ref")
-        
-#         # Check if this pipeline is related to any active session's MR
-#         async with await get_gitlab_client() as client:
-#             # Get pipeline details
-#             pipeline_response = await client.get(f"/projects/{project_id}/pipelines/{pipeline_id}")
-#             pipeline_data = pipeline_response.json()
-            
-#             # Check if this is from a merge request
-#             if pipeline_data.get("source") == "merge_request_event":
-#                 mr_iid = pipeline_data.get("merge_request", {}).get("iid")
-                
-#                 if mr_iid:
-#                     # Find session with this MR
-#                     sessions = await session_manager.get_active_sessions()
-#                     for session in sessions:
-#                         if (session.get("merge_request_id") == str(mr_iid) and 
-#                             session.get("project_id") == project_id):
-                            
-#                             if status == "success":
-#                                 await session_manager.mark_session_resolved(session["id"])
-#                                 log.info(f"Marked session {session['id']} as resolved - MR pipeline succeeded")
-#                             else:
-#                                 # Track failed attempt
-#                                 await session_manager.track_fix_attempt(
-#                                     session["id"], 
-#                                     str(mr_iid), 
-#                                     ref,
-#                                     {"status": "failed"}
-#                                 )
-#                             return {"status": "processed"}
-            
-#             # Check if this is a post-merge pipeline on target branch
-#             elif pipeline_data.get("source") in ["push", "web"]:
-#                 # Get recent MRs that were merged
-#                 mr_response = await client.get(
-#                     f"/projects/{project_id}/merge_requests",
-#                     params={
-#                         "state": "merged",
-#                         "order_by": "updated_at",
-#                         "sort": "desc",
-#                         "per_page": 10
-#                     }
-#                 )
-#                 recent_mrs = mr_response.json()
-                
-#                 # Check if any merged MR is related to our sessions
-#                 sessions = await session_manager.get_active_sessions()
-#                 for mr in recent_mrs:
-#                     mr_id = str(mr.get("iid"))
-#                     merged_at = mr.get("merged_at")
-                    
-#                     if merged_at:
-#                         # Check if pipeline started after merge
-#                         pipeline_created = pipeline_data.get("created_at")
-#                         if pipeline_created > merged_at:
-#                             for session in sessions:
-#                                 if (session.get("merge_request_id") == mr_id and 
-#                                     session.get("project_id") == project_id and
-#                                     session.get("status") == "active"):
-                                    
-#                                     if status == "success":
-#                                         await session_manager.mark_session_resolved(session["id"])
-#                                         log.info(f"Marked session {session['id']} as resolved - post-merge pipeline succeeded")
-#                                     return {"status": "processed"}
-        
-#         return {"status": "processed"}
-        
-#     except Exception as e:
-#         log.error(f"Pipeline status webhook failed: {e}")
-#         return {"status": "error", "message": str(e)}

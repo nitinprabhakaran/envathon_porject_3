@@ -18,7 +18,12 @@ from tools.gitlab import (
     get_project_info
 )
 
-PIPELINE_SYSTEM_PROMPT = """You are an expert DevOps engineer specialized in analyzing GitLab CI/CD pipeline failures.
+def get_pipeline_system_prompt(max_attempts: int = None):
+    """Generate system prompt with configurable max attempts"""
+    if max_attempts is None:
+        max_attempts = settings.max_fix_attempts
+    
+    return f"""You are an expert DevOps engineer specialized in analyzing GitLab CI/CD pipeline failures.
 
 ## Your Role
 Analyze pipeline failures and provide actionable solutions. Every analysis must include:
@@ -69,6 +74,7 @@ Use this exact format for your responses:
 - When creating MR, ALWAYS include the full MR URL in your response
 - When calling get_job_logs, ALWAYS use max_size parameter (recommended: 30000)
 - When you analyze files, ALWAYS retrieve them using get_file_content to see the actual content
+- Maximum fix attempts allowed: {max_attempts}
 
 ## CRITICAL: Merge Request Response Format
 When creating a merge request and reporting back, you MUST include these exact fields in your response:
@@ -250,7 +256,7 @@ Remember: Do NOT create a merge request. Only analyze and propose solutions."""
         # Create fresh agent for analysis
         agent = Agent(
             model=self.model,
-            system_prompt=PIPELINE_SYSTEM_PROMPT,
+            system_prompt=get_pipeline_system_prompt(),
             tools=tools
         )
         
@@ -352,9 +358,10 @@ Remember: Do NOT create a merge request. Only analyze and propose solutions."""
         # Check iteration limit
         if is_retry or is_apply_fix or (is_mr_request and len(fix_attempts) > 0):
             if await self._session_manager.check_iteration_limit(session_id):
-                return """### ❌ Iteration Limit Reached
+                max_attempts = settings.max_fix_attempts
+                return f"""### ❌ Iteration Limit Reached
 
-I've attempted to fix this issue 5 times but the pipeline continues to fail. This suggests:
+I've attempted to fix this issue {max_attempts} times but the pipeline continues to fail. This suggests:
 
 1. **Multiple interrelated issues** that require comprehensive analysis
 2. **Environmental problems** not visible in truncated logs
@@ -378,7 +385,7 @@ Session Context:
 - Failed Job: {context.job_name} in stage {context.failed_stage}
 - Session ID: {session_id}
 - Current Fix Branch: {current_fix_branch or 'None'}
-- Fix Iteration: {len(fix_attempts)}
+- Fix Iteration: {len(fix_attempts)} of {settings.max_fix_attempts}
 """
         
         # Prepare final prompt based on context
@@ -488,7 +495,7 @@ Note: When retrieving logs, always use max_size=30000 to prevent overflow."""
         # Create agent with tools
         agent = Agent(
             model=self.model,
-            system_prompt=PIPELINE_SYSTEM_PROMPT,
+            system_prompt=get_pipeline_system_prompt(),
             tools=tools
         )
         

@@ -204,32 +204,29 @@ async def create_merge_request(
     
     Args:
         files: Dict with 'updates' and 'creates' keys, each containing file paths and content
+        update_mode: If True, commits to existing branch without creating it
     """
     
     async with await get_gitlab_client() as client:
         try:
+            # Check if branch exists
             branch_exists = False
             try:
                 branch_check = await client.get(f"/projects/{project_id}/repository/branches/{source_branch}")
                 if branch_check.status_code == 200:
                     branch_exists = True
-                    log.info(f"Branch {source_branch} already exists")
+                    log.info(f"Branch {source_branch} exists")
             except:
                 pass
             
-            if not branch_exists and not update_mode:
-                # Create new branch from target
-                # await client.post(
-                #     f"/projects/{project_id}/repository/branches",
-                #     json={"branch": source_branch, "ref": target_branch}
-                # )
-                # log.info(f"Created new branch {source_branch} from {target_branch}")
-                pass
-            elif branch_exists:
-                update_mode = True
-                log.info(f"Switching to update mode for existing branch {source_branch}")
+            # If in update mode, we expect the branch to exist
+            if update_mode:
+                if not branch_exists:
+                    log.error(f"Update mode requested but branch {source_branch} doesn't exist")
+                    return {"error": f"Branch {source_branch} not found for update"}
+                log.info(f"Updating existing branch {source_branch}")
             
-            # Process updates and creates based on LLM instructions
+            # Process files
             files_to_process = []
             
             if isinstance(files, dict) and "updates" in files:
@@ -251,14 +248,16 @@ async def create_merge_request(
             actions = []
             files_processed = []
             
-            # Now check each file's actual existence
+            # Determine which branch to check files against
+            if branch_exists:
+                check_ref = source_branch
+            else:
+                check_ref = target_branch
+            
+            # Check each file's actual existence
             for intended_action, file_path, content in files_to_process:
                 encoded_path = quote(file_path, safe='')
                 
-                # For new branches, check against target branch since source doesn't have files yet
-                check_ref = target_branch if not update_mode else source_branch
-                
-                # Check if file exists
                 file_exists = False
                 try:
                     check_response = await client.get(
@@ -276,8 +275,8 @@ async def create_merge_request(
                     files_processed.append(f"UPDATE: {file_path}")
                 else:
                     actions.append({"action": "create", "file_path": file_path, "content": content})
-                    files_processed.append(f"CREATE: {file_path} (file doesn't exist on {check_ref})")
-                    log.warning(f"File {file_path} doesn't exist on {check_ref}, creating it")
+                    files_processed.append(f"CREATE: {file_path}")
+                    log.info(f"File {file_path} doesn't exist on {check_ref}, creating it")
             
             if not actions:
                 return {
@@ -285,27 +284,70 @@ async def create_merge_request(
                     "files_checked": files_processed
                 }
             
-            # Commit changes
+            # Prepare commit - key fix is here
+            commit_data = {
+                "branch": source_branch,
+                "commit_message": f"Fix: {title}",
+                "actions": actions
+            }
+            
+            # Only add start_branch if creating new branch
+            if not branch_exists:
+                commit_data["start_branch"] = target_branch
+                log.info(f"Creating new branch {source_branch} from {target_branch}")
+            
+            # Make the commit
             commit_response = await client.post(
                 f"/projects/{project_id}/repository/commits",
-                json={
-                    "branch": source_branch,
-                    "commit_message": f"Fix: {title}",
-                    "actions": actions,
-                    "start_branch": target_branch if not branch_exists else None
-                }
+                json=commit_data
             )
             
             if commit_response.status_code != 201:
-                log.error(f"Commit failed: {commit_response.text}")
+                log.error(f"Commit failed with status {commit_response.status_code}: {commit_response.text}")
                 return {
                     "error": f"Commit failed: {commit_response.text}",
-                    "files_processed": files_processed
+                    "files_processed": files_processed,
+                    "branch_exists": branch_exists,
+                    "update_mode": update_mode
                 }
             
-            if not update_mode:
-                # Create new MR
-                response = await client.post(
+            log.info(f"Successfully committed to branch {source_branch}")
+            commit_sha = commit_response.json().get("id")
+            
+            # Handle MR creation/update
+            if branch_exists or update_mode:
+                # Branch exists, check for existing MR
+                mrs_response = await client.get(
+                    f"/projects/{project_id}/merge_requests",
+                    params={"source_branch": source_branch, "state": "opened"}
+                )
+                
+                if mrs_response.status_code == 200:
+                    mrs = mrs_response.json()
+                    if mrs:
+                        mr = mrs[0]
+                        log.info(f"Found existing MR !{mr.get('iid')}")
+                        return {
+                            "id": mr.get("iid"),
+                            "web_url": mr.get("web_url"),
+                            "message": "Updated existing merge request",
+                            "branch": source_branch,
+                            "files_processed": files_processed,
+                            "commit_sha": commit_sha
+                        }
+                
+                # No existing MR but branch exists
+                return {
+                    "message": "Committed to existing branch",
+                    "branch": source_branch,
+                    "files_processed": files_processed,
+                    "commit_sha": commit_sha,
+                    "info": "No merge request found for this branch"
+                }
+            
+            else:
+                # New branch, create MR
+                mr_response = await client.post(
                     f"/projects/{project_id}/merge_requests",
                     json={
                         "source_branch": source_branch,
@@ -316,44 +358,28 @@ async def create_merge_request(
                     }
                 )
                 
-                if response.status_code != 201:
-                    log.error(f"MR creation failed: {response.text}")
-                    return {"error": f"MR creation failed: {response.text}"}
-                    
-                mr_data = response.json()
+                if mr_response.status_code != 201:
+                    log.error(f"MR creation failed: {mr_response.text}")
+                    return {
+                        "error": f"MR creation failed: {mr_response.text}",
+                        "branch": source_branch,
+                        "commit_sha": commit_sha
+                    }
+                
+                mr_data = mr_response.json()
+                log.info(f"Created new MR !{mr_data.get('iid')}")
                 return {
                     "id": mr_data.get("iid"),
                     "web_url": mr_data.get("web_url"),
                     "title": mr_data.get("title"),
                     "source_branch": source_branch,
                     "target_branch": target_branch,
-                    "files_processed": files_processed
+                    "files_processed": files_processed,
+                    "commit_sha": commit_sha
                 }
-            else:
-                # Return existing MR info - we need to find it
-                mrs_response = await client.get(
-                    f"/projects/{project_id}/merge_requests",
-                    params={"source_branch": source_branch, "state": "opened"}
-                )
-                if mrs_response.status_code == 200:
-                    mrs = mrs_response.json()
-                    if mrs:
-                        mr = mrs[0]
-                        return {
-                            "id": mr.get("iid"),
-                            "web_url": mr.get("web_url"),
-                            "message": "Added commits to existing branch",
-                            "branch": source_branch,
-                            "files_processed": files_processed
-                        }
                 
-                return {
-                    "message": "Added commits to existing branch",
-                    "branch": source_branch,
-                    "files_processed": files_processed
-                }
         except Exception as e:
-            log.error(f"Failed to create merge request: {e}")
+            log.error(f"Failed to create/update merge request: {e}", exc_info=True)
             return {"error": str(e)}
 
 @tool

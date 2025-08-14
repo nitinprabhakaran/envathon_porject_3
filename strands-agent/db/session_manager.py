@@ -308,8 +308,10 @@ class SessionManager:
                 results.append(result)
             return results
     
-    async def check_iteration_limit(self, session_id: str, limit: int = 5) -> bool:
+    async def check_iteration_limit(self, session_id: str, limit: int = None) -> bool:
         """Check if we've reached the iteration limit"""
+        if limit is None:
+            limit = settings.max_fix_attempts
         attempts = await self.get_fix_attempts(session_id)
         return len(attempts) >= limit
     

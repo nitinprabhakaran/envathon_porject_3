@@ -22,7 +22,12 @@ from tools.gitlab import (
     get_project_info
 )
 
-QUALITY_SYSTEM_PROMPT = """You are an expert code quality analyst specialized in SonarQube quality gate failures.
+def get_quality_system_prompt(max_attempts: int = None):
+    """Generate system prompt with configurable max attempts"""
+    if max_attempts is None:
+        max_attempts = settings.max_fix_attempts
+        
+    return f"""You are an expert code quality analyst specialized in SonarQube quality gate failures.
 
 ## Your Role
 Analyze quality issues and provide actionable fixes. When analyzing, always fetch the actual metrics first.
@@ -42,6 +47,10 @@ Analyze quality issues and provide actionable fixes. When analyzing, always fetc
    - Configuration files for the detected language/framework
    - Even if there are 0 issues, retrieve files to check for test coverage opportunities
 4. Analyze findings and propose solutions
+
+## Maximum Fix Attempts
+- The system allows up to {max_attempts} fix attempts for quality issues
+- After {max_attempts} attempts, manual intervention is required
 
 ## Analysis Format
 Use this exact format for your responses:
@@ -220,7 +229,7 @@ Analysis approach:
         # Create fresh agent for analysis
         agent = Agent(
             model=self.model,
-            system_prompt=QUALITY_SYSTEM_PROMPT,
+            system_prompt=get_quality_system_prompt(),
             tools=tools
         )
         
@@ -318,12 +327,13 @@ Analysis approach:
         current_fix_branch = session_data.get('current_fix_branch')
         fix_attempts = await self._session_manager.get_fix_attempts(session_id)
         
-        # Check iteration limit
+        # Check iteration limit (continued from previous part)
         if is_retry or is_apply_fix or (is_mr_request and len(fix_attempts) > 0):
             if await self._session_manager.check_iteration_limit(session_id):
-                return """### ❌ Iteration Limit Reached
+                max_attempts = settings.max_fix_attempts
+                return f"""### ❌ Iteration Limit Reached
 
-I've attempted to fix quality issues 5 times but the quality gate continues to fail. This suggests:
+I've attempted to fix quality issues {max_attempts} times but the quality gate continues to fail. This suggests:
 
 1. **Deep architectural issues** requiring refactoring
 2. **Complex security vulnerabilities** needing manual review
@@ -347,7 +357,7 @@ Session Context:
 - Quality Gate Status: {context.quality_gate_status}
 - Session ID: {session_id}
 - Current Fix Branch: {current_fix_branch or 'None'}
-- Fix Iteration: {len(fix_attempts)}
+- Fix Iteration: {len(fix_attempts)} of {settings.max_fix_attempts}
 """
         
         # Add conversation summary (last analysis)
@@ -463,7 +473,7 @@ The files parameter must be a dictionary with this structure:
         # Create fresh agent and invoke
         agent = Agent(
             model=self.model,
-            system_prompt=QUALITY_SYSTEM_PROMPT,
+            system_prompt=get_quality_system_prompt(),
             tools=tools
         )
         

@@ -27,8 +27,9 @@ class Settings(BaseSettings):
     
     # App Settings
     log_level: str = "INFO"
-    session_timeout_minutes: int = 180  # Default 3 hours, configurable via env
+    session_timeout_minutes: int = 180
     port: int = 8000
+    max_fix_attempts: int = 5
     
     class Config:
         env_file = ".env"
