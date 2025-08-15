@@ -16,7 +16,7 @@ class Settings(BaseSettings):
     db_pool_size: int = 20
     
     # Queue settings
-    queue_type: str = os.getenv("QUEUE_TYPE", "rabbitmq")  # 'rabbitmq' or 'sqs'
+    queue_type: str = os.getenv("QUEUE_TYPE", "none")  # 'rabbitmq', 'sqs', or 'none'
     rabbitmq_url: str = os.getenv("RABBITMQ_URL", "amqp://guest:guest@rabbitmq:5672/")
     sqs_queue_url: str = os.getenv("SQS_QUEUE_URL", "")
     aws_region: str = os.getenv("AWS_REGION", "us-east-1")
@@ -31,7 +31,10 @@ class Settings(BaseSettings):
     # AWS Bedrock
     llm_provider: str = os.getenv("LLM_PROVIDER", "bedrock")
     bedrock_model_id: str = os.getenv("MODEL_ID", "us.anthropic.claude-3-5-sonnet-20241022-v2:0")
-    bedrock_region: str = os.getenv("BEDROCK_REGION", "us-east-2")
+    bedrock_region: str = os.getenv("AWS_REGION", "us-east-2")
+    aws_access_key_id: str = os.getenv("AWS_ACCESS_KEY_ID", "")
+    aws_secret_access_key: str = os.getenv("AWS_SECRET_ACCESS_KEY", "")
+    aws_session_token: str = os.getenv("AWS_SESSION_TOKEN", "")
     
     # GitLab
     gitlab_url: str = os.getenv("GITLAB_URL", "http://gitlab")

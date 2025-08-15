@@ -1,4 +1,4 @@
-"""Updated Strands Agent - Without Webhook Handling"""
+"""Strands Agent - Simplified without Vector Store"""
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
@@ -9,7 +9,6 @@ from api.sessions import router as session_router
 from api.analysis import router as analysis_router
 from db.session_manager import SessionManager
 from services.queue_processor import QueueProcessor
-from services.vector_store import VectorStore
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -20,13 +19,11 @@ async def lifespan(app: FastAPI):
     session_manager = SessionManager()
     await session_manager.init_pool()
     
-    # Initialize vector store
-    vector_store = VectorStore()
-    await vector_store.init()
-    
-    # Start queue processor
-    queue_processor = QueueProcessor()
-    queue_task = asyncio.create_task(queue_processor.start())
+    # Start queue processor (optional - only if queue is configured)
+    queue_task = None
+    if settings.queue_type != "none":
+        queue_processor = QueueProcessor()
+        queue_task = asyncio.create_task(queue_processor.start())
     
     # Start cleanup task
     cleanup_task = asyncio.create_task(periodic_cleanup(session_manager))
@@ -34,8 +31,9 @@ async def lifespan(app: FastAPI):
     yield
     
     # Cleanup
-    await queue_processor.stop()
-    queue_task.cancel()
+    if queue_task:
+        queue_processor.running = False
+        queue_task.cancel()
     cleanup_task.cancel()
     log.info("Shutting down...")
 
@@ -54,7 +52,7 @@ async def periodic_cleanup(session_manager: SessionManager):
 app = FastAPI(
     title="Strands Agent Service",
     version="2.0.0",
-    description="AI Agent for CI/CD failure analysis with vector store",
+    description="AI Agent for CI/CD failure analysis",
     lifespan=lifespan
 )
 
@@ -67,7 +65,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Include routers (NO webhook router)
+# Include routers
 app.include_router(session_router)
 app.include_router(analysis_router)
 
@@ -77,7 +75,7 @@ async def root():
         "service": "Strands Agent",
         "version": "2.0.0",
         "status": "operational",
-        "features": ["analysis", "vector_store", "session_management"]
+        "features": ["analysis", "session_management"]
     }
 
 @app.get("/health")

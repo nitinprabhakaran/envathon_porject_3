@@ -10,7 +10,7 @@ from config import settings
 from db.session_manager import SessionManager
 from agents.pipeline_agent import PipelineAgent
 from agents.quality_agent import QualityAgent
-from services.vector_store import VectorStore
+# from services.vector_store import VectorStore  # To be implemented
 
 class QueueProcessor:
     """Process webhook events from message queue"""
@@ -19,7 +19,7 @@ class QueueProcessor:
         self.session_manager = SessionManager()
         self.pipeline_agent = PipelineAgent()
         self.quality_agent = QualityAgent()
-        self.vector_store = VectorStore()
+        # self.vector_store = VectorStore()  # To be implemented
         self.connection = None
         self.channel = None
         self.sqs_client = None

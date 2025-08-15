@@ -6,7 +6,8 @@ from utils.logger import log
 from db.session_manager import SessionManager
 from agents.pipeline_agent import PipelineAgent
 from agents.quality_agent import QualityAgent
-from services.vector_store import VectorStore
+# Vector store import removed - will be added when implemented
+# from services.vector_store import VectorStore
 
 router = APIRouter(prefix="/analysis", tags=["analysis"])
 
@@ -14,7 +15,7 @@ router = APIRouter(prefix="/analysis", tags=["analysis"])
 session_manager = SessionManager()
 pipeline_agent = PipelineAgent()
 quality_agent = QualityAgent()
-vector_store = VectorStore()
+# vector_store = VectorStore()  # Commented until implemented
 
 class AnalysisRequest(BaseModel):
     """Request model for analysis"""
@@ -70,18 +71,15 @@ async def search_previous_fixes(request: SearchRequest):
     try:
         log.info(f"Searching for fixes: {request.query}")
         
-        # Search in vector store
-        results = await vector_store.search_similar_fixes(
-            query=request.query,
-            project_id=request.project_id,
-            limit=request.limit
-        )
+        # Vector store search - placeholder until implemented
+        results = []
         
         return {
             "status": "success",
             "query": request.query,
             "results": results,
-            "count": len(results)
+            "count": 0,
+            "message": "Vector store not yet implemented"
         }
         
     except Exception as e:
@@ -114,16 +112,12 @@ async def get_project_stats(project_id: str):
 async def health_check():
     """Check analysis service health"""
     try:
-        # Check vector store
-        vector_health = await vector_store.health_check()
-        
         # Check database
         db_health = await session_manager.health_check()
         
         return {
             "status": "healthy",
             "components": {
-                "vector_store": vector_health,
                 "database": db_health,
                 "agents": "operational"
             }

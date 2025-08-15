@@ -9,11 +9,11 @@ class Settings(BaseSettings):
     # Service info
     service_name: str = "webhook-handler"
     version: str = "2.0.0"
-    port: int = 8080
+    port: int = int(os.getenv("PORT", "8090"))
     log_level: str = "INFO"
     
     # Database
-    database_url: str = os.getenv("DATABASE_URL", "postgresql://postgres:postgres@postgres:5432/cicd_assistant")
+    database_url: str = os.getenv("DATABASE_URL", "postgresql://cicd_assistant:secure_password@postgres-assistant:5432/cicd_assistant")
     db_pool_size: int = 20
     db_max_overflow: int = 40
     
