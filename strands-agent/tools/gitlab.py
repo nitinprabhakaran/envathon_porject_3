@@ -217,13 +217,25 @@ async def create_merge_request(
                     branch_exists = True
                     log.info(f"Branch {source_branch} exists")
             except:
-                pass
+                log.debug(f"Branch check for {source_branch}: {e}")
+                branch_exists = False
             
             # If in update mode, we expect the branch to exist
-            if update_mode:
+            if update_mode and not branch_exists:
+                try:
+                    encoded_branch = quote(source_branch, safe='')
+                    branch_check = await client.get(f"/projects/{project_id}/repository/branches/{encoded_branch}")
+                    if branch_check.status_code == 200:
+                        branch_exists = True
+                        log.info(f"Branch {source_branch} exists (found with encoding)")
+                except:
+                    pass
+
                 if not branch_exists:
                     log.error(f"Update mode requested but branch {source_branch} doesn't exist")
                     return {"error": f"Branch {source_branch} not found for update"}
+                
+            if update_mode:
                 log.info(f"Updating existing branch {source_branch}")
             
             # Process files

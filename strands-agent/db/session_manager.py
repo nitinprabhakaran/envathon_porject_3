@@ -212,37 +212,50 @@ class SessionManager:
                 session_uuid = uuid.UUID(session_id)
             else:
                 session_uuid = session_id
+            
+            # Use transaction for atomicity
+            async with conn.transaction():
+                # Lock the session row to prevent concurrent modifications
+                await conn.execute(
+                    "SELECT id FROM sessions WHERE id = $1 FOR UPDATE",
+                    session_uuid
+                )
                 
-            # Get current fix iteration
-            current_iteration = await conn.fetchval(
-                "SELECT COALESCE(MAX(attempt_number), 0) FROM fix_attempts WHERE session_id = $1",
-                session_uuid
-            )
-            
-            new_attempt = current_iteration + 1
-            
-            # Create fix attempt
-            await conn.execute(
-                """
-                INSERT INTO fix_attempts (session_id, attempt_number, branch_name, files_changed, status)
-                VALUES ($1, $2, $3, $4, 'pending')
-                """,
-                session_uuid, new_attempt, branch_name, json.dumps(files_changed)
-            )
-            
-            # Update session
-            await conn.execute(
-                """
-                UPDATE sessions 
-                SET current_fix_branch = $2, fix_iteration = $3
-                WHERE id = $1
-                """,
-                session_uuid, branch_name, new_attempt
-            )
+                # Now get the current iteration count
+                current_iteration = await conn.fetchval(
+                    "SELECT COALESCE(MAX(attempt_number), 0) FROM fix_attempts WHERE session_id = $1",
+                    session_uuid
+                )
+                
+                new_attempt = current_iteration + 1
+                
+                # Check if we're at the limit
+                if new_attempt > settings.max_fix_attempts:
+                    log.warning(f"Cannot create fix attempt #{new_attempt} - exceeds limit of {settings.max_fix_attempts}")
+                    raise Exception(f"Maximum fix attempts ({settings.max_fix_attempts}) exceeded")
+                
+                # Create fix attempt
+                await conn.execute(
+                    """
+                    INSERT INTO fix_attempts (session_id, attempt_number, branch_name, files_changed, status)
+                    VALUES ($1, $2, $3, $4, 'pending')
+                    """,
+                    session_uuid, new_attempt, branch_name, json.dumps(files_changed)
+                )
+                
+                # Update session
+                await conn.execute(
+                    """
+                    UPDATE sessions 
+                    SET current_fix_branch = $2, fix_iteration = $3
+                    WHERE id = $1
+                    """,
+                    session_uuid, branch_name, new_attempt
+                )
             
             log.info(f"Created fix attempt #{new_attempt} for session {session_id}")
             return new_attempt
-    
+
     async def update_fix_attempt(self, session_id: str, attempt_number: int, status: str, 
                                 mr_id: Optional[str] = None, mr_url: Optional[str] = None,
                                 error_details: Optional[str] = None):

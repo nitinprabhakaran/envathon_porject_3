@@ -178,17 +178,36 @@ async def handle_gitlab_webhook(request: Request):
 
                             log.info(f"Updated failed fix attempt for {session_type} session {session['id']}")
                             
-                            # AUTO-RETRY: Check if we can retry (under configured limit)
+                            # FIXED: Check actual database fix attempts count
+                            fix_attempts = await session_manager.get_fix_attempts(session['id'])
+                            actual_attempt_count = len(fix_attempts)
                             max_retry_attempts = settings.max_fix_attempts
-                            if len(fix_attempts) < max_retry_attempts:
-                                log.info(f"Auto-triggering retry for session {session['id']} (attempt {len(fix_attempts) + 1}/{max_retry_attempts})")
+                            
+                            # Check if we've reached the limit
+                            if actual_attempt_count >= max_retry_attempts:
+                                log.warning(f"Maximum retry attempts ({max_retry_attempts}) reached for session {session['id']}")
+                                await session_manager.add_message(
+                                    session['id'],
+                                    "assistant",
+                                    f"⚠️ Maximum fix attempts ({max_retry_attempts}) reached. Manual intervention required to resolve the remaining issues."
+                                )
+                                return {
+                                    "status": "max_attempts_reached",
+                                    "session_id": session['id'],
+                                    "message": f"Max attempts ({max_retry_attempts}) reached"
+                                }
+                            
+                            # AUTO-RETRY: Only proceed if under limit
+                            if actual_attempt_count < max_retry_attempts:
+                                log.info(f"Auto-triggering retry for session {session['id']} (attempt {actual_attempt_count + 1}/{max_retry_attempts})")
                                 
                                 # Get session context for the agent
                                 context = await session_manager.get_session_context(session['id'])
                                 
-                                # Prepare retry message
+                                # Prepare retry message with iteration context
                                 retry_message = (
                                     f"The pipeline on branch {ref} is still failing with the same {session_type} issues. "
+                                    f"This is attempt {actual_attempt_count + 1} of {max_retry_attempts}. "
                                     f"Let me analyze the latest logs and apply additional fixes to the same branch."
                                 )
                                 
@@ -233,21 +252,14 @@ async def handle_gitlab_webhook(request: Request):
                                 return {
                                     "status": "retrying",
                                     "session_id": session['id'],
-                                    "message": f"Auto-retry initiated (attempt {len(fix_attempts) + 1}/{max_retry_attempts})",
+                                    "message": f"Auto-retry initiated (attempt {actual_attempt_count + 1}/{max_retry_attempts})",
                                     "response": response_text
                                 }
-                            else:
-                                log.warning(f"Maximum retry attempts ({max_retry_attempts}) reached for session {session['id']}")
-                                await session_manager.add_message(
-                                    session['id'],
-                                    "assistant",
-                                    f"⚠️ Maximum fix attempts ({max_retry_attempts}) reached. Manual intervention required to resolve the remaining issues."
-                                )
                             
                             return {
                                 "status": "updated",
                                 "session_id": session['id'],
-                                "message": "Fix attempt failed, ready for next iteration" if len(fix_attempts) < max_retry_attempts else "Max attempts reached"
+                                "message": "Fix attempt failed"
                             }
 
         # Check for existing active session (non-fix branch)
@@ -273,7 +285,6 @@ async def handle_gitlab_webhook(request: Request):
     except Exception as e:
         log.error(f"Webhook processing failed: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
-
 
 async def handle_pipeline_success(project_id: str, ref: str):
     """Handle successful pipeline runs"""
