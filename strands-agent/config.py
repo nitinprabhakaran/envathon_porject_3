@@ -1,96 +1,63 @@
-"""Unified configuration with local/AWS switching"""
-import os
+"""Configuration for Strands Agent Service"""
 from pydantic_settings import BaseSettings
-from typing import Optional
+import os
 
 class Settings(BaseSettings):
-    """Application configuration with environment-based service switching"""
+    """Application settings"""
     
-    # Deployment Environment
-    deployment_mode: str = "local"  # "local" or "aws"
-    environment: str = "development"
-    log_level: str = "INFO"
+    # Service info
+    service_name: str = "strands-agent"
+    version: str = "2.0.0"
     port: int = 8000
+    log_level: str = "INFO"
     
-    # Database Configuration (switches between local/RDS)
-    db_type: str = "local"  # "local" or "rds"
+    # Database
+    database_url: str = os.getenv("DATABASE_URL", "postgresql://postgres:postgres@postgres:5432/cicd_assistant")
+    db_pool_size: int = 20
     
-    # Local PostgreSQL
-    local_db_url: str = "postgresql://cicd_assistant:secure_password@postgres-assistant:5432/cicd_assistant"
+    # Queue settings
+    queue_type: str = os.getenv("QUEUE_TYPE", "rabbitmq")  # 'rabbitmq' or 'sqs'
+    rabbitmq_url: str = os.getenv("RABBITMQ_URL", "amqp://guest:guest@rabbitmq:5672/")
+    sqs_queue_url: str = os.getenv("SQS_QUEUE_URL", "")
+    aws_region: str = os.getenv("AWS_REGION", "us-east-1")
     
-    # AWS RDS
-    rds_endpoint: str = ""
-    rds_port: int = 5432
-    rds_database: str = "cicd_assistant"
-    rds_username: str = ""
-    rds_password: str = ""
+    # OpenSearch/ElasticSearch for Vector Store
+    opensearch_host: str = os.getenv("OPENSEARCH_HOST", "opensearch")
+    opensearch_port: int = 9200
+    opensearch_user: str = os.getenv("OPENSEARCH_USER", "admin")
+    opensearch_password: str = os.getenv("OPENSEARCH_PASSWORD", "admin")
+    opensearch_use_ssl: bool = os.getenv("OPENSEARCH_USE_SSL", "false").lower() == "true"
     
-    @property
-    def database_url(self) -> str:
-        """Get database URL based on deployment mode"""
-        if self.db_type == "rds" and self.rds_endpoint:
-            return f"postgresql://{self.rds_username}:{self.rds_password}@{self.rds_endpoint}:{self.rds_port}/{self.rds_database}"
-        return self.local_db_url
+    # AWS Bedrock
+    llm_provider: str = os.getenv("LLM_PROVIDER", "bedrock")
+    bedrock_model_id: str = os.getenv("MODEL_ID", "us.anthropic.claude-3-5-sonnet-20241022-v2:0")
+    bedrock_region: str = os.getenv("BEDROCK_REGION", "us-east-2")
     
-    # Queue Configuration (switches between RabbitMQ/Redis/SQS)
-    queue_type: str = "rabbitmq"  # "rabbitmq", "redis", or "sqs"
+    # GitLab
+    gitlab_url: str = os.getenv("GITLAB_URL", "http://gitlab")
+    gitlab_token: str = os.getenv("GITLAB_TOKEN", "")
     
-    # Local Queue Options
-    rabbitmq_url: str = "amqp://admin:admin@rabbitmq:5672"
-    redis_url: str = "redis://redis:6379"
-    queue_name: str = "webhook-events"
+    # SonarQube
+    sonarqube_url: str = os.getenv("SONARQUBE_URL", "http://sonarqube:9000")
+    sonarqube_token: str = os.getenv("SONARQUBE_TOKEN", "")
     
-    # AWS SQS
-    sqs_queue_url: str = ""
-    sqs_region: str = "us-east-1"
+    # Session settings
+    session_timeout_minutes: int = 60
+    max_retries: int = 3
+    max_fix_attempts: int = 3
     
-    # Vector Store Configuration (switches between local OpenSearch/AWS OpenSearch)
-    vector_store_type: str = "local"  # "local" or "aws"
+    # Vector store settings
+    vector_index_name: str = "cicd_fixes"
+    vector_dimension: int = 768
+    max_similar_results: int = 5
     
-    # Local OpenSearch
-    local_opensearch_endpoint: str = "http://opensearch:9200"
-    
-    # AWS OpenSearch
-    aws_opensearch_endpoint: str = ""
-    aws_opensearch_region: str = "us-east-1"
-    
-    opensearch_index: str = "cicd-fixes"
-    opensearch_username: Optional[str] = None
-    opensearch_password: Optional[str] = None
-    
-    @property
-    def opensearch_endpoint(self) -> str:
-        """Get OpenSearch endpoint based on deployment mode"""
-        if self.vector_store_type == "aws" and self.aws_opensearch_endpoint:
-            return self.aws_opensearch_endpoint
-        return self.local_opensearch_endpoint
-    
-    # AWS Credentials (used when deployment_mode = "aws")
-    aws_access_key_id: Optional[str] = None
-    aws_secret_access_key: Optional[str] = None
-    aws_session_token: Optional[str] = None
-    aws_region: str = "us-east-1"
-    
-    # LLM Configuration
-    llm_provider: str = "bedrock"
-    model_id: str = "anthropic.claude-3-5-sonnet-20241022-v2:0"
-    anthropic_api_key: Optional[str] = None
+    # Log processing settings
     max_log_size: int = 30000
-    
-    # GitLab Configuration
-    gitlab_url: str = "http://gitlab:80"
-    gitlab_token: str = ""
-    
-    # SonarQube Configuration
-    sonar_host_url: str = "http://sonarqube:9000"
-    sonar_token: str = ""
-    
-    # Processing Configuration
-    session_timeout_minutes: int = 240
-    max_fix_attempts: int = 5
+    max_log_lines: int = 1000
     
     class Config:
         env_file = ".env"
         case_sensitive = False
 
+# Initialize settings
 settings = Settings()

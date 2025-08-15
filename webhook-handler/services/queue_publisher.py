@@ -1,82 +1,116 @@
-"""Queue Publisher for local development"""
+"""Queue Publisher for webhook events"""
 import json
 import asyncio
-import aio_pika
-import redis.asyncio as redis
 from typing import Dict, Any
+import aio_pika
+import boto3
 from utils.logger import log
 from config import settings
+from datetime import datetime
 
 class QueuePublisher:
-    """Publish events to RabbitMQ or Redis"""
+    """Publish events to message queue (RabbitMQ or SQS)"""
     
     def __init__(self):
-        self.queue_type = settings.queue_type  # 'rabbitmq' or 'redis'
+        self.queue_type = settings.queue_type
         self.connection = None
         self.channel = None
-        self.redis_client = None
+        self.sqs_client = None
         
+        if self.queue_type == "sqs":
+            self.sqs_client = boto3.client('sqs', region_name=settings.aws_region)
+    
     async def connect(self):
-        """Connect to queue service"""
-        if self.queue_type == 'rabbitmq':
-            await self.connect_rabbitmq()
-        else:
-            await self.connect_redis()
+        """Connect to message queue"""
+        if self.queue_type == "rabbitmq":
+            try:
+                self.connection = await aio_pika.connect_robust(settings.rabbitmq_url)
+                self.channel = await self.connection.channel()
+                
+                # Declare exchange and queue
+                exchange = await self.channel.declare_exchange(
+                    "webhook_events",
+                    aio_pika.ExchangeType.TOPIC,
+                    durable=True
+                )
+                
+                queue = await self.channel.declare_queue(
+                    "webhook_processing",
+                    durable=True
+                )
+                
+                await queue.bind(exchange, routing_key="webhook.*")
+                log.info("Connected to RabbitMQ")
+                
+            except Exception as e:
+                log.error(f"Failed to connect to RabbitMQ: {e}")
+                raise
     
-    async def connect_rabbitmq(self):
-        """Connect to RabbitMQ"""
-        if not self.connection:
-            self.connection = await aio_pika.connect_robust(
-                settings.rabbitmq_url
-            )
-            self.channel = await self.connection.channel()
+    async def publish_event(
+        self,
+        event_type: str,
+        session_id: str,
+        data: Dict[str, Any]
+    ) -> bool:
+        """Publish event to queue"""
+        try:
+            message = {
+                "event_type": event_type,
+                "session_id": session_id,
+                "data": data,
+                "timestamp": datetime.utcnow().isoformat()
+            }
             
-            # Declare queue
-            await self.channel.declare_queue(
-                settings.queue_name,
-                durable=True
-            )
-            log.info("Connected to RabbitMQ")
+            if self.queue_type == "rabbitmq":
+                if not self.channel:
+                    await self.connect()
+                
+                exchange = await self.channel.get_exchange("webhook_events")
+                await exchange.publish(
+                    aio_pika.Message(
+                        body=json.dumps(message).encode(),
+                        delivery_mode=aio_pika.DeliveryMode.PERSISTENT
+                    ),
+                    routing_key=f"webhook.{event_type}"
+                )
+                log.info(f"Published {event_type} event for session {session_id}")
+                
+            elif self.queue_type == "sqs":
+                self.sqs_client.send_message(
+                    QueueUrl=settings.sqs_queue_url,
+                    MessageBody=json.dumps(message),
+                    MessageAttributes={
+                        'event_type': {'StringValue': event_type, 'DataType': 'String'},
+                        'session_id': {'StringValue': session_id, 'DataType': 'String'}
+                    }
+                )
+                log.info(f"Published {event_type} to SQS for session {session_id}")
+            
+            return True
+            
+        except Exception as e:
+            log.error(f"Failed to publish event: {e}")
+            return False
     
-    async def connect_redis(self):
-        """Connect to Redis"""
-        if not self.redis_client:
-            self.redis_client = await redis.from_url(
-                settings.redis_url,
-                decode_responses=False
-            )
-            log.info("Connected to Redis")
-    
-    async def publish(self, message: Dict[str, Any]):
-        """Publish message to queue"""
-        await self.connect()
-        
-        message_json = json.dumps(message)
-        
-        if self.queue_type == 'rabbitmq':
-            await self.publish_rabbitmq(message_json)
-        else:
-            await self.publish_redis(message_json)
-    
-    async def publish_rabbitmq(self, message: str):
-        """Publish to RabbitMQ"""
-        await self.channel.default_exchange.publish(
-            aio_pika.Message(
-                body=message.encode(),
-                delivery_mode=aio_pika.DeliveryMode.PERSISTENT
-            ),
-            routing_key=settings.queue_name
-        )
-        log.debug(f"Published message to RabbitMQ queue {settings.queue_name}")
-    
-    async def publish_redis(self, message: str):
-        """Publish to Redis list"""
-        await self.redis_client.rpush(settings.queue_name, message)
-        log.debug(f"Published message to Redis list {settings.queue_name}")
+    async def health_check(self) -> bool:
+        """Check queue connection health"""
+        if self.queue_type == "rabbitmq":
+            if not self.connection or self.connection.is_closed:
+                await self.connect()
+            return not self.connection.is_closed
+        elif self.queue_type == "sqs":
+            try:
+                self.sqs_client.get_queue_attributes(
+                    QueueUrl=settings.sqs_queue_url,
+                    AttributeNames=['ApproximateNumberOfMessages']
+                )
+                return True
+            except:
+                return False
+        return False
     
     async def close(self):
-        """Close connections"""
-        if self.connection:
+        """Close queue connection"""
+        if self.connection and not self.connection.is_closed:
             await self.connection.close()
-        if self.redis_client:
-            await self.redis_client.close()
+            log.info("Closed RabbitMQ connection")

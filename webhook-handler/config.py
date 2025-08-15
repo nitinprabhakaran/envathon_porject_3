@@ -1,76 +1,57 @@
 """Configuration for Webhook Handler Service"""
 from pydantic_settings import BaseSettings
-from typing import List, Optional
+from typing import List
+import os
 
 class Settings(BaseSettings):
-    """Application settings with AWS service endpoints"""
+    """Application settings"""
     
-    # Service Configuration
+    # Service info
     service_name: str = "webhook-handler"
+    version: str = "2.0.0"
     port: int = 8080
-    environment: str = "development"
     log_level: str = "INFO"
     
-    # Database Configuration (RDS)
-    database_url: str = "postgresql://user:pass@localhost/webhooks"
-    database_pool_size: int = 10
-    database_max_overflow: int = 20
+    # Database
+    database_url: str = os.getenv("DATABASE_URL", "postgresql://postgres:postgres@postgres:5432/cicd_assistant")
+    db_pool_size: int = 20
+    db_max_overflow: int = 40
     
-    # Redis Configuration (ElastiCache)
-    redis_url: str = "redis://localhost:6379"
-    redis_ttl: int = 3600
+    # Queue settings (RabbitMQ or SQS)
+    queue_type: str = os.getenv("QUEUE_TYPE", "rabbitmq")  # 'rabbitmq' or 'sqs'
+    rabbitmq_url: str = os.getenv("RABBITMQ_URL", "amqp://guest:guest@rabbitmq:5672/")
+    sqs_queue_url: str = os.getenv("SQS_QUEUE_URL", "")
+    aws_region: str = os.getenv("AWS_REGION", "us-east-1")
     
-    # AWS OpenSearch Configuration
-    opensearch_endpoint: str = "https://search-domain.region.es.amazonaws.com"
-    opensearch_index: str = "cicd-fixes"
-    opensearch_username: Optional[str] = None
-    opensearch_password: Optional[str] = None
-    aws_region: str = "us-east-1"
+    # Redis cache
+    redis_url: str = os.getenv("REDIS_URL", "redis://redis:6379/0")
+    cache_ttl: int = 3600
     
-    # Agent Service Configuration
-    agent_service_url: str = "http://strands-agent:8000"
-    agent_service_timeout: int = 60
-    
-    # GitLab Configuration
-    gitlab_url: str = "https://gitlab.com"
-    gitlab_token: str = ""
-    gitlab_webhook_secret: str = ""
-    
-    # SonarQube Configuration
-    sonarqube_url: str = "http://sonarqube:9000"
-    sonarqube_token: str = ""
-    sonarqube_webhook_secret: str = ""
-    
-    # Webhook Security
-    webhook_auth_enabled: bool = True
-    webhook_hmac_secret: str = "change-me-in-production"
+    # Security
+    webhook_auth_enabled: bool = os.getenv("WEBHOOK_AUTH_ENABLED", "true").lower() == "true"
+    gitlab_webhook_secret: str = os.getenv("GITLAB_WEBHOOK_SECRET", "your-gitlab-webhook-secret")
+    sonarqube_webhook_secret: str = os.getenv("SONARQUBE_WEBHOOK_SECRET", "your-sonarqube-webhook-secret")
     api_key_header: str = "X-API-Key"
+    api_keys: List[str] = os.getenv("API_KEYS", "").split(",") if os.getenv("API_KEYS") else []
     
-    # Subscription Settings
-    subscription_callback_url: str = "https://webhook-handler.example.com/webhooks"
-    subscription_auto_cleanup: bool = True
-    subscription_ttl_days: int = 90
+    # Subscription settings
+    subscription_callback_url: str = os.getenv("SUBSCRIPTION_CALLBACK_URL", "http://webhook-handler:8080/webhooks")
+    subscription_timeout_hours: int = 24
+    max_webhooks_per_project: int = 10
     
-    # Event Processing
-    event_queue_size: int = 1000
-    event_batch_size: int = 10
-    event_retry_max: int = 3
-    event_retry_delay: int = 5
-    
-    # Session Management
-    session_timeout_minutes: int = 240
-    max_fix_attempts: int = 5
+    # Session settings
+    session_timeout_minutes: int = 60
+    max_sessions_per_project: int = 50
     
     # CORS
     cors_origins: List[str] = ["*"]
     
-    # Feature Flags
-    enable_vector_storage: bool = True
-    enable_auto_retry: bool = True
-    enable_metrics: bool = True
+    # Strands Agent URL (for direct communication if needed)
+    strands_agent_url: str = os.getenv("STRANDS_AGENT_URL", "http://strands-agent:8000")
     
     class Config:
         env_file = ".env"
         case_sensitive = False
 
+# Initialize settings
 settings = Settings()
