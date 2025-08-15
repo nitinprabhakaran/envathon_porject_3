@@ -16,3 +16,11 @@ python-dotenv
 # Development
 pytest
 pytest-asyncio
+
+aio-pika
+redis[hiredis]
+
+opensearch-py==2.4.0
+sentence-transformers
+numpy
+requests-aws4auth

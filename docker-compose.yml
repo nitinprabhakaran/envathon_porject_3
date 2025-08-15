@@ -1,5 +1,5 @@
 services:
-  # Infrastructure Services (keeping existing ones)
+  # Infrastructure Services (existing)
   postgres-gitlab:
     image: postgres:16-alpine
     container_name: postgres-gitlab
@@ -42,6 +42,7 @@ services:
     image: postgres:15
     platform: linux/arm64
     container_name: postgres-assistant
+    profiles: ["local-db"]  # Only runs when DB_TYPE=local
     environment:
       POSTGRES_DB: cicd_assistant
       POSTGRES_USER: ${DB_USER:-cicd_assistant}
@@ -62,6 +63,7 @@ services:
   redis:
     image: redis:alpine
     container_name: redis
+    profiles: ["local-queue"]  # Only runs when QUEUE_TYPE=redis
     ports:
       - "6379:6379"
     volumes:
@@ -69,7 +71,51 @@ services:
     networks:
       - devops-network
 
-  # GitLab
+  opensearch:
+    image: opensearchproject/opensearch:2.11.0
+    container_name: opensearch
+    profiles: ["local-vector"]  # Only runs when VECTOR_STORE_TYPE=local
+    environment:
+      - cluster.name=opensearch-cluster
+      - node.name=opensearch-node
+      - discovery.type=single-node
+      - bootstrap.memory_lock=true
+      - "OPENSEARCH_JAVA_OPTS=-Xms512m -Xmx512m"
+      - plugins.security.disabled=true
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+    volumes:
+      - opensearch_data:/usr/share/opensearch/data
+    ports:
+      - "9200:9200"
+    networks:
+      - devops-network
+    restart: unless-stopped
+
+  rabbitmq:
+    image: rabbitmq:3-management
+    container_name: rabbitmq
+    profiles: ["local-queue"]  # Only runs when QUEUE_TYPE=rabbitmq
+    environment:
+      RABBITMQ_DEFAULT_USER: admin
+      RABBITMQ_DEFAULT_PASS: admin
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    networks:
+      - devops-network
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  # GitLab (unchanged)
   gitlab:
     image: yrzr/gitlab-ce-arm64v8:18.0.4-ce.0
     container_name: gitlab
@@ -83,16 +129,10 @@ services:
         nginx['listen_port'] = 80
         gitlab_rails['gitlab_shell_ssh_port'] = 2222
         gitlab_rails['initial_root_password'] = 'Nitin3011'
-        
-        # Disable container registry to avoid certificate issues
         registry['enable'] = false
         gitlab_rails['registry_enabled'] = false
-        
-        # CI/CD settings
         gitlab_ci['gitlab_ci_all_broken_builds'] = false
         gitlab_ci['gitlab_ci_disable_validates_dependencies'] = true
-        
-        # External PostgreSQL configuration
         gitlab_rails['db_adapter'] = 'postgresql'
         gitlab_rails['db_host'] = 'postgres-gitlab'
         gitlab_rails['db_port'] = 5432
@@ -101,26 +141,18 @@ services:
         gitlab_rails['db_database'] = 'gitlabhq_production'
         postgresql['enable'] = false
         gitlab_rails['auto_migrate'] = true
-        
-        # Performance optimizations
         puma['worker_processes'] = 2
         sidekiq['max_concurrency'] = 5
         postgresql['shared_buffers'] = "256MB"
-        
-        # Disable unnecessary features
         prometheus_monitoring['enable'] = false
         alertmanager['enable'] = false
         registry['enable'] = false
         gitlab_pages['enable'] = false
         gitlab_kas['enable'] = false
         mattermost['enable'] = false
-        
-        # Redis configuration
         redis['enable'] = false
         gitlab_rails['redis_host'] = 'redis'
         gitlab_rails['redis_port'] = 6379
-
-        # Webhook settings for failure assistant
         gitlab_rails['webhook_timeout'] = 60
         gitlab_rails['trusted_proxies'] = ['127.0.0.1', '172.0.0.0/8']
         gitlab_rails['outbound_local_requests_whitelist'] = ['0.0.0.0/0', '::/0']
@@ -129,8 +161,6 @@ services:
     depends_on:
       postgres-gitlab:
         condition: service_healthy
-      redis:
-        condition: service_started
     volumes:
       - gitlab_config:/etc/gitlab
       - gitlab_logs:/var/log/gitlab
@@ -169,7 +199,6 @@ services:
     restart: unless-stopped
     user: "0:0"
 
-  # SonarQube
   sonarqube:
     image: sonarqube:9.9-community
     platform: linux/amd64
@@ -192,7 +221,26 @@ services:
       - devops-network
     restart: unless-stopped
 
-  # CI/CD Failure Assistant Services
+  # Webhook Handler Service
+  webhook-handler:
+    build:
+      context: ./webhook-handler
+      dockerfile: Dockerfile
+      platforms:
+        - linux/arm64
+    container_name: webhook-handler
+    env_file: .env  # Load all settings from .env
+    environment:
+      - PORT=8090
+    ports:
+      - "8090:8090"
+    volumes:
+      - ./logs:/app/logs
+    networks:
+      - devops-network
+    restart: unless-stopped
+
+  # Strands Agent with flexible backends
   strands-agent:
     build:
       context: ./strands-agent
@@ -200,29 +248,7 @@ services:
       platforms:
         - linux/arm64
     container_name: strands-agent
-    depends_on:
-      postgres-assistant:
-        condition: service_healthy
-      gitlab:
-        condition: service_started
-      sonarqube:
-        condition: service_started
-    environment:
-      - DATABASE_URL=postgresql://${DB_USER:-cicd_assistant}:${DB_PASSWORD:-secure_password}@postgres-assistant:5432/cicd_assistant
-      - LLM_PROVIDER=${LLM_PROVIDER:-bedrock}
-      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
-      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
-      - AWS_SESSION_TOKEN=${AWS_SESSION_TOKEN}
-      - AWS_REGION=${AWS_REGION:-us-east-2}
-      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
-      - GITLAB_URL=http://gitlab:80
-      - GITLAB_TOKEN=${GITLAB_TOKEN}
-      - SONAR_HOST_URL=http://sonarqube:9000
-      - SONAR_TOKEN=${SONAR_TOKEN}
-      - SESSION_TIMEOUT_MINUTES=${SESSION_TIMEOUT_MINUTES:-180}
-      - LOG_LEVEL=INFO
-      - MODEL_ID=${MODEL_ID:-claude-3-haiku-20240307}
-      - MAX_FIX_ATTEMPTS=${MAX_FIX_ATTEMPTS:-5}
+    env_file: .env  # Load all settings from .env
     ports:
       - "8000:8000"
     volumes:
@@ -254,10 +280,6 @@ services:
 networks:
   devops-network:
     driver: bridge
-    driver_opts:
-      com.docker.network.bridge.enable_icc: "true"
-      com.docker.network.bridge.enable_ip_masquerade: "true"
-      com.docker.network.driver.mtu: "1500"
 
 volumes:
   gitlab_config:
@@ -271,3 +293,5 @@ volumes:
   postgres_gitlab_data:
   postgres_sonar_data:
   postgres_assistant_data:
+  opensearch_data:
+  rabbitmq_data:

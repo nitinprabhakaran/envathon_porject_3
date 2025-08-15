@@ -1,0 +1,12 @@
+fastapi
+uvicorn[standard]
+httpx
+asyncpg
+redis[hiredis]
+aio-pika
+pydantic
+pydantic-settings
+loguru
+python-dotenv
+python-jose[cryptography]
+passlib[bcrypt]
