@@ -47,7 +47,7 @@ def main():
         if len(quality_sessions) == 1:
             display_session_details(quality_sessions[0], api_client)
         else:
-            tabs = st.tabs([f"Session {i+1}: {s.get('session_id', 'Unknown')[:8]}" for i, s in enumerate(quality_sessions)])
+            tabs = st.tabs([f"Session {i+1}: {s.get('id', 'Unknown')[:8]}" for i, s in enumerate(quality_sessions)])
             
             for i, (tab, session) in enumerate(zip(tabs, quality_sessions)):
                 with tab:
@@ -60,7 +60,7 @@ def main():
 def display_session_details(session: dict, api_client: UnifiedAPIClient):
     """Display detailed information for a quality analysis session"""
     
-    session_id = session.get('session_id', 'Unknown')
+    session_id = session.get('id', 'Unknown')  # Use 'id' instead of 'session_id'
     context = session.get('context', {})
     
     # Session header
@@ -246,6 +246,16 @@ def calculate_time_remaining(expires_at):
 # Header
 st.title("📊 Quality Issues")
 
+# Initialize session state variables for this page
+if "api_client" not in st.session_state:
+    st.session_state.api_client = UnifiedAPIClient()
+if "selected_quality_session" not in st.session_state:
+    st.session_state.selected_quality_session = None
+if "show_quality_chat" not in st.session_state:
+    st.session_state.show_quality_chat = {}
+if "quality_messages" not in st.session_state:
+    st.session_state.quality_messages = {}
+
 # Top navigation bar
 col_nav1, col_nav2, col_nav3 = st.columns([2, 2, 1])
 with col_nav1:
@@ -307,7 +317,7 @@ with col1:
                 
                 with st.expander(f"{icon} {project_name} ({total_issues} issues)", expanded=active_count > 0):
                     for session in sessions:
-                        session_id = session["id"]
+                        session_id = session["id"]  # Use 'id' directly since we know it exists
                         time_remaining = calculate_time_remaining(session.get('expires_at'))
                         fix_attempts = session.get("webhook_data", {}).get("fix_attempts", [])
                         
@@ -503,30 +513,55 @@ with col2:
                                     
                             st.markdown(content)
             
-            # Chat input interface (only shown when chat button is clicked)
-            if st.session_state.show_quality_chat.get(session_id):
-                st.divider()
-                if prompt := st.chat_input("Ask about the quality issues..."):
-                    # Add user message
-                    with st.chat_message("user"):
-                        st.write(prompt)
-                    
-                    # Get response
-                    with st.chat_message("assistant"):
-                        with st.spinner("Analyzing..."):
+            # Show action buttons at the bottom of analysis
+            with col_btn2:
+                if st.button("💬 Ask Question", key=f"chat_{session_id}"):
+                    st.session_state.show_quality_chat[session_id] = not st.session_state.show_quality_chat.get(session_id, False)
+                    st.rerun()
+            
+            with col_btn3:
+                if all_successful and mr_url:
+                    st.link_button("📄 View MR", mr_url, use_container_width=True, type="primary")
+                elif not all_successful and not mr_url:
+                    if st.button("🔀 Create MR", key=f"create_mr_{session_id}", use_container_width=True):
+                        with st.spinner("Creating merge request..."):
                             response = asyncio.run(
-                                st.session_state.api_client.send_message(session_id, prompt)
+                                st.session_state.api_client.send_message(session_id, "Create a merge request with all the fixes we discussed.")
                             )
-                            response_text = response.get("response", "")
-                            st.write(response_text)
-                            
                             if response.get("merge_request_url"):
                                 st.success(f"✅ MR Created: {response['merge_request_url']}")
-                    
-                    st.rerun()
-        
+                            st.rerun()
+            
         except Exception as e:
             st.error(f"Failed to load session details: {e}")
+    
+    # Chat interface at the bottom (outside the analysis details)
+    if st.session_state.selected_quality_session:
+        session = st.session_state.selected_quality_session
+        session_id = session.get("id", "Unknown")
+        
+        if st.session_state.show_quality_chat.get(session_id):
+            st.divider()
+            st.markdown("### 💬 Chat with Quality Assistant")
+            
+            if prompt := st.chat_input("Ask about the quality issues..."):
+                # Add user message
+                with st.chat_message("user"):
+                    st.write(prompt)
+                
+                # Get response
+                with st.chat_message("assistant"):
+                    with st.spinner("Analyzing..."):
+                        response = asyncio.run(
+                            st.session_state.api_client.send_message(session_id, prompt)
+                        )
+                        response_text = response.get("response", "")
+                        st.write(response_text)
+                        
+                        if response.get("merge_request_url"):
+                            st.success(f"✅ MR Created: {response['merge_request_url']}")
+                
+                st.rerun()
     
     else:
         # Show quality cards when no session is selected

@@ -17,7 +17,7 @@ st.set_page_config(
 
 # Initialize session state
 if "api_client" not in st.session_state:
-            st.session_state.api_client = UnifiedAPIClient()
+    st.session_state.api_client = UnifiedAPIClient()
 if "selected_project" not in st.session_state:
     st.session_state.selected_project = None
 if "selected_failure" not in st.session_state:
@@ -26,6 +26,8 @@ if "failure_groups" not in st.session_state:
     st.session_state.failure_groups = {}
 if "show_chat" not in st.session_state:
     st.session_state.show_chat = {}
+if "messages" not in st.session_state:
+    st.session_state.messages = {}
 
 def calculate_time_remaining(expires_at):
     """Calculate time remaining until session expires"""

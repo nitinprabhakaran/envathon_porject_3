@@ -19,9 +19,14 @@ async def lifespan(app: FastAPI):
     session_manager = SessionManager()
     await session_manager.init_pool()
     
-    # Start queue processor
-    queue_processor = QueueProcessor()
-    processor_task = asyncio.create_task(queue_processor.start())
+    # Start queue processor only if configured (for webhook-handler events)
+    processor_task = None
+    if getattr(settings, 'enable_queue_processor', False):
+        queue_processor = QueueProcessor()
+        processor_task = asyncio.create_task(queue_processor.start())
+        log.info("Queue processor started for webhook-handler events")
+    else:
+        log.info("Queue processor disabled - using direct webhook handling")
     
     # Start cleanup task
     cleanup_task = asyncio.create_task(periodic_cleanup(session_manager))
@@ -29,7 +34,8 @@ async def lifespan(app: FastAPI):
     yield
     
     # Cleanup
-    processor_task.cancel()
+    if processor_task:
+        processor_task.cancel()
     cleanup_task.cancel()
     log.info("Shutting down...")
 
@@ -71,7 +77,8 @@ async def root():
         "service": "Strands Agent",
         "version": "2.0.0",
         "status": "operational",
-        "features": ["analysis", "session_management"]
+        "features": ["analysis", "session_management", "queue_processing"],
+        "note": "Webhook endpoints are handled by webhook-handler service"
     }
 
 @app.get("/health")

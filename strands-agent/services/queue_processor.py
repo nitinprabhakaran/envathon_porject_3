@@ -114,6 +114,8 @@ class QueueProcessor:
                 await self.handle_pipeline_success(session_id, context, data)
             elif event_type == "quality_failed":
                 await self.analyze_quality_issues(session_id, context, data)
+            elif event_type.startswith("merge_request_"):
+                await self.handle_merge_request_event(session_id, context, data)
             else:
                 log.warning(f"Unknown event type: {event_type}")
                 
@@ -378,6 +380,50 @@ class QueueProcessor:
         if issues:
             return f"quality:{issues[0].get('type', '')}:{issues[0].get('message', '')[:100]}"
         return "quality:unknown"
+    
+    async def handle_merge_request_event(
+        self,
+        session_id: str,
+        context: Any,
+        data: Dict[str, Any]
+    ):
+        """Handle merge request events for session tracking"""
+        try:
+            event_type = data.get("event_type")
+            mr_action = data.get("mr_action")
+            mr_iid = data.get("mr_iid")
+            project_id = data.get("project_id")
+            webhook_data = data.get("webhook_data", {})
+            
+            log.info(f"Processing MR event: {mr_action} for MR !{mr_iid} in project {project_id}")
+            
+            # Handle different merge request actions
+            if mr_action == "merge":
+                await self._handle_merge_request_merged(session_id, context, data)
+            elif mr_action == "close":
+                await self._handle_merge_request_closed(session_id, context, data)
+            elif mr_action in ["open", "update"]:
+                await self._handle_merge_request_opened_updated(session_id, context, data)
+            else:
+                log.info(f"MR action '{mr_action}' not requiring special handling")
+                
+        except Exception as e:
+            log.error(f"Error handling MR event: {e}")
+    
+    async def _handle_merge_request_merged(self, session_id: str, context: Any, data: Dict[str, Any]):
+        """Handle when a merge request is merged"""
+        log.info(f"MR merged - checking if this resolves any active sessions")
+        
+        # This could be used to mark sessions as resolved when fixes are merged
+        # Implementation would depend on how we track which MRs belong to which sessions
+        
+    async def _handle_merge_request_closed(self, session_id: str, context: Any, data: Dict[str, Any]):
+        """Handle when a merge request is closed without merging"""
+        log.info(f"MR closed without merging")
+        
+    async def _handle_merge_request_opened_updated(self, session_id: str, context: Any, data: Dict[str, Any]):
+        """Handle when a merge request is opened or updated"""
+        log.info(f"MR opened/updated - tracking for session correlation")
     
     async def stop(self):
         """Stop queue processor"""

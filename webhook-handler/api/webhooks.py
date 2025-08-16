@@ -13,6 +13,28 @@ from config import settings
 
 router = APIRouter(tags=["webhooks"])
 
+async def detect_quality_failure_from_pipeline(data: Dict[str, Any]) -> bool:
+    """Detect if pipeline failure is due to quality gate failure"""
+    failed_jobs = [job for job in data.get("builds", []) if job.get("status") == "failed"]
+    
+    if not failed_jobs:
+        return False
+    
+    # Sort by finished_at to get the most recent failure
+    failed_jobs.sort(key=lambda x: x.get("finished_at", ""), reverse=True)
+    most_recent_failed_job = failed_jobs[0]
+    
+    job_name = most_recent_failed_job.get("name", "").lower()
+    
+    # Check if it's a quality/sonar related job
+    quality_keywords = ['sonar', 'quality', 'scan', 'analysis', 'gate']
+    if any(keyword in job_name for keyword in quality_keywords):
+        log.info(f"Detected quality failure from job name: {job_name}")
+        return True
+    
+    # Could also check job logs here if needed, but for now use job name detection
+    return False
+
 # Global instances - will be initialized in main.py lifespan
 queue_publisher = None
 
@@ -116,6 +138,146 @@ async def verify_webhook_auth(
     log.warning("Webhook auth: All authentication methods failed")
     return False
 
+async def handle_pipeline_webhook(data: Dict[str, Any], db: Database) -> Dict[str, Any]:
+    """Handle GitLab pipeline webhook events"""
+    pipeline_status = data.get("object_attributes", {}).get("status")
+    project_id = str(data.get("project", {}).get("id"))
+    
+    # Only process failed pipelines for immediate analysis
+    if pipeline_status != "failed":
+        log.info(f"Ignoring pipeline with status: {pipeline_status}")
+        return {"status": "ignored", "reason": f"Pipeline status: {pipeline_status}"}
+
+    # Check for existing session with same pipeline ID to avoid duplicates
+    pipeline_id = str(data.get("object_attributes", {}).get("id"))
+    existing_session = await db.find_session_by_unique_id("pipeline", project_id, pipeline_id)
+    
+    if existing_session:
+        session_id = existing_session["id"]  # Use 'id' column name
+        log.info(f"Found existing session {session_id} for pipeline {pipeline_id}, updating...")
+        
+        # Update existing session with latest data
+        await db.update_session(session_id, {
+            "pipeline_status": pipeline_status,
+            "updated_at": datetime.utcnow(),
+            "webhook_data": data
+        })
+    else:
+        # Create new session for new pipeline failure
+        session_id = str(uuid.uuid4())
+        session_data = {
+            "id": session_id,  # Use 'id' column name
+            "session_type": "pipeline",
+            "project_id": project_id,
+            "project_name": data.get("project", {}).get("name"),
+            "pipeline_id": pipeline_id,
+            "pipeline_url": data.get("object_attributes", {}).get("url"),
+            "pipeline_status": pipeline_status,
+            "branch": data.get("object_attributes", {}).get("ref"),
+            "commit_sha": data.get("object_attributes", {}).get("sha"),
+            "status": "active",
+            "created_at": datetime.utcnow(),
+            "expires_at": datetime.utcnow() + timedelta(minutes=settings.session_timeout_minutes),
+            "webhook_data": data
+        }
+        
+        # Extract failed job info if failure
+        if pipeline_status == "failed":
+            failed_jobs = [job for job in data.get("builds", []) if job.get("status") == "failed"]
+            if failed_jobs:
+                failed_jobs.sort(key=lambda x: x.get("finished_at", ""), reverse=True)
+                first_failed = failed_jobs[0]
+                session_data["job_name"] = first_failed.get("name")
+                session_data["failed_stage"] = first_failed.get("stage")
+
+        # Store new session
+        await db.create_session(session_data)
+        log.info(f"Created new session {session_id} for pipeline {pipeline_id}")
+
+    # Determine if this is a quality failure by checking job names
+    if detect_quality_failure_from_pipeline(data):
+        event_type = "quality_failed"
+        log.info(f"Detected quality failure in pipeline {pipeline_id}")
+    else:
+        event_type = "pipeline_failed"
+        log.info(f"Detected pipeline failure in pipeline {pipeline_id}")
+    
+    # Publish to queue for agent to process
+    message = {
+        "event_type": event_type,
+        "session_id": session_id,
+        "project_id": project_id,
+        "pipeline_status": pipeline_status,
+        "webhook_data": data,
+        "timestamp": datetime.utcnow().isoformat()
+    }
+    
+    queue_instance = get_queue_publisher()
+    await queue_instance.connect()
+    await queue_instance.publish_event(event_type, session_id, message)
+    
+    log.info(f"Created session {session_id} and published to queue")
+    
+    return {
+        "status": "queued",
+        "session_id": session_id,
+        "message": "Event queued for processing"
+    }
+
+async def handle_merge_request_webhook(data: Dict[str, Any], db: Database) -> Dict[str, Any]:
+    """Handle GitLab merge request webhook events"""
+    mr_attributes = data.get("object_attributes", {})
+    mr_action = mr_attributes.get("action")
+    mr_state = mr_attributes.get("state")
+    project_id = str(data.get("project", {}).get("id"))
+    mr_iid = str(mr_attributes.get("iid"))
+    
+    log.info(f"Received MR webhook: action={mr_action}, state={mr_state}, project={project_id}, MR !{mr_iid}")
+    
+    # Handle merge request events that we care about
+    if mr_action in ["open", "update", "merge", "close"]:
+        # Publish merge request event to queue for potential processing by strands-agent
+        message = {
+            "event_type": "merge_request_" + mr_action,
+            "project_id": project_id,
+            "mr_iid": mr_iid,
+            "mr_action": mr_action,
+            "mr_state": mr_state,
+            "webhook_data": data,
+            "timestamp": datetime.utcnow().isoformat()
+        }
+        
+        queue_instance = get_queue_publisher()
+        await queue_instance.connect()
+        await queue_instance.publish_event(f"merge_request_{mr_action}", f"mr_{project_id}_{mr_iid}", message)
+        
+        log.info(f"Published MR event to queue: {mr_action} for MR !{mr_iid}")
+        
+        return {
+            "status": "queued",
+            "mr_iid": mr_iid,
+            "action": mr_action,
+            "message": f"MR {mr_action} event queued for processing"
+        }
+    else:
+        return {
+            "status": "ignored",
+            "reason": f"MR action '{mr_action}' not tracked"
+        }
+
+def detect_quality_failure_from_pipeline(data: Dict[str, Any]) -> bool:
+    """Detect if pipeline failure is due to quality issues by analyzing job names"""
+    failed_jobs = [job for job in data.get("builds", []) if job.get("status") == "failed"]
+    
+    quality_keywords = ['sonar', 'quality', 'scan', 'analysis', 'gate', 'code-quality', 'lint', 'security']
+    
+    for job in failed_jobs:
+        job_name = job.get("name", "").lower()
+        if any(keyword in job_name for keyword in quality_keywords):
+            return True
+    
+    return False
+
 @router.post("/gitlab")
 async def handle_gitlab_webhook(
     request: Request,
@@ -136,181 +298,18 @@ async def handle_gitlab_webhook(
         
         log.info(f"Received GitLab webhook: {data.get('object_kind', 'unknown')}")
         
-        # Basic validation
-        if data.get("object_kind") != "pipeline":
-            return {"status": "ignored", "reason": "Not a pipeline event"}
+        object_kind = data.get("object_kind")
         
-        pipeline_status = data.get("object_attributes", {}).get("status")
-        project_id = str(data.get("project", {}).get("id"))
-        
-        # Only process failed pipelines for immediate analysis
-        if pipeline_status != "failed":
-            log.info(f"Ignoring pipeline with status: {pipeline_status}")
-            return {"status": "ignored", "reason": f"Pipeline status: {pipeline_status}"}
-
-        # Check for existing session with same pipeline ID to avoid duplicates
-        pipeline_id = str(data.get("object_attributes", {}).get("id"))
-        existing_session = await db.find_session_by_unique_id("pipeline", project_id, pipeline_id)
-        
-        if existing_session:
-            session_id = existing_session["id"]  # Use 'id' column name
-            log.info(f"Found existing session {session_id} for pipeline {pipeline_id}, updating...")
-            
-            # Update existing session with latest data
-            await db.update_session(session_id, {
-                "pipeline_status": pipeline_status,
-                "updated_at": datetime.utcnow(),
-                "webhook_data": data
-            })
+        # Handle different GitLab webhook types
+        if object_kind == "pipeline":
+            return await handle_pipeline_webhook(data, db)
+        elif object_kind == "merge_request":
+            return await handle_merge_request_webhook(data, db)
         else:
-            # Create new session for new pipeline failure
-            session_id = str(uuid.uuid4())
-            session_data = {
-                "id": session_id,  # Use 'id' column name
-                "session_type": "pipeline",
-                "project_id": project_id,
-                "project_name": data.get("project", {}).get("name"),
-                "pipeline_id": pipeline_id,
-                "pipeline_url": data.get("object_attributes", {}).get("url"),
-                "pipeline_status": pipeline_status,
-                "branch": data.get("object_attributes", {}).get("ref"),
-                "commit_sha": data.get("object_attributes", {}).get("sha"),
-                "status": "active",
-                "created_at": datetime.utcnow(),
-                "expires_at": datetime.utcnow() + timedelta(minutes=settings.session_timeout_minutes),
-                "webhook_data": data
-            }        # Extract failed job info if failure
-        if pipeline_status == "failed":
-            failed_jobs = [job for job in data.get("builds", []) if job.get("status") == "failed"]
-            if failed_jobs:
-                failed_jobs.sort(key=lambda x: x.get("finished_at", ""), reverse=True)
-                first_failed = failed_jobs[0]
-                session_data["job_name"] = first_failed.get("name")
-                session_data["failed_stage"] = first_failed.get("stage")
-
-            # Store new session
-            await db.create_session(session_data)
-            log.info(f"Created new session {session_id} for pipeline {pipeline_id}")
-
-        # Only failed pipelines reach here, so event type is always pipeline_failed
-        event_type = "pipeline_failed"
-        
-        # Publish to queue for agent to process
-        message = {
-            "event_type": event_type,
-            "session_id": session_id,
-            "project_id": project_id,
-            "pipeline_status": pipeline_status,
-            "webhook_data": data,
-            "timestamp": datetime.utcnow().isoformat()
-        }
-        
-        queue_instance = get_queue_publisher()
-        await queue_instance.connect()
-        await queue_instance.publish_event(event_type, session_id, message)
-        
-        log.info(f"Created session {session_id} and published to queue")
-        
-        return {
-            "status": "queued",
-            "session_id": session_id,
-            "message": "Event queued for processing"
-        }
+            return {"status": "ignored", "reason": f"Unsupported event type: {object_kind}"}
         
     except Exception as e:
         log.error(f"Failed to process GitLab webhook: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@router.post("/sonarqube")
-async def handle_sonarqube_webhook(
-    request: Request,
-    x_sonarqube_webhook_secret: Optional[str] = Header(None, alias="X-Sonarqube-Webhook-Secret"),
-    db: Database = Depends(get_database)
-):
-    """Receive SonarQube webhook and forward to queue"""
-    try:
-        data = await request.json()
-        
-        # Verify authentication with project data
-        if not await verify_webhook_auth(
-            project_data=data,
-            x_sonarqube_webhook_secret=x_sonarqube_webhook_secret,
-            db=db
-        ):
-            raise HTTPException(status_code=401, detail="Invalid webhook authentication")
-        
-        log.info(f"Received SonarQube webhook for project {data.get('project', {}).get('key', 'unknown')}")
-        
-        quality_gate = data.get("qualityGate", {})
-        if quality_gate.get("status") != "ERROR":
-            return {"status": "ignored", "reason": "Quality gate passed"}
-
-        project = data.get("project", {})
-        project_key = project.get("key")
-        branch_name = data.get("branch", {}).get("name", "main")
-        
-        # Check for existing session to avoid duplicates
-        # Use combination of project key + branch for SonarQube uniqueness
-        unique_id = f"{project_key}:{branch_name}"
-        existing_session = await db.find_session_by_unique_id("quality", project_key, unique_id)
-        
-        if existing_session:
-            session_id = existing_session["id"]  # Use 'id' column name
-            log.info(f"Found existing session {session_id} for SonarQube project {project_key}:{branch_name}, updating...")
-            
-            # Update existing session with latest data
-            await db.update_session(session_id, {
-                "quality_gate_status": quality_gate.get("status"),
-                "updated_at": datetime.utcnow(),
-                "webhook_data": data
-            })
-        else:
-            # Create new session for new quality gate failure
-            session_id = str(uuid.uuid4())
-            session_data = {
-                "id": session_id,  # Use 'id' column name
-                "session_type": "quality",
-                "project_id": project_key,  # Use SonarQube project key as project_id
-                "project_name": project.get("name"),
-                "sonarqube_key": project_key,
-                "unique_id": unique_id,  # Store unique identifier
-                "quality_gate_status": quality_gate.get("status"),
-                "branch": branch_name,
-                "status": "active",
-                "created_at": datetime.utcnow(),
-                "expires_at": datetime.utcnow() + timedelta(minutes=settings.session_timeout_minutes),
-                "webhook_data": data
-            }
-
-            # Store new session
-            await db.create_session(session_data)
-            log.info(f"Created new session {session_id} for SonarQube project {project_key}:{branch_name}")
-
-        # SonarQube quality gate failure maps to quality_failed event
-        event_type = "quality_failed"
-        
-        # Publish to queue for agent to process
-        message = {
-            "event_type": event_type,
-            "session_id": session_id,
-            "sonarqube_key": project_key,
-            "quality_gate_status": quality_gate.get("status"),
-            "webhook_data": data,
-            "timestamp": datetime.utcnow().isoformat()
-        }
-        
-        queue_instance = get_queue_publisher()
-        await queue_instance.connect()
-        await queue_instance.publish_event(event_type, session_id, message)
-        
-        log.info(f"Created session {session_id} and published to queue")
-        
-        return {
-            "status": "queued",
-            "session_id": session_id,
-            "message": "Event queued for processing"
-        }
-        
-    except Exception as e:
-        log.error(f"Failed to process SonarQube webhook: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+# SonarQube webhook endpoint removed - quality detection done in GitLab pipeline analysis
