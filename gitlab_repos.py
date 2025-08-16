@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
 """
-Simplified CI/CD Demo Environment Setup Script
-Creates GitLab projects with focused failure scenarios:
-- 1 project with SonarQube quality gate failure
+Enhanced CI/CD Demo Environment Setup Script
+Creates GitLab projects with comprehensive failure scenarios:
+- 2 projects with SonarQube quality gate failures (including complex multi-iteration)
 - 3 projects with different pipeline failures
+- Progressive issue discovery for realistic testing
+- GitLab projects are configured without webhooks (manual webhook setup required)
+- SonarQube webhooks remain enabled for quality gate integration
 """
 
 import gitlab
@@ -18,7 +21,7 @@ from datetime import datetime
 # Configuration
 GROUP_NAME = "cicd-demo"
 QUALITY_GATE_NAME = "demo-quality-gate"
-AGENT_WEBHOOK_URL = "http://strands-agent:8000/webhooks"
+AGENT_WEBHOOK_URL = "http://webhook-handler:8090/webhooks"
 
 # Color codes for output
 class Colors:
@@ -68,6 +71,11 @@ PROJECT_VARIABLES = {
     ],
     "node-app": [
         {'key': 'NODE_VERSION', 'value': '16'},
+    ],
+    "complex-banking-service": [
+        {'key': 'SONAR_PROJECT_KEY', 'value': 'complex-banking-service'},
+        {'key': 'JAVA_VERSION', 'value': '11'},
+        {'key': 'MAVEN_OPTS', 'value': '-Dmaven.repo.local=$CI_PROJECT_DIR/.m2/repository'},
     ],
 }
 
@@ -459,6 +467,366 @@ test:
   # Will fail due to syntax error in server.js
 """
         }
+    },
+
+    # 5. Complex Multi-Iteration Java Project with Layered Quality Issues
+    "complex-banking-service": {
+        "description": "Complex banking service with layered security and quality issues requiring multiple iterations",
+        "language": "java",
+        "files": {
+            "src/main/java/com/bank/service/BankingService.java": """
+package com.bank.service;
+
+import java.sql.*;
+import java.util.*;
+import java.security.MessageDigest;
+import java.io.File;
+import java.io.FileWriter;
+import java.math.BigDecimal;
+
+/**
+ * Banking Service with multiple layered issues that will be revealed progressively
+ * This creates a scenario where fixing one issue reveals more issues underneath
+ */
+public class BankingService {
+    
+    // ITERATION 1 ISSUES: Critical Security Vulnerabilities
+    private static final String DB_PASSWORD = "admin123"; // Hardcoded password - CRITICAL
+    private static final String API_KEY = "sk-1234567890abcdef"; // Hardcoded API key - CRITICAL
+    private static String adminPassword = "root"; // Another hardcoded secret
+    
+    private Connection dbConnection;
+    private Map<String, String> userCache = new HashMap<>();
+    
+    // ITERATION 2 ISSUES: SQL Injection & Resource Leaks (revealed after fixing hardcoded secrets)
+    public Account getAccount(String accountNumber) throws SQLException {
+        // SQL Injection vulnerability - will be found after first iteration
+        String query = "SELECT * FROM accounts WHERE account_number = '" + accountNumber + "'";
+        Statement stmt = dbConnection.createStatement(); // Resource leak - not closed
+        ResultSet rs = stmt.executeQuery(query); // Resource leak - not closed
+        
+        if (rs.next()) {
+            Account account = new Account();
+            account.setAccountNumber(rs.getString("account_number"));
+            account.setBalance(rs.getBigDecimal("balance"));
+            account.setCustomerId(rs.getString("customer_id"));
+            return account;
+        }
+        return null;
+        // Resources never closed - memory leak
+    }
+    
+    // ITERATION 3 ISSUES: More Security Issues & Code Smells (revealed after fixing SQL injection)
+    public boolean authenticateUser(String username, String password) {
+        try {
+            // Weak cryptography - MD5 is broken
+            MessageDigest md = MessageDigest.getInstance("MD5");
+            byte[] hashedPassword = md.digest(password.getBytes());
+            
+            // Convert to hex string
+            StringBuilder sb = new StringBuilder();
+            for (byte b : hashedPassword) {
+                sb.append(String.format("%02x", b));
+            }
+            String hashedHex = sb.toString();
+            
+            // Cache credentials in plain text - security issue
+            userCache.put(username, password); // Storing plain text password!
+            
+            return verifyPassword(hashedHex);
+        } catch (Exception e) {
+            // Empty catch block - code smell
+            return false;
+        }
+    }
+    
+    // ITERATION 4 ISSUES: Code Duplication & Complex Methods (revealed after fixing crypto)
+    public BigDecimal calculateInterest(String accountType, BigDecimal balance, int months) {
+        // Complex method with duplicate logic
+        if (accountType.equals("SAVINGS")) {
+            if (balance.compareTo(new BigDecimal("1000")) > 0) {
+                if (months > 12) {
+                    return balance.multiply(new BigDecimal("0.025")).multiply(new BigDecimal(months)).divide(new BigDecimal("12"));
+                } else {
+                    return balance.multiply(new BigDecimal("0.02")).multiply(new BigDecimal(months)).divide(new BigDecimal("12"));
+                }
+            } else {
+                if (months > 12) {
+                    return balance.multiply(new BigDecimal("0.015")).multiply(new BigDecimal(months)).divide(new BigDecimal("12"));
+                } else {
+                    return balance.multiply(new BigDecimal("0.01")).multiply(new BigDecimal(months)).divide(new BigDecimal("12"));
+                }
+            }
+        } else if (accountType.equals("CHECKING")) {
+            if (balance.compareTo(new BigDecimal("1000")) > 0) {
+                if (months > 12) {
+                    return balance.multiply(new BigDecimal("0.015")).multiply(new BigDecimal(months)).divide(new BigDecimal("12"));
+                } else {
+                    return balance.multiply(new BigDecimal("0.01")).multiply(new BigDecimal(months)).divide(new BigDecimal("12"));
+                }
+            } else {
+                if (months > 12) {
+                    return balance.multiply(new BigDecimal("0.01")).multiply(new BigDecimal(months)).divide(new BigDecimal("12"));
+                } else {
+                    return balance.multiply(new BigDecimal("0.005")).multiply(new BigDecimal(months)).divide(new BigDecimal("12"));
+                }
+            }
+        }
+        return BigDecimal.ZERO;
+    }
+    
+    // Duplicate method - code smell that will be found in later iterations
+    public BigDecimal calculateLoanInterest(String loanType, BigDecimal principal, int months) {
+        // Almost identical logic to calculateInterest - code duplication
+        if (loanType.equals("PERSONAL")) {
+            if (principal.compareTo(new BigDecimal("1000")) > 0) {
+                if (months > 12) {
+                    return principal.multiply(new BigDecimal("0.08")).multiply(new BigDecimal(months)).divide(new BigDecimal("12"));
+                } else {
+                    return principal.multiply(new BigDecimal("0.075")).multiply(new BigDecimal(months)).divide(new BigDecimal("12"));
+                }
+            } else {
+                if (months > 12) {
+                    return principal.multiply(new BigDecimal("0.075")).multiply(new BigDecimal(months)).divide(new BigDecimal("12"));
+                } else {
+                    return principal.multiply(new BigDecimal("0.07")).multiply(new BigDecimal(months)).divide(new BigDecimal("12"));
+                }
+            }
+        } else if (loanType.equals("MORTGAGE")) {
+            if (principal.compareTo(new BigDecimal("1000")) > 0) {
+                if (months > 12) {
+                    return principal.multiply(new BigDecimal("0.045")).multiply(new BigDecimal(months)).divide(new BigDecimal("12"));
+                } else {
+                    return principal.multiply(new BigDecimal("0.04")).multiply(new BigDecimal(months)).divide(new BigDecimal("12"));
+                }
+            } else {
+                if (months > 12) {
+                    return principal.multiply(new BigDecimal("0.04")).multiply(new BigDecimal(months)).divide(new BigDecimal("12"));
+                } else {
+                    return principal.multiply(new BigDecimal("0.035")).multiply(new BigDecimal(months)).divide(new BigDecimal("12"));
+                }
+            }
+        }
+        return BigDecimal.ZERO;
+    }
+    
+    // ITERATION 5 ISSUES: File Security & Path Traversal (revealed after fixing duplication)
+    public void exportAccountData(String accountNumber, String fileName) {
+        try {
+            // Path traversal vulnerability - fileName not validated
+            File exportFile = new File("/tmp/exports/" + fileName);
+            FileWriter writer = new FileWriter(exportFile); // Resource not closed
+            
+            // Export sensitive data without encryption
+            writer.write("Account: " + accountNumber + "\\n");
+            writer.write("Password: " + adminPassword + "\\n"); // Exposing secrets in files
+            writer.write("API Key: " + API_KEY + "\\n");
+            
+            // File permissions not set - security issue
+            
+        } catch (Exception e) {
+            // Another empty catch block
+        }
+    }
+    
+    // Helper method with its own issues
+    private boolean verifyPassword(String hashedPassword) {
+        // Weak comparison - timing attack vulnerability
+        return hashedPassword.equals("5e884898da28047151d0e56f8dc6292773603d0d6aabbdd62a11ef721d1542d8");
+    }
+    
+    // Constructor with issues
+    public BankingService() {
+        try {
+            // Hardcoded connection string with embedded credentials
+            String connectionString = "jdbc:postgresql://localhost:5432/bank?user=admin&password=" + DB_PASSWORD;
+            this.dbConnection = DriverManager.getConnection(connectionString);
+        } catch (SQLException e) {
+            // Swallowing exceptions - bad practice
+        }
+    }
+}
+""",
+            "src/main/java/com/bank/model/Account.java": """
+package com.bank.model;
+
+import java.math.BigDecimal;
+import java.util.Date;
+
+// Simple model class that will also get issues in later iterations
+public class Account {
+    private String accountNumber;
+    private BigDecimal balance;
+    private String customerId;
+    private String accountType;
+    private Date createdDate;
+    
+    // Missing proper validation in setters - will be flagged later
+    public void setAccountNumber(String accountNumber) {
+        this.accountNumber = accountNumber; // No validation
+    }
+    
+    public void setBalance(BigDecimal balance) {
+        this.balance = balance; // No validation for negative balances
+    }
+    
+    public void setCustomerId(String customerId) {
+        this.customerId = customerId; // No validation
+    }
+    
+    // Getters
+    public String getAccountNumber() { return accountNumber; }
+    public BigDecimal getBalance() { return balance; }
+    public String getCustomerId() { return customerId; }
+    public String getAccountType() { return accountType; }
+    public Date getCreatedDate() { return createdDate; }
+    
+    public void setAccountType(String accountType) { this.accountType = accountType; }
+    public void setCreatedDate(Date createdDate) { this.createdDate = createdDate; }
+}
+""",
+            "src/test/java/com/bank/service/BankingServiceTest.java": """
+package com.bank.service;
+
+import org.junit.Test;
+import org.junit.Before;
+import static org.junit.Assert.*;
+import java.math.BigDecimal;
+
+public class BankingServiceTest {
+    private BankingService service;
+    
+    @Before
+    public void setUp() {
+        service = new BankingService();
+    }
+    
+    @Test
+    public void testCalculateInterest() {
+        BigDecimal interest = service.calculateInterest("SAVINGS", new BigDecimal("1000"), 12);
+        assertNotNull(interest);
+        assertTrue(interest.compareTo(BigDecimal.ZERO) >= 0);
+    }
+    
+    @Test
+    public void testAuthenticateUser() {
+        // This test will pass initially but reveal security issues
+        boolean result = service.authenticateUser("testuser", "password123");
+        // Test doesn't validate security properly
+    }
+    
+    // Missing tests for edge cases and security scenarios
+    // This will be flagged as insufficient test coverage in later iterations
+}
+""",
+            "pom.xml": """<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 
+         https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+    
+    <groupId>com.bank</groupId>
+    <artifactId>complex-banking-service</artifactId>
+    <version>1.0.0</version>
+    
+    <properties>
+        <maven.compiler.source>11</maven.compiler.source>
+        <maven.compiler.target>11</maven.compiler.target>
+        <sonar.coverage.exclusions>**/*Test.java</sonar.coverage.exclusions>
+    </properties>
+    
+    <dependencies>
+        <dependency>
+            <groupId>org.postgresql</groupId>
+            <artifactId>postgresql</artifactId>
+            <version>42.5.1</version>
+        </dependency>
+        <dependency>
+            <groupId>junit</groupId>
+            <artifactId>junit</artifactId>
+            <version>4.13.2</version>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+    
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-surefire-plugin</artifactId>
+                <version>3.0.0-M7</version>
+            </plugin>
+        </plugins>
+    </build>
+</project>
+""",
+            "sonar-project.properties": """
+# SonarQube project configuration for progressive issue discovery
+sonar.projectKey=complex-banking-service
+sonar.projectName=Complex Banking Service
+sonar.projectVersion=1.0.0
+
+# Source configuration
+sonar.sources=src/main/java
+sonar.tests=src/test/java
+sonar.java.binaries=target/classes
+sonar.java.test.binaries=target/test-classes
+
+# Coverage settings to ensure security issues are caught
+sonar.coverage.exclusions=**/*Test.java
+sonar.cpd.java.minimumtokens=50
+
+# Enable security rules
+sonar.java.libraries=target/dependency/*.jar
+""",
+            ".gitlab-ci.yml": """
+include:
+  - project: 'cicd-demo/shared-pipeline'
+    ref: main
+    file: '/shared-template.yml'
+
+variables:
+  MAVEN_OPTS: "-Dmaven.repo.local=$CI_PROJECT_DIR/.m2/repository"
+
+cache:
+  paths:
+    - .m2/repository/
+
+build:
+  extends: .java-build
+  script:
+    - mvn clean compile
+  artifacts:
+    paths:
+      - target/
+    expire_in: 1 hour
+
+test:
+  extends: .java-test
+  needs: ["build"]
+  script:
+    - mvn test
+  artifacts:
+    reports:
+      junit:
+        - target/surefire-reports/TEST-*.xml
+
+# Enhanced SonarQube analysis that will progressively find more issues
+sonarqube-check:
+  extends: .sonarqube-check
+  needs: ["test"]
+  script:
+    - mvn sonar:sonar 
+      -Dsonar.projectKey=complex-banking-service
+      -Dsonar.host.url=$SONAR_HOST_URL 
+      -Dsonar.login=$SONAR_TOKEN
+      -Dsonar.qualitygate.wait=true
+      -Dsonar.sources=src/main/java
+      -Dsonar.tests=src/test/java
+      -Dsonar.java.binaries=target/classes
+"""
+        }
     }
 }
 
@@ -531,17 +899,9 @@ class GitLabSetup:
                     except Exception as e:
                         warning(f"    Failed to add variable {var['key']}: {e}")
             
-            # Create webhook
-            try:
-                project.hooks.create({
-                    'url': f"{AGENT_WEBHOOK_URL}/gitlab",
-                    'pipeline_events': True,
-                    'push_events': False,
-                    'merge_requests_events': True
-                })
-                info(f"  Added webhook for {project_name}")
-            except:
-                pass
+            # Note: Webhook creation skipped for GitLab projects
+            # Projects will be configured without webhooks
+            info(f"  Project {project_name} configured (webhook creation skipped)")
             
             # Commit files
             self._commit_files(project, config['files'], f"Initial commit: {config['description']}")
@@ -654,33 +1014,37 @@ class SonarQubeSetup:
         success("Quality gate created")
         
     def create_projects(self):
-        """Create SonarQube project for quality-demo only"""
-        project_key = "quality-demo"
-        info(f"Creating SonarQube project '{project_key}'...")
+        """Create SonarQube projects for quality analysis"""
+        quality_projects = ["quality-demo", "complex-banking-service"]
         
-        # Create project
-        response = self.session.post(
-            f"{self.url}/api/projects/create",
-            params={
-                'name': project_key,
-                'project': project_key
-            }
-        )
-        
-        if response.status_code != 400:
-            response.raise_for_status()
+        for project_key in quality_projects:
+            info(f"Creating SonarQube project '{project_key}'...")
             
-        # Create webhook
-        self.session.post(
-            f"{self.url}/api/webhooks/create",
-            params={
-                'name': 'CI/CD Assistant',
-                'project': project_key,
-                'url': f"{AGENT_WEBHOOK_URL}/sonarqube"
-            }
-        )
+            # Create project
+            response = self.session.post(
+                f"{self.url}/api/projects/create",
+                params={
+                    'name': project_key,
+                    'project': project_key
+                }
+            )
+            
+            if response.status_code != 400:
+                response.raise_for_status()
+                
+            # Create webhook
+            self.session.post(
+                f"{self.url}/api/webhooks/create",
+                params={
+                    'name': 'CI/CD Assistant',
+                    'project': project_key,
+                    'url': f"{AGENT_WEBHOOK_URL}/sonarqube"
+                }
+            )
+            
+            info(f"  ✓ Created SonarQube project: {project_key}")
         
-        success("SonarQube project created")
+        success("All SonarQube projects created")
 
 def print_summary():
     """Print summary of created projects"""
@@ -689,23 +1053,40 @@ def print_summary():
     
     print("\n📦 PROJECTS CREATED:")
     
-    print("\n🚨 SONARQUBE QUALITY GATE FAILURE:")
+    print("\n🚨 SONARQUBE QUALITY GATE FAILURES:")
     print("  • quality-demo: Java project with security issues and code smells")
     print("    - SQL injection vulnerability")
     print("    - Hardcoded password")
     print("    - Resource leak")
     print("    - Duplicate code")
     
-    print("\n🔴 PIPELINE FAILURES:")
+    print("\n🔥 COMPLEX MULTI-ITERATION PROJECT:")
+    print("  • complex-banking-service: Banking service with layered security issues")
+    print("    � ITERATION 1: Critical security (hardcoded secrets)")
+    print("    🔄 ITERATION 2: SQL injection & resource leaks")
+    print("    🔄 ITERATION 3: Weak cryptography & credential caching")
+    print("    🔄 ITERATION 4: Code duplication & complex methods")
+    print("    🔄 ITERATION 5: File security & path traversal")
+    print("    📈 Progressively reveals new issues as previous ones are fixed")
+    
+    print("\n�🔴 PIPELINE FAILURES:")
     print("  • python-api: Runtime error (division by zero in tests)")
     print("  • java-service: Compilation error (missing DatabaseHelper class)")
     print("  • node-app: Syntax error (missing closing bracket)")
     
     print("\n✅ KEY FEATURES:")
-    print("  • Minimal code for easy analysis")
-    print("  • Clear failure patterns")
+    print("  • Multi-iteration quality gate failures")
+    print("  • Progressive issue discovery")
+    print("  • Real-world security vulnerabilities")
     print("  • Different failure types (runtime, compile, syntax)")
-    print("  • One SonarQube project for focused demo")
+    print("  • Two SonarQube projects for comprehensive demo")
+    print("  • GitLab projects configured without webhooks")
+    print("  • SonarQube webhooks enabled for quality gate integration")
+    
+    print("\n🎯 DEMO SCENARIOS:")
+    print("  1. Simple fixes: Use python-api, java-service, node-app")
+    print("  2. Quality analysis: Use quality-demo for straightforward SonarQube issues")
+    print("  3. Complex iterations: Use complex-banking-service for multi-iteration fixes")
     
     print("\n" + "="*80)
 
@@ -720,9 +1101,11 @@ if __name__ == "__main__":
     
     print(f"\nThis script will create:")
     print(f"- GitLab group '{GROUP_NAME}'")
-    print(f"- 4 projects (1 quality, 3 pipeline failures)")
-    print(f"- Quality gate for SonarQube")
-    print(f"- Webhook integrations")
+    print(f"- 5 projects (2 quality w/ multi-iteration, 3 pipeline failures)")
+    print(f"- Enhanced quality gate for SonarQube")
+    print(f"- SonarQube webhook integrations only")
+    print(f"- Progressive issue discovery scenario")
+    print(f"- GitLab projects without webhooks (manual setup required)")
     
     if input("\nProceed? (yes/no): ").lower() != 'yes':
         print("Cancelled")
@@ -748,6 +1131,9 @@ if __name__ == "__main__":
         
         print(f"\n🌐 GitLab projects: {group.web_url}")
         print(f"📊 SonarQube: {sonar_url}/projects")
+        print(f"\n📝 NOTE: GitLab projects created without webhooks.")
+        print(f"   If webhook integration is needed, manually configure webhooks in GitLab projects")
+        print(f"   pointing to: {AGENT_WEBHOOK_URL}/gitlab")
         
     except Exception as e:
         error(f"Setup failed: {e}")

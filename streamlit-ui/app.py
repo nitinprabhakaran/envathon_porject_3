@@ -59,11 +59,54 @@ st.markdown("""
 st.markdown('<h1 class="main-header">🔧 CI/CD Failure Assistant</h1>', unsafe_allow_html=True)
 
 # Navigation info
-st.info("👈 Select **Pipeline Failures** or **Quality Issues** from the sidebar to begin")
+# Navigation info
+st.info("👈 **Self-Service Portal**: Start with **Project Setup** to subscribe your projects, then view **Pipeline Failures** / **Quality Issues** for AI analysis")
+
+col1, col2, col3 = st.columns(3)
+
+with col1:
+    st.subheader("⚙️ Project Setup")
+    st.write("""
+    **Self-service webhook subscription:**
+    - Set up GitLab pipeline monitoring
+    - Configure SonarQube quality gate alerts
+    - Manage your webhook subscriptions
+    - No authentication required - open access
+    """)
+    
+    if st.button("Go to Project Setup", key="setup_btn"):
+        st.switch_page("pages/project_setup.py")
+
+with col2:
+    st.subheader("🚀 Pipeline Failures")
+    st.write("""
+    Automatically analyze GitLab CI/CD pipeline failures:
+    - Identify root causes
+    - Get actionable solutions
+    - Create merge requests with fixes
+    - Track resolution progress
+    """)
+    
+    if st.button("Go to Pipeline Failures", key="pipeline_btn_top"):
+        st.switch_page("pages/pipeline_failures.py")
+
+with col3:
+    st.subheader("📊 Quality Issues")
+    st.write("""
+    Resolve SonarQube quality gate failures:
+    - Analyze code quality issues
+    - Get specific fix recommendations
+    - Automated code improvements
+    - Quality metrics tracking
+    """)
+    
+    if st.button("Go to Quality Issues", key="quality_btn_top"):
+        st.switch_page("pages/quality_issues.py")
 
 # Sidebar
 with st.sidebar:
     st.header("Navigation")
+    st.page_link("pages/project_setup.py", label="⚙️ Project Setup", icon="⚙️")
     st.page_link("pages/pipeline_failures.py", label="🚀 Pipeline Failures", icon="🚀")
     st.page_link("pages/quality_issues.py", label="📊 Quality Issues", icon="📊")
     
@@ -92,7 +135,7 @@ with col1:
     - Track resolution progress
     """)
     
-    if st.button("Go to Pipeline Failures", key="pipeline_btn"):
+    if st.button("Go to Pipeline Failures", key="pipeline_btn_main"):
         st.switch_page("pages/pipeline_failures.py")
 
 with col2:
@@ -105,7 +148,7 @@ with col2:
     - Batch fix similar issues
     """)
     
-    if st.button("Go to Quality Issues", key="quality_btn"):
+    if st.button("Go to Quality Issues", key="quality_btn_main"):
         st.switch_page("pages/quality_issues.py")
 
 st.divider()

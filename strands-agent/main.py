@@ -19,11 +19,9 @@ async def lifespan(app: FastAPI):
     session_manager = SessionManager()
     await session_manager.init_pool()
     
-    # Start queue processor (optional - only if queue is configured)
-    queue_task = None
-    if settings.queue_type != "none":
-        queue_processor = QueueProcessor()
-        queue_task = asyncio.create_task(queue_processor.start())
+    # Start queue processor
+    queue_processor = QueueProcessor()
+    processor_task = asyncio.create_task(queue_processor.start())
     
     # Start cleanup task
     cleanup_task = asyncio.create_task(periodic_cleanup(session_manager))
@@ -31,9 +29,7 @@ async def lifespan(app: FastAPI):
     yield
     
     # Cleanup
-    if queue_task:
-        queue_processor.running = False
-        queue_task.cancel()
+    processor_task.cancel()
     cleanup_task.cancel()
     log.info("Shutting down...")
 

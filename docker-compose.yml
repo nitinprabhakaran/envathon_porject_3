@@ -57,8 +57,10 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+      start_period: 30s
     networks:
       - devops-network
+    restart: unless-stopped
 
   redis:
     image: redis:alpine
@@ -70,6 +72,13 @@ services:
       - redis_data:/data
     networks:
       - devops-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    restart: unless-stopped
 
   opensearch:
     image: opensearchproject/opensearch:2.11.0
@@ -229,16 +238,30 @@ services:
       platforms:
         - linux/arm64
     container_name: webhook-handler
+    profiles: ["local-db", "local-queue"]  # Only runs with local infrastructure
     env_file: .env  # Load all settings from .env
     environment:
-      - PORT=8090
+      - WEBHOOK_HANDLER_PORT=8090
     ports:
       - "8090:8090"
     volumes:
       - ./logs:/app/logs
+    depends_on:
+      postgres-assistant:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
     networks:
       - devops-network
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8090/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
 
   # Strands Agent with flexible backends
   strands-agent:
@@ -248,14 +271,30 @@ services:
       platforms:
         - linux/arm64
     container_name: strands-agent
+    profiles: ["local-db", "local-queue"]  # Only runs with local infrastructure
     env_file: .env  # Load all settings from .env
     ports:
       - "8000:8000"
     volumes:
       - ./logs:/app/logs
+    depends_on:
+      postgres-assistant:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      webhook-handler:
+        condition: service_healthy
     networks:
       - devops-network
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
     
   streamlit-ui:
     build:
@@ -264,8 +303,10 @@ services:
       platforms:
         - linux/arm64
     container_name: streamlit-ui
+    profiles: ["local-db", "local-queue"]  # Only runs with local infrastructure
     depends_on:
-      - strands-agent
+      strands-agent:
+        condition: service_healthy
     environment:
       - STREAMLIT_API_URL=http://strands-agent:8000
       - LOG_LEVEL=${LOG_LEVEL:-INFO}

@@ -9,9 +9,9 @@ from utils.logger import log
 from config import settings
 from services.webhook_manager import WebhookManager
 from db.database import Database
-from services.auth import get_api_key
+from services.auth import get_api_key, get_optional_api_key
 
-router = APIRouter(prefix="/subscriptions", tags=["subscriptions"])
+router = APIRouter(tags=["subscriptions"])
 
 class SubscriptionRequest(BaseModel):
     """Request model for creating subscription"""
@@ -33,14 +33,21 @@ class SubscriptionResponse(BaseModel):
     webhook_ids: List[str]
 
 webhook_manager = WebhookManager()
-db = Database()
+
+def get_database() -> Database:
+    """Get database instance from application state"""
+    from main import app_state
+    if not app_state.db:
+        raise HTTPException(status_code=503, detail="Database not available")
+    return app_state.db
 
 @router.post("/", response_model=SubscriptionResponse)
 async def create_subscription(
     request: SubscriptionRequest,
-    api_key: str = Depends(get_api_key)
+    api_key: str = Depends(get_optional_api_key),
+    db: Database = Depends(get_database)
 ):
-    """Create a new webhook subscription for a project"""
+    """Create a new webhook subscription for a project - Open access for self-service"""
     try:
         log.info(f"Creating subscription for {request.project_type} project {request.project_id}")
         
@@ -48,17 +55,26 @@ async def create_subscription(
         webhook_secret = secrets.token_urlsafe(32)
         subscription_id = secrets.token_hex(16)
         
-        # Prepare webhook URL with subscription ID
-        webhook_url = f"{settings.subscription_callback_url}/{request.project_type}/{subscription_id}"
+        # Prepare simple webhook URL without subscription ID
+        webhook_url = f"{settings.subscription_callback_url}/{request.project_type}"
         
         # Configure webhooks based on project type
         webhook_ids = []
+        
+        # Use system tokens if user provided "system-managed"
+        actual_access_token = request.access_token
+        if request.access_token == "system-managed":
+            if request.project_type == "gitlab":
+                actual_access_token = settings.gitlab_token
+            elif request.project_type == "sonarqube":
+                actual_access_token = settings.sonar_token
+            log.info(f"Using system-managed token for {request.project_type}")
         
         if request.project_type == "gitlab":
             webhook_ids = await webhook_manager.setup_gitlab_webhooks(
                 project_id=request.project_id,
                 project_url=str(request.project_url),
-                access_token=request.access_token,
+                access_token=actual_access_token,
                 webhook_url=webhook_url,
                 webhook_secret=webhook_secret,
                 events=request.webhook_events
@@ -67,7 +83,7 @@ async def create_subscription(
             webhook_ids = await webhook_manager.setup_sonarqube_webhooks(
                 project_key=request.project_id,
                 sonarqube_url=str(request.project_url),
-                access_token=request.access_token,
+                access_token=actual_access_token,
                 webhook_url=webhook_url,
                 webhook_secret=webhook_secret
             )
@@ -86,9 +102,12 @@ async def create_subscription(
             "webhook_secret": webhook_secret,
             "webhook_ids": webhook_ids,
             "status": "active",
+            "created_at": datetime.utcnow(),
             "expires_at": expires_at,
             "metadata": request.metadata,
-            "api_key": api_key
+            "webhook_events": request.webhook_events,
+            "api_key": api_key if api_key else "anonymous-user",
+            "access_token": actual_access_token  # Store the actual token used
         })
         
         log.info(f"Successfully created subscription {subscription_id} with {len(webhook_ids)} webhooks")
@@ -110,27 +129,34 @@ async def create_subscription(
 @router.get("/{subscription_id}")
 async def get_subscription(
     subscription_id: str,
-    api_key: str = Depends(get_api_key)
+    api_key: str = Depends(get_optional_api_key),
+    db: Database = Depends(get_database)
 ):
-    """Get subscription details"""
+    """Get subscription details - Open access"""
     subscription = await db.get_subscription(subscription_id)
     
     if not subscription:
         raise HTTPException(status_code=404, detail="Subscription not found")
     
-    # Verify ownership
-    if subscription.get("api_key") != api_key:
-        raise HTTPException(status_code=403, detail="Access denied")
+    # Verify ownership - In open access mode, allow if no specific owner or if owner matches
+    subscription_owner = subscription.get("api_key", "anonymous-user")
+    if subscription_owner != "anonymous-user" and subscription_owner != api_key:
+        # Only restrict if there's a specific owner and it doesn't match
+        if settings.environment != "local":
+            raise HTTPException(status_code=403, detail="Access denied")
+        # In local environment, allow access for development
+        log.warning(f"Local environment: allowing cross-user access to subscription {subscription_id}")
     
     return subscription
 
 @router.get("/")
 async def list_subscriptions(
-    api_key: str = Depends(get_api_key),
+    api_key: str = Depends(get_optional_api_key),
     status: str = "active",
-    limit: int = 100
+    limit: int = 100,
+    db: Database = Depends(get_database)
 ):
-    """List all subscriptions for the authenticated user"""
+    """List all subscriptions for the user - Open access for self-service"""
     subscriptions = await db.list_subscriptions(
         api_key=api_key,
         status=status,
@@ -141,9 +167,10 @@ async def list_subscriptions(
 @router.delete("/{subscription_id}")
 async def delete_subscription(
     subscription_id: str,
-    api_key: str = Depends(get_api_key)
+    api_key: str = Depends(get_optional_api_key),
+    db: Database = Depends(get_database)
 ):
-    """Delete a subscription and remove associated webhooks"""
+    """Delete a subscription and remove associated webhooks - Open access"""
     try:
         subscription = await db.get_subscription(subscription_id)
         
@@ -181,18 +208,24 @@ async def delete_subscription(
 @router.post("/{subscription_id}/refresh")
 async def refresh_subscription(
     subscription_id: str,
-    api_key: str = Depends(get_api_key)
+    api_key: str = Depends(get_optional_api_key),
+    db: Database = Depends(get_database)
 ):
-    """Refresh subscription expiry and webhook configuration"""
+    """Refresh subscription expiry and webhook configuration - Open access"""
     try:
         subscription = await db.get_subscription(subscription_id)
         
         if not subscription:
             raise HTTPException(status_code=404, detail="Subscription not found")
         
-        # Verify ownership
-        if subscription.get("api_key") != api_key:
-            raise HTTPException(status_code=403, detail="Access denied")
+        # Verify ownership - In open access mode, allow if no specific owner or if owner matches
+        subscription_owner = subscription.get("api_key", "anonymous-user")
+        if subscription_owner != "anonymous-user" and subscription_owner != api_key:
+            # Only restrict if there's a specific owner and it doesn't match
+            if settings.environment != "local":
+                raise HTTPException(status_code=403, detail="Access denied")
+            # In local environment, allow access for development
+            log.warning(f"Local environment: allowing cross-user access to subscription {subscription_id}")
         
         # Extend expiry
         new_expiry = datetime.utcnow() + timedelta(days=settings.subscription_ttl_days)

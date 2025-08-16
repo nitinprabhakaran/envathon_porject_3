@@ -25,3 +25,6 @@ def setup_logger():
     )
     
     return logger
+
+# Initialize and export logger instance
+log = setup_logger()

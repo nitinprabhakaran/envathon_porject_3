@@ -1,5 +1,5 @@
 """Health check API for webhook handler"""
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Depends
 from typing import Dict, Any
 from datetime import datetime
 from utils.logger import log
@@ -8,7 +8,14 @@ from services.queue_publisher import QueuePublisher
 import redis.asyncio as redis
 from config import settings
 
-router = APIRouter(prefix="/health", tags=["health"])
+router = APIRouter(tags=["health"])
+
+def get_database() -> Database:
+    """Get database instance from application state"""
+    from main import app_state
+    if not app_state.db:
+        raise HTTPException(status_code=503, detail="Database not available")
+    return app_state.db
 
 @router.get("/")
 async def health_check() -> Dict[str, Any]:
@@ -21,7 +28,9 @@ async def health_check() -> Dict[str, Any]:
     }
 
 @router.get("/detailed")
-async def detailed_health_check() -> Dict[str, Any]:
+async def detailed_health_check(
+    db: Database = Depends(get_database)
+) -> Dict[str, Any]:
     """Detailed health check with component status"""
     health_status = {
         "status": "healthy",
@@ -33,7 +42,6 @@ async def detailed_health_check() -> Dict[str, Any]:
     
     # Check database
     try:
-        db = Database()
         await db.health_check()
         health_status["components"]["database"] = "healthy"
     except Exception as e:
@@ -62,10 +70,11 @@ async def detailed_health_check() -> Dict[str, Any]:
     return health_status
 
 @router.get("/readiness")
-async def readiness_check() -> Dict[str, Any]:
+async def readiness_check(
+    db: Database = Depends(get_database)
+) -> Dict[str, Any]:
     """Kubernetes readiness probe"""
     try:
-        db = Database()
         await db.health_check()
         return {"ready": True}
     except Exception as e:

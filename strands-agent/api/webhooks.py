@@ -581,9 +581,9 @@ async def analyze_pipeline_failure(session_id: str, project_id: str, pipeline_id
     try:
         log.info(f"Starting pipeline analysis for session {session_id}")
         
-        # Run analysis
+        # Run analysis with webhook_data first, session_id second
         analysis = await pipeline_agent.analyze_failure(
-            session_id, project_id, pipeline_id, webhook_data
+            webhook_data, session_id
         )
         
         # Extract text if analysis is a complex object
@@ -705,9 +705,9 @@ async def analyze_quality_from_pipeline(session_id: str, project_key: str, gitla
             "qualityGate": project_status
         }
         
-        # Run quality analysis
+        # Run quality analysis with webhook_data first, session_id second
         analysis = await quality_agent.analyze_quality_issues(
-            session_id, project_key, gitlab_project_id, enhanced_webhook_data
+            enhanced_webhook_data, session_id
         )
         
         # Extract text if analysis is a complex object
@@ -774,9 +774,9 @@ async def analyze_quality_issues(session_id: str, project_key: str, gitlab_proje
             }
         )
         
-        # Run analysis
+        # Run analysis with webhook_data first, session_id second
         analysis = await quality_agent.analyze_quality_issues(
-            session_id, project_key, gitlab_project_id, webhook_data
+            webhook_data, session_id
         )
         
         # Extract text if analysis is a complex object

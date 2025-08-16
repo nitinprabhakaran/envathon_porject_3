@@ -9,12 +9,12 @@ from config import settings
 async def get_sonar_client():
     """Create SonarQube API client"""
     auth_header = {}
-    if settings.sonar_token:
-        credentials = base64.b64encode(f"{settings.sonar_token}:".encode()).decode()
+    if settings.sonarqube_token:
+        credentials = base64.b64encode(f"{settings.sonarqube_token}:".encode()).decode()
         auth_header = {"Authorization": f"Basic {credentials}"}
     
     return httpx.AsyncClient(
-        base_url=f"{settings.sonar_host_url}/api",
+        base_url=f"{settings.sonarqube_url}/api",
         headers=auth_header,
         timeout=30.0
     )

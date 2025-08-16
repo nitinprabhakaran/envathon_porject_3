@@ -95,3 +95,53 @@ class WebhookManager:
                         headers=headers,
                         json={"webhook": webhook_id}
                     )
+    
+    async def verify_gitlab_webhooks(
+        self,
+        project_id: str,
+        webhook_ids: List[str],
+        access_token: str
+    ) -> bool:
+        """Verify GitLab webhooks are still active"""
+        try:
+            async with httpx.AsyncClient() as client:
+                headers = {"PRIVATE-TOKEN": access_token}
+                
+                for webhook_id in webhook_ids:
+                    response = await client.get(
+                        f"https://gitlab.com/api/v4/projects/{project_id}/hooks/{webhook_id}",
+                        headers=headers
+                    )
+                    if response.status_code != 200:
+                        return False
+                
+                return True
+        except Exception:
+            return False
+    
+    async def verify_sonarqube_webhooks(
+        self,
+        project_key: str,
+        webhook_ids: List[str],
+        access_token: str
+    ) -> bool:
+        """Verify SonarQube webhooks are still active"""
+        try:
+            async with httpx.AsyncClient() as client:
+                headers = {"Authorization": f"Bearer {access_token}"}
+                
+                response = await client.get(
+                    f"http://sonarqube:9000/api/webhooks/list",
+                    headers=headers,
+                    params={"project": project_key}
+                )
+                
+                if response.status_code != 200:
+                    return False
+                
+                active_webhooks = response.json().get("webhooks", [])
+                active_webhook_keys = [wh["key"] for wh in active_webhooks]
+                
+                return all(webhook_id in active_webhook_keys for webhook_id in webhook_ids)
+        except Exception:
+            return False

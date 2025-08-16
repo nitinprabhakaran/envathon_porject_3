@@ -8,10 +8,18 @@ CREATE TABLE IF NOT EXISTS sessions (
     project_name VARCHAR(255),
     pipeline_id VARCHAR(255),
     pipeline_status VARCHAR(50),
+    pipeline_url TEXT,
     job_name VARCHAR(255),
     job_id VARCHAR(255),
     branch VARCHAR(255),
     failed_stage VARCHAR(255),
+    commit_sha VARCHAR(255),
+    sonarqube_key VARCHAR(255),
+    quality_gate_status VARCHAR(50),
+    mr_id VARCHAR(255),
+    mr_title TEXT,
+    mr_url TEXT,
+    unique_id VARCHAR(255), -- For preventing duplicate sessions (pipeline_id for GitLab, project_key:branch for SonarQube)
     conversation_history JSONB DEFAULT '[]',
     webhook_data JSONB DEFAULT '{}',
     analysis_result JSONB DEFAULT '{}',
@@ -32,11 +40,14 @@ CREATE TABLE IF NOT EXISTS webhook_subscriptions (
     webhook_url TEXT,
     webhook_secret VARCHAR(255),
     webhook_ids JSONB DEFAULT '[]',
+    webhook_events JSONB DEFAULT '[]',
     access_token TEXT,
+    api_key VARCHAR(255),
     metadata JSONB DEFAULT '{}',
     status VARCHAR(50) DEFAULT 'active',
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    last_refreshed TIMESTAMP,
     expires_at TIMESTAMP DEFAULT (CURRENT_TIMESTAMP + INTERVAL '90 days')
 );
 
@@ -81,10 +92,14 @@ CREATE INDEX idx_sessions_project_id ON sessions(project_id);
 CREATE INDEX idx_sessions_status ON sessions(status);
 CREATE INDEX idx_sessions_expires_at ON sessions(expires_at);
 CREATE INDEX idx_sessions_subscription ON sessions(subscription_id);
+CREATE INDEX idx_sessions_unique_id ON sessions(unique_id);
+CREATE INDEX idx_sessions_type_project_unique ON sessions(session_type, project_id, unique_id);
+CREATE INDEX idx_sessions_pipeline_lookup ON sessions(session_type, project_id, pipeline_id) WHERE session_type = 'pipeline';
 
 CREATE INDEX idx_subscriptions_project ON webhook_subscriptions(project_id);
 CREATE INDEX idx_subscriptions_status ON webhook_subscriptions(status);
 CREATE INDEX idx_subscriptions_expires ON webhook_subscriptions(expires_at);
+CREATE INDEX idx_subscriptions_api_key ON webhook_subscriptions(api_key);
 
 CREATE INDEX idx_fix_attempts_session ON fix_attempts(session_id);
 CREATE INDEX idx_messages_session ON messages(session_id);

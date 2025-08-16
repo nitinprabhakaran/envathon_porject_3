@@ -1,30 +1,225 @@
-"""Quality issues page"""
+"""Quality Issues Analysis Page"""
 import streamlit as st
 import asyncio
-import json
-import time
 from datetime import datetime, timedelta
-from utils.api_client import APIClient
+from utils.api_client import UnifiedAPIClient
 from utils.logger import setup_logger
 
 log = setup_logger()
 
-# Page config
-st.set_page_config(
-    page_title="Quality Issues - CI/CD Assistant",
-    page_icon="📊",
-    layout="wide"
-)
+def main():
+    st.title("🔍 Quality Issues Analysis")
+    st.markdown("Monitor and analyze SonarQube quality gate failures with AI-powered insights")
+    
+    # Initialize session state
+    if "selected_quality_session" not in st.session_state:
+        st.session_state.selected_quality_session = None
+    
+    # Initialize API client
+    if 'api_client' not in st.session_state:
+        st.session_state.api_client = UnifiedAPIClient()
+    
+    api_client = st.session_state.api_client
+    
+    try:
+        # Get active sessions using asyncio.run()
+        sessions = asyncio.run(api_client.get_active_sessions())
+        
+        if not sessions:
+            st.info("🎉 No active quality analysis sessions found. Your projects are looking good!")
+            return
+        
+        # Filter for quality issues (SonarQube related)
+        quality_sessions = [
+            s for s in sessions 
+            if s.get('context', {}).get('analysis_type') == 'quality' 
+            or 'sonarqube' in s.get('context', {}).get('event_type', '').lower()
+            or 'quality' in s.get('session_type', '').lower()
+        ]
+        
+        if not quality_sessions:
+            st.info("📊 No quality analysis sessions found. Quality gates are passing!")
+            return
+        
+        st.success(f"Found {len(quality_sessions)} active quality analysis sessions")
+        
+        # Display sessions in tabs
+        if len(quality_sessions) == 1:
+            display_session_details(quality_sessions[0], api_client)
+        else:
+            tabs = st.tabs([f"Session {i+1}: {s.get('session_id', 'Unknown')[:8]}" for i, s in enumerate(quality_sessions)])
+            
+            for i, (tab, session) in enumerate(zip(tabs, quality_sessions)):
+                with tab:
+                    display_session_details(session, api_client)
+    
+    except Exception as e:
+        st.error(f"Failed to fetch quality sessions: {str(e)}")
+        log.error(f"Quality issues page error: {e}", exc_info=True)
 
-# Initialize session state
-if "api_client" not in st.session_state:
-    st.session_state.api_client = APIClient()
-if "selected_quality_session" not in st.session_state:
-    st.session_state.selected_quality_session = None
-if "quality_messages" not in st.session_state:
-    st.session_state.quality_messages = {}
-if "show_quality_chat" not in st.session_state:
-    st.session_state.show_quality_chat = {}
+def display_session_details(session: dict, api_client: UnifiedAPIClient):
+    """Display detailed information for a quality analysis session"""
+    
+    session_id = session.get('session_id', 'Unknown')
+    context = session.get('context', {})
+    
+    # Session header
+    col1, col2, col3 = st.columns([2, 1, 1])
+    
+    with col1:
+        st.subheader(f"Session: {session_id[:12]}...")
+        
+        # Project information
+        project_info = context.get('project', {})
+        if project_info:
+            st.write(f"🏗️ **Project:** {project_info.get('name', 'Unknown')}")
+            st.write(f"📁 **ID:** {project_info.get('id', 'Unknown')}")
+    
+    with col2:
+        # Status badge
+        status = session.get('status', 'unknown')
+        status_colors = {
+            'active': '🟢',
+            'completed': '✅', 
+            'failed': '❌',
+            'unknown': '⚪'
+        }
+        st.metric("Status", f"{status_colors.get(status, '⚪')} {status.title()}")
+    
+    with col3:
+        # Timestamp
+        created_at = session.get('created_at', '')
+        if created_at:
+            try:
+                dt = datetime.fromisoformat(created_at.replace('Z', '+00:00'))
+                st.metric("Created", dt.strftime("%H:%M:%S"))
+            except:
+                st.metric("Created", "Unknown")
+    
+    # Quality Gate Information
+    st.markdown("### 🚨 Quality Gate Failure Details")
+    
+    # SonarQube specific information
+    sonar_data = context.get('sonarqube', {})
+    if sonar_data:
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.write(f"**Quality Gate Status:** {sonar_data.get('qualityGate', {}).get('status', 'Unknown')}")
+            st.write(f"**Project Key:** {sonar_data.get('project', {}).get('key', 'Unknown')}")
+            
+        with col2:
+            branch = sonar_data.get('branch', {})
+            if branch:
+                st.write(f"**Branch:** {branch.get('name', 'Unknown')}")
+                st.write(f"**Branch Type:** {branch.get('type', 'Unknown')}")
+    
+    # Conditions that failed
+    conditions = sonar_data.get('qualityGate', {}).get('conditions', [])
+    failed_conditions = [c for c in conditions if c.get('status') == 'ERROR']
+    
+    if failed_conditions:
+        st.markdown("#### ❌ Failed Conditions")
+        for condition in failed_conditions:
+            with st.expander(f"❌ {condition.get('metricKey', 'Unknown Metric')}"):
+                col1, col2 = st.columns(2)
+                with col1:
+                    st.write(f"**Value:** {condition.get('value', 'N/A')}")
+                    st.write(f"**Threshold:** {condition.get('errorThreshold', 'N/A')}")
+                with col2:
+                    st.write(f"**Operator:** {condition.get('operator', 'N/A')}")
+                    st.write(f"**Status:** {condition.get('status', 'N/A')}")
+    
+    # Get detailed session information
+    try:
+        detailed_session = asyncio.run(api_client.get_session_details(session_id))
+        
+        # Conversation history
+        messages = detailed_session.get('messages', [])
+        if messages:
+            st.markdown("### 💬 AI Analysis Conversation")
+            
+            for msg in messages[-5:]:  # Show last 5 messages
+                role = msg.get('role', 'unknown')
+                content = msg.get('content', '')
+                timestamp = msg.get('timestamp', '')
+                
+                if role == 'user':
+                    st.chat_message("user").write(content)
+                elif role == 'assistant':
+                    st.chat_message("assistant").write(content)
+        
+        # Interactive messaging
+        st.markdown("### 🤖 Ask the Quality Assistant")
+        
+        # Predefined quick actions
+        col1, col2, col3 = st.columns(3)
+        
+        with col1:
+            if st.button("📊 Analyze Issues", key=f"analyze_{session_id}"):
+                send_message_to_session(session_id, "Please analyze the current quality issues and provide recommendations", api_client)
+        
+        with col2:
+            if st.button("🔧 Fix Suggestions", key=f"fix_{session_id}"):
+                send_message_to_session(session_id, "What are the specific steps to fix these quality gate failures?", api_client)
+        
+        with col3:
+            if st.button("📝 Create MR", key=f"mr_{session_id}"):
+                create_merge_request_for_session(session_id, api_client)
+        
+        # Custom message input
+        user_message = st.text_area(
+            "Ask a custom question about this quality issue:",
+            placeholder="e.g., How can I improve code coverage in the main module?",
+            key=f"message_input_{session_id}"
+        )
+        
+        if st.button("Send Message", key=f"send_{session_id}"):
+            if user_message.strip():
+                send_message_to_session(session_id, user_message, api_client)
+            else:
+                st.warning("Please enter a message")
+    
+    except Exception as e:
+        st.error(f"Failed to fetch detailed session info: {str(e)}")
+        log.error(f"Session details error: {e}", exc_info=True)
+
+def send_message_to_session(session_id: str, message: str, api_client: UnifiedAPIClient):
+    """Send a message to the AI agent for analysis"""
+    try:
+        with st.spinner("🤖 AI is analyzing..."):
+            response = asyncio.run(api_client.send_message(session_id, message))
+            
+        if response:
+            st.success("✅ Message sent successfully!")
+            st.rerun()  # Refresh to show new messages
+        else:
+            st.error("Failed to send message")
+    
+    except Exception as e:
+        st.error(f"Failed to send message: {str(e)}")
+        log.error(f"Send message error: {e}", exc_info=True)
+
+def create_merge_request_for_session(session_id: str, api_client: UnifiedAPIClient):
+    """Create a merge request for the quality fixes"""
+    try:
+        with st.spinner("📝 Creating merge request..."):
+            response = asyncio.run(api_client.create_merge_request(session_id))
+            
+        if response:
+            st.success("✅ Merge request created successfully!")
+            mr_url = response.get('merge_request_url')
+            if mr_url:
+                st.markdown(f"🔗 [View Merge Request]({mr_url})")
+        else:
+            st.error("Failed to create merge request")
+    
+    except Exception as e:
+        st.error(f"Failed to create merge request: {str(e)}")
+        log.error(f"Create MR error: {e}", exc_info=True)
+
+if __name__ == "__main__":
+    main()
 
 def calculate_time_remaining(expires_at):
     """Calculate time remaining until session expires"""
@@ -76,6 +271,9 @@ col1, col2, col3 = st.columns([1.5, 3, 1.5])
 # Column 1: Session list
 with col1:
     st.subheader("Projects")
+    
+    # Initialize failure_groups to avoid NameError
+    failure_groups = {}
     
     # Fetch sessions and group by project
     async def fetch_and_group_sessions():
@@ -150,7 +348,13 @@ with col1:
 with col2:
     if st.session_state.selected_quality_session:
         session = st.session_state.selected_quality_session
-        session_id = session["id"]
+        session_id = session.get("id", "Unknown")
+        
+        # Safety check for valid session ID
+        if session_id == "Unknown" or not session_id:
+            st.error("Invalid session selected. Please select a valid session from the sidebar.")
+            st.session_state.selected_quality_session = None
+            st.rerun()
         
         st.subheader("Quality Analysis")
         
@@ -181,9 +385,6 @@ with col2:
                         st.success(f"✅ Fix Iterations: {len(fix_attempts)}/5 ({len(successful_attempts)} successful)")
                     elif pending_attempts:
                         st.warning(f"🔄 Fix Iterations: {len(fix_attempts)}/5 (Checking status...)")
-                        # Auto-refresh every 5 seconds if there are pending fixes
-                        time.sleep(5)
-                        st.rerun()
                     else:
                         st.error(f"❌ Fix Iterations: {len(fix_attempts)}/5 (all failed)")
                 
@@ -418,21 +619,6 @@ with col2:
                     
                     st.divider()
                     
-            # Auto-refresh check for pending fixes
-            has_pending = False
-            for project_name, sessions in failure_groups.items():
-                for session in sessions:
-                    fix_attempts = session.get("webhook_data", {}).get("fix_attempts", [])
-                    if any(att.get("status") == "pending" for att in fix_attempts):
-                        has_pending = True
-                        break
-                if has_pending:
-                    break
-            
-            if has_pending:
-                # Auto-refresh every 5 seconds
-                time.sleep(5)
-                st.rerun()
         else:
             st.info("Select a project from the left to view quality issues")
             

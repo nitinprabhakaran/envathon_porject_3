@@ -17,8 +17,8 @@ COPY . .
 # Create logs directory
 RUN mkdir -p logs
 
-# Expose port
-EXPOSE 8080
+# Expose port (default)
+EXPOSE 8090
 
-# Run application
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8080"]
+# Run application using environment variable
+CMD ["sh", "-c", "uvicorn main:app --host 0.0.0.0 --port ${WEBHOOK_HANDLER_PORT:-8090}"]

@@ -2,9 +2,8 @@
 import streamlit as st
 import asyncio
 import json
-import time
 from datetime import datetime, timedelta
-from utils.api_client import APIClient
+from utils.api_client import UnifiedAPIClient
 from utils.logger import setup_logger
 
 log = setup_logger()
@@ -18,7 +17,7 @@ st.set_page_config(
 
 # Initialize session state
 if "api_client" not in st.session_state:
-    st.session_state.api_client = APIClient()
+            st.session_state.api_client = UnifiedAPIClient()
 if "selected_project" not in st.session_state:
     st.session_state.selected_project = None
 if "selected_failure" not in st.session_state:
@@ -172,7 +171,7 @@ with col2:
         
         # Load full session data
         try:
-            full_session = asyncio.run(st.session_state.api_client.get_session(session_id))
+            full_session = asyncio.run(st.session_state.api_client.get_session_details(session_id))
             messages = full_session.get("conversation_history", [])
             fix_attempts = full_session.get("webhook_data", {}).get("fix_attempts", [])
             
@@ -197,9 +196,6 @@ with col2:
                         st.success(f"✅ Fix Iterations: {len(fix_attempts)}/5 ({len(successful_attempts)} successful)")
                     elif pending_attempts:
                         st.warning(f"🔄 Fix Iterations: {len(fix_attempts)}/5 (Checking status...)")
-                        # Auto-refresh every 5 seconds if there are pending fixes
-                        time.sleep(5)
-                        st.rerun()
                     else:
                         st.error(f"❌ Fix Iterations: {len(fix_attempts)}/5 (all failed)")
                 
@@ -433,21 +429,6 @@ with col2:
                     
                     st.divider()
                     
-            # Auto-refresh check for pending fixes
-            has_pending = False
-            for branch, sessions in project_data.items():
-                for session in sessions:
-                    fix_attempts = session.get("webhook_data", {}).get("fix_attempts", [])
-                    if any(att.get("status") == "pending" for att in fix_attempts):
-                        has_pending = True
-                        break
-                if has_pending:
-                    break
-            
-            if has_pending:
-                # Auto-refresh every 5 seconds
-                time.sleep(5)
-                st.rerun()
         else:
             st.info("Select a project from the left to view failures")
 

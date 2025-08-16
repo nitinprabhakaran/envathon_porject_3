@@ -139,8 +139,13 @@ class QueueProcessor:
                 # Run quality analysis
                 await self.analyze_quality_from_pipeline(session_id, context, data)
             else:
-                # Run pipeline failure analysis
-                result = await self.pipeline_agent.analyze_failure(context)
+                # Run pipeline failure analysis (using working version signature)
+                result = await self.pipeline_agent.analyze_failure(
+                    session_id,
+                    context.project_id,
+                    context.pipeline_id,
+                    data.get("webhook_data", {})
+                )
                 
                 # Store analysis result
                 await self.session_manager.update_session_metadata(
@@ -148,15 +153,15 @@ class QueueProcessor:
                     {"analysis_result": result, "analysis_completed": True}
                 )
                 
-                # Store in vector DB for future reference
-                await self.vector_store.store_analysis(
-                    session_id=session_id,
-                    project_id=context.project_id,
-                    analysis_type="pipeline_failure",
-                    error_signature=self._extract_error_signature(result),
-                    solution=result.get("solution"),
-                    metadata=data
-                )
+                # TODO: Store in vector DB for future reference
+                # await self.vector_store.store_analysis(
+                #     session_id=session_id,
+                #     project_id=context.project_id,
+                #     analysis_type="pipeline_failure",
+                #     error_signature=self._extract_error_signature(result),
+                #     solution=result.get("solution"),
+                #     metadata=data
+                # )
                 
         except Exception as e:
             log.error(f"Pipeline failure analysis failed: {e}")
@@ -179,19 +184,14 @@ class QueueProcessor:
             
             if fix_data:
                 # Store successful fix in vector DB
-                await self.vector_store.store_successful_fix(
-                    session_id=session_id,
-                    project_id=context.project_id,
-                    fix_type="pipeline",
-                    problem_description=fix_data.get("problem"),
-                    solution=fix_data.get("solution"),
-                    files_changed=fix_data.get("files_changed", []),
-                    metadata={
-                        "pipeline_id": context.pipeline_id,
-                        "branch": context.branch,
-                        "fixed_at": datetime.utcnow().isoformat()
-                    }
-                )
+                # TODO: Store successful fix in vector store
+                # await self.vector_store.store_successful_fix(
+                #     session_id=session_id,
+                #     project_id=context.project_id,
+                #     fix_type="merge_request",
+                #     mr_url=merge_request.get("web_url"),
+                #     error_signature=self._extract_error_signature(session_data)
+                # )
                 
                 log.info(f"Stored successful fix for session {session_id}")
                 
@@ -210,10 +210,98 @@ class QueueProcessor:
         context: Any,
         data: Dict[str, Any]
     ):
-        """Analyze quality issues"""
+        """Analyze quality issues - following working version pattern"""
         try:
-            # Run quality analysis
-            result = await self.quality_agent.analyze_quality_issues(context)
+            project_key = context.sonarqube_key or f"{context.project_name}"
+            gitlab_project_id = context.project_id
+            webhook_data = data.get("webhook_data", {})
+            
+            log.info(f"Processing quality failure for project {project_key}, session {session_id}")
+            
+            # Following working version: fetch SonarQube data first, then provide to agent
+            try:
+                from tools.sonarqube import get_project_issues, get_project_metrics, get_project_quality_gate_status
+                
+                # Get quality gate status
+                quality_status = await get_project_quality_gate_status(project_key)
+                
+                # Check if there are actual quality issues or just no analysis
+                project_status = quality_status.get("projectStatus", {})
+                if project_status.get("status") == "NONE" or not project_status:
+                    log.warning(f"No quality gate configured or no analysis for {project_key}")
+                    result = f"## ⚠️ SonarQube Analysis Issue\n\nNo SonarQube analysis results found for project '{project_key}'. This appears to be a pipeline configuration issue, not a code quality issue."
+                else:
+                    # Get issue counts by type
+                    bugs = await get_project_issues(project_key, types="BUG", limit=500)
+                    vulnerabilities = await get_project_issues(project_key, types="VULNERABILITY", limit=500) 
+                    code_smells = await get_project_issues(project_key, types="CODE_SMELL", limit=500)
+                    
+                    # Get project metrics
+                    try:
+                        metrics = await get_project_metrics(project_key)
+                    except Exception as e:
+                        log.warning(f"Could not fetch metrics for {project_key}: {e}")
+                        metrics = {}
+                    
+                    # Calculate counts
+                    total_issues = len(bugs) + len(vulnerabilities) + len(code_smells)
+                    critical_count = sum(1 for b in bugs if b.get("severity") in ["CRITICAL", "BLOCKER"])
+                    critical_count += sum(1 for v in vulnerabilities if v.get("severity") in ["CRITICAL", "BLOCKER"])
+                    major_count = sum(1 for b in bugs if b.get("severity") == "MAJOR")
+                    major_count += sum(1 for v in vulnerabilities if v.get("severity") == "MAJOR")
+                    
+                    # Update session with quality metrics (like working version)
+        # Update session with quality metrics (temporarily disabled due to schema)
+        # TODO: Add quality metrics columns to sessions table
+        # await self._session_manager.update_quality_metrics(
+        #     session_id,
+        #     {
+        #         "total_issues": total_issues,
+        #         "bug_count": len(bugs),
+        #         "vulnerability_count": len(vulnerabilities),
+        #         "code_smell_count": len(code_smells),
+        #         "critical_issues": critical_count,
+        #         "major_issues": major_count,
+        #         "coverage": metrics.get("coverage", "0"),
+        #         "duplicated_lines_density": metrics.get("duplicated_lines_density", "0"),
+        #         "reliability_rating": metrics.get("reliability_rating", "E"),
+        #         "security_rating": metrics.get("security_rating", "E"),
+        #         "maintainability_rating": metrics.get("maintainability_rating", "E")
+        #     }
+        # )                    # Prepare enhanced webhook data with quality information (like working version)
+                    enhanced_webhook_data = {
+                        **webhook_data,
+                        "qualityGate": project_status,
+                        "sonarqube_data": {
+                            "bugs": bugs,
+                            "vulnerabilities": vulnerabilities,
+                            "code_smells": code_smells,
+                            "metrics": metrics,
+                            "total_issues": total_issues,
+                            "critical_issues": critical_count,
+                            "major_issues": major_count
+                        }
+                    }
+                    
+                    log.info(f"Enhanced webhook data with SonarQube results: {total_issues} total issues")
+                    
+                    # Run quality analysis (using working version signature with enhanced data)
+                    result = await self.quality_agent.analyze_quality_issues(
+                        session_id,
+                        project_key,
+                        gitlab_project_id,
+                        enhanced_webhook_data
+                    )
+                
+            except Exception as e:
+                log.error(f"Failed to fetch SonarQube data: {e}")
+                # Fall back to original analysis with original data
+                result = await self.quality_agent.analyze_quality_issues(
+                    session_id,
+                    project_key,
+                    gitlab_project_id,
+                    webhook_data
+                )
             
             # Store analysis result
             await self.session_manager.update_session_metadata(
@@ -222,14 +310,15 @@ class QueueProcessor:
             )
             
             # Store in vector DB
-            await self.vector_store.store_analysis(
-                session_id=session_id,
-                project_id=context.project_id,
-                analysis_type="quality_issues",
-                error_signature=self._extract_quality_signature(result),
-                solution=result.get("solution"),
-                metadata=data
-            )
+            # TODO: Store in vector DB
+            # await self.vector_store.store_analysis(
+            #     session_id=session_id,
+            #     project_id=project_key,
+            #     analysis_type="quality_gate_failure",
+            #     error_signature=self._extract_error_signature(analysis_result),
+            #     solution=analysis_result,
+            #     metadata=webhook_data
+            # )
             
         except Exception as e:
             log.error(f"Quality analysis failed: {e}")

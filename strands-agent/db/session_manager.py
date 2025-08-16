@@ -16,8 +16,22 @@ class SessionManager:
     async def init_pool(self):
         """Initialize connection pool"""
         if not self._pool:
-            self._pool = await asyncpg.create_pool(settings.database_url, min_size=2, max_size=10)
-            log.info("Database connection pool initialized")
+            # For local development, use minimal pooling
+            if hasattr(settings, 'environment') and settings.environment == 'local':
+                self._pool = await asyncpg.create_pool(
+                    settings.database_url, 
+                    min_size=1, 
+                    max_size=2
+                )
+                log.info("Database connection pool initialized for local development (min: 1, max: 2)")
+            else:
+                # Production-style pooling for other environments
+                self._pool = await asyncpg.create_pool(
+                    settings.database_url, 
+                    min_size=settings.db_pool_min_size, 
+                    max_size=settings.db_pool_max_size
+                )
+                log.info(f"Database connection pool initialized (min: {settings.db_pool_min_size}, max: {settings.db_pool_max_size})")
     
     @asynccontextmanager
     async def get_connection(self):
@@ -154,7 +168,7 @@ class SessionManager:
                 """
                 UPDATE sessions 
                 SET conversation_history = $2::jsonb,
-                    last_activity = CURRENT_TIMESTAMP
+                    updated_at = CURRENT_TIMESTAMP
                 WHERE id = $1
                 """,
                 session_id, json.dumps(history)
@@ -294,21 +308,17 @@ class SessionManager:
     
     async def get_fix_attempts(self, session_id: str) -> List[Dict[str, Any]]:
         """Get all fix attempts for a session"""
+        # Ensure session_id is string
+        session_id = str(session_id)
+        
         async with self.get_connection() as conn:
-            # Convert session_id to UUID if it's a string
-            import uuid
-            if isinstance(session_id, str):
-                session_uuid = uuid.UUID(session_id)
-            else:
-                session_uuid = session_id
-
             attempts = await conn.fetch(
                 """
                 SELECT * FROM fix_attempts
                 WHERE session_id = $1
                 ORDER BY attempt_number ASC
                 """,
-                session_uuid
+                session_id
             )
 
             log.debug(f"Found {len(attempts)} fix attempts for session {session_id}")
@@ -323,6 +333,9 @@ class SessionManager:
     
     async def check_iteration_limit(self, session_id: str, limit: int = None) -> bool:
         """Check if we've reached the iteration limit"""
+        # Ensure session_id is string
+        session_id = str(session_id)
+        
         if limit is None:
             limit = settings.max_fix_attempts
         attempts = await self.get_fix_attempts(session_id)
@@ -330,6 +343,9 @@ class SessionManager:
     
     async def update_session_metadata(self, session_id: str, metadata: Dict[str, Any]):
         """Update session metadata"""
+        # Ensure session_id is string
+        session_id = str(session_id)
+        
         async with self.get_connection() as conn:
             # Handle webhook_data specially to merge it
             if "webhook_data" in metadata:
@@ -380,7 +396,7 @@ class SessionManager:
             if updates:
                 query = f"""
                     UPDATE sessions 
-                    SET {', '.join(updates)}, last_activity = CURRENT_TIMESTAMP
+                    SET {', '.join(updates)}, updated_at = CURRENT_TIMESTAMP
                     WHERE id = $1
                 """
                 await conn.execute(query, *params)
@@ -404,7 +420,7 @@ class SessionManager:
                     security_rating = $11,
                     maintainability_rating = $12,
                     webhook_data = webhook_data || $13::jsonb,
-                    last_activity = CURRENT_TIMESTAMP
+                    updated_at = CURRENT_TIMESTAMP
                 WHERE id = $1
                 """,
                 session_id,
