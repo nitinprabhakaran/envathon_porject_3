@@ -289,6 +289,39 @@ class Database:
             log.error(f"Error updating session {session_id}: {e}")
             return False
     
+    async def get_active_sessions_for_project(self, project_id: str) -> List[Dict[str, Any]]:
+        """Get all active sessions for a specific project"""
+        try:
+            query = """
+                SELECT id, session_type, project_id, project_name, status, branch, 
+                       created_at, expires_at, pipeline_id, webhook_data
+                FROM sessions 
+                WHERE project_id = $1 
+                AND status = 'active' 
+                AND expires_at > NOW()
+                ORDER BY created_at DESC
+            """
+            
+            rows = await self.pool.fetch(query, project_id)
+            sessions = []
+            
+            for row in rows:
+                session_data = dict(row)
+                # Parse webhook_data if it exists
+                if session_data.get("webhook_data"):
+                    try:
+                        session_data["webhook_data"] = json.loads(session_data["webhook_data"])
+                    except (json.JSONDecodeError, TypeError):
+                        session_data["webhook_data"] = {}
+                
+                sessions.append(session_data)
+            
+            return sessions
+            
+        except Exception as e:
+            log.error(f"Error getting active sessions for project {project_id}: {e}")
+            return []
+    
     async def close(self):
         """Close database connection pool"""
         if self.pool:

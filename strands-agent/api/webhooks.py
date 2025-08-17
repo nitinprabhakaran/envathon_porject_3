@@ -12,16 +12,26 @@ from db.session_manager import SessionManager
 from agents.pipeline_agent import PipelineAgent
 from agents.quality_agent import QualityAgent
 
+# Import local branch naming utilities
+from utils.branch_naming import (
+    safe_extract_session_id, 
+    is_fix_branch, 
+    extract_branch_info,
+    extract_session_id_from_branch
+)
+
+# Import fix iteration handler
+from services.fix_iteration_handler import FixIterationHandler
+
+# Import fix iteration handler
+from services.fix_iteration_handler import FixIterationHandler
+
 # Initialize components for internal processing
 session_manager = SessionManager()
 pipeline_agent = PipelineAgent()
 quality_agent = QualityAgent()
-
-# Internal processing functions - no webhook endpoints
-# All webhook endpoints are now in webhook-handler
-
-# Session creation functions moved to webhook-handler
-# These functions are now called by the queue processor when processing events
+fix_iteration_handler = FixIterationHandler()
+fix_iteration_handler = FixIterationHandler()
 
 async def handle_pipeline_success(project_id: str, ref: str):
     """Handle successful pipeline runs"""
@@ -30,59 +40,46 @@ async def handle_pipeline_success(project_id: str, ref: str):
     log.info(f"Found {len(sessions)} active sessions")
     
     # Check if this is a fix branch that succeeded
-    if ref and ref.startswith("fix/"):
+    if is_fix_branch(ref):
         log.info(f"Processing success for fix branch: {ref}")
+        
+        # Extract session ID from branch name using new utilities
+        session_id = safe_extract_session_id(ref)
+        if not session_id:
+            log.warning(f"Could not extract session ID from fix branch: {ref}")
+            return {"status": "error", "reason": "Invalid fix branch format"}
+        
+        # Find the specific session
+        target_session = None
         for session in sessions:
-            if session.get("project_id") == project_id and session.get("status") == "active":
-                log.info(f"Checking session {session['id']} for fix attempts")
-                # Check fix attempts for THIS EXACT branch
-                fix_attempts = await session_manager.get_fix_attempts(session["id"])
-                log.info(f"Found {len(fix_attempts)} fix attempts for session {session['id']}")
+            if session.get("id") == session_id and session.get("project_id") == project_id:
+                target_session = session
+                break
+        
+        if target_session:
+            log.info(f"Found matching session {session_id} for branch {ref}")
+            
+            # Use fix iteration handler for success
+            try:
+                result = await fix_iteration_handler.handle_fix_branch_success(
+                    session_id, ref, None, {}  # We don't have full webhook data here
+                )
+                log.info(f"Fix iteration handler result: {result}")
+                return {"status": "updated", "action": "fix_succeeded"}
+            except Exception as e:
+                log.error(f"Error in fix iteration handler for success: {e}")
+                
+                # Fallback to old logic
+                fix_attempts = await session_manager.get_fix_attempts(session_id)
                 for attempt in fix_attempts:
-                    # Clean both branch names before comparison
                     stored_branch = attempt.get('branch_name', '').strip()
-                    incoming_branch = ref.strip()
-                    
-                    log.info(f"Comparing branches - stored: '{stored_branch}', incoming: '{incoming_branch}'")
-                    
-                    if stored_branch == incoming_branch and attempt["status"] == "pending":
-                        # This is OUR fix branch that succeeded
+                    if stored_branch == ref.strip() and attempt["status"] == "pending":
                         await session_manager.update_fix_attempt(
-                            session["id"],
-                            attempt["attempt_number"],
-                            "success"
+                            session_id, attempt["attempt_number"], "success"
                         )
-                        
-                        # Update webhook_data for UI
-                        webhook_data = session.get("webhook_data", {})
-                        fix_attempts_data = webhook_data.get("fix_attempts", [])
-                        
-                        # Update the status in webhook_data
-                        for fa in fix_attempts_data:
-                            if fa.get("branch", "").strip() == incoming_branch:
-                                fa["status"] = "success"
-                                fa["succeeded_at"] = datetime.utcnow().isoformat()
-                                break
-                        
-                        webhook_data["fix_attempts"] = fix_attempts_data
-                        await session_manager.update_session_metadata(session["id"], {"webhook_data": webhook_data})
-                        
-                        # Add success message with pipeline URL
-                        pipeline_url = f"{settings.gitlab_url}/{session.get('project_name')}/-/pipelines"
-                        await session_manager.add_message(
-                            session["id"],
-                            "assistant",
-                            f"✅ **Fix Successful!**\n\n"
-                            f"The pipeline on branch `{ref}` has passed all checks.\n\n"
-                            f"**Next Steps:**\n"
-                            f"1. Review the changes in the merge request\n"
-                            f"2. Merge when ready: {attempt.get('merge_request_url')}\n"
-                            f"3. The fix will be applied to the target branch after merge\n\n"
-                            f"[View Pipeline]({pipeline_url})"
-                        )
-                        
-                        log.info(f"Marked fix attempt as successful for session {session['id']}")
                         return {"status": "updated", "action": "fix_succeeded"}
+        else:
+            log.warning(f"No matching session found for branch {ref} with project {project_id}")
     
     # Check if this is target branch after merge
     else:
@@ -109,11 +106,52 @@ async def handle_pipeline_success(project_id: str, ref: str):
                             log.info(f"Marked session {session['id']} as resolved - target branch succeeded after merge")
                             return {"status": "resolved", "action": "target_branch_success"}
     
-# Session creation and webhook endpoint logic moved to webhook-handler
-# This file now only contains analysis functions called by queue processor
+    return {"status": "ignored", "reason": "No matching session found"}
 
-# SonarQube webhook endpoint removed - all webhooks now go through webhook-handler
-# Quality gate failures are detected from GitLab pipeline logs and routed intelligently
+
+async def handle_pipeline_failure(project_id: str, ref: str, webhook_data: Dict[str, Any]):
+    """Handle failed pipeline runs - especially for fix branches"""
+    log.info(f"handle_pipeline_failure called: project={project_id}, ref={ref}")
+    
+    # Check if this is a fix branch that failed
+    if is_fix_branch(ref):
+        log.info(f"Processing failure for fix branch: {ref}")
+        
+        # Extract session ID from branch name
+        session_id = safe_extract_session_id(ref)
+        if not session_id:
+            log.warning(f"Could not extract session ID from fix branch: {ref}")
+            return {"status": "error", "reason": "Invalid fix branch format"}
+        
+        # Check if session exists
+        session = await session_manager.get_session(session_id)
+        if not session or session.get("project_id") != project_id:
+            log.warning(f"No matching session found for fix branch: {ref}")
+            return {"status": "error", "reason": "Session not found"}
+        
+        # Use fix iteration handler for failure
+        try:
+            pipeline_id = webhook_data.get("object_attributes", {}).get("id")
+            result = await fix_iteration_handler.handle_fix_branch_failure(
+                session_id, ref, str(pipeline_id), webhook_data
+            )
+            log.info(f"Fix iteration handler result: {result}")
+            
+            if result.get("status") == "iteration_triggered":
+                return {"status": "iteration_triggered", "attempt_number": result.get("attempt_number")}
+            elif result.get("status") == "max_attempts_reached":
+                return {"status": "max_attempts_reached"}
+            else:
+                return {"status": "handled"}
+                
+        except Exception as e:
+            log.error(f"Error in fix iteration handler for failure: {e}")
+            return {"status": "error", "reason": str(e)}
+    
+    return {"status": "ignored", "reason": "Not a fix branch"}
+
+
+# Remove old branch parsing functions - replaced by branch_naming utilities
 
 async def analyze_pipeline_failure(session_id: str, project_id: str, pipeline_id: str, webhook_data: Dict):
     """Background task to analyze pipeline failure"""

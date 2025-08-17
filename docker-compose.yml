@@ -310,6 +310,10 @@ services:
     environment:
       - STREAMLIT_API_URL=http://strands-agent:8000
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      # Branch naming configuration (same as agent)
+      - BRANCH_PREFIX_PIPELINE=${BRANCH_PREFIX_PIPELINE:-fix/pipeline_}
+      - BRANCH_PREFIX_QUALITY=${BRANCH_PREFIX_QUALITY:-fix/sonarqube_}
+      - BRANCH_PREFIX_GENERAL=${BRANCH_PREFIX_GENERAL:-cicd-assistant/}
     ports:
       - "8501:8501"
     volumes:

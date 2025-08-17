@@ -101,7 +101,17 @@ class QueueProcessor:
             
             log.info(f"Processing {event_type} event for session {session_id}")
             
-            # Get session context
+            # Handle fix branch events first (they have real session IDs but special handling)
+            if event_type.startswith("fix_branch_"):
+                await self.handle_fix_branch_event(session_id, event_type, data)
+                return
+            
+            # Handle old-style merge request events differently - they don't have real session IDs
+            if event_type.startswith("merge_request_"):
+                await self.handle_merge_request_event(session_id, None, data)
+                return
+            
+            # Get session context for real analysis sessions
             context = await self.session_manager.get_session_context(session_id)
             if not context:
                 log.error(f"Session {session_id} not found")
@@ -114,13 +124,257 @@ class QueueProcessor:
                 await self.handle_pipeline_success(session_id, context, data)
             elif event_type == "quality_failed":
                 await self.analyze_quality_issues(session_id, context, data)
-            elif event_type.startswith("merge_request_"):
-                await self.handle_merge_request_event(session_id, context, data)
             else:
                 log.warning(f"Unknown event type: {event_type}")
                 
         except Exception as e:
             log.error(f"Error processing message: {e}")
+    
+    async def handle_fix_branch_event(self, session_id: str, event_type: str, data: Dict[str, Any]):
+        """Handle fix branch events from webhook-handler"""
+        try:
+            # Get session context
+            context = await self.session_manager.get_session_context(session_id)
+            if not context:
+                log.error(f"Session {session_id} not found for fix branch event")
+                return
+            
+            log.info(f"Processing fix branch event {event_type} for session {session_id}")
+            
+            if event_type.startswith("fix_branch_pipeline_"):
+                await self.handle_fix_branch_pipeline_event(session_id, context, data)
+            elif event_type.startswith("fix_branch_mr_"):
+                await self.handle_fix_branch_mr_event(session_id, context, data)
+            else:
+                log.warning(f"Unknown fix branch event type: {event_type}")
+                
+        except Exception as e:
+            log.error(f"Error handling fix branch event: {e}")
+    
+    async def handle_fix_branch_pipeline_event(self, session_id: str, context: Any, data: Dict[str, Any]):
+        """Handle pipeline results for fix branches"""
+        try:
+            pipeline_status = data.get("pipeline_status")
+            branch_name = data.get("branch_name")
+            pipeline_id = data.get("pipeline_id")
+            project_id = data.get("project_id")
+            
+            log.info(f"Fix branch pipeline {pipeline_status} for session {session_id}, branch {branch_name}")
+            
+            # Use session manager's comprehensive fix branch handling
+            if pipeline_status == "success":
+                # Use fix iteration handler for success handling too
+                from services.fix_iteration_handler import FixIterationHandler
+                fix_handler = FixIterationHandler()
+                
+                # Extract session ID from the branch name
+                from utils.branch_naming import safe_extract_session_id
+                session_id = safe_extract_session_id(branch_name)
+                
+                if session_id:
+                    # Build webhook data for the handler
+                    webhook_data = {
+                        "object_attributes": {
+                            "id": pipeline_id,
+                            "status": "success",
+                            "web_url": data.get("pipeline_url")
+                        }
+                    }
+                    
+                    result = await fix_handler.handle_fix_branch_success(
+                        session_id, branch_name, pipeline_id, webhook_data
+                    )
+                    log.info(f"Fix iteration handler success result: {result}")
+                else:
+                    # Fallback to old method if session ID extraction fails
+                    await self.session_manager.handle_pipeline_success_on_fix_branch(
+                        project_id, branch_name, pipeline_id
+                    )
+            elif pipeline_status == "failed":
+                # Use fix iteration handler for automatic iteration
+                from services.fix_iteration_handler import FixIterationHandler
+                fix_handler = FixIterationHandler()
+                
+                # Extract session ID from the branch name
+                from utils.branch_naming import safe_extract_session_id
+                session_id = safe_extract_session_id(branch_name)
+                
+                if session_id:
+                    # Build webhook data for the handler
+                    webhook_data = {
+                        "object_attributes": {
+                            "id": pipeline_id,
+                            "status": "failed",
+                            "web_url": data.get("pipeline_url")
+                        },
+                        "builds": data.get("builds", [])
+                    }
+                    
+                    result = await fix_handler.handle_fix_branch_failure(
+                        session_id, branch_name, pipeline_id, webhook_data
+                    )
+                    log.info(f"Fix iteration handler result: {result}")
+                else:
+                    # Fallback to old method if session ID extraction fails
+                    error_details = self._extract_pipeline_error_details(data)
+                    await self.session_manager.handle_pipeline_failure_on_fix_branch(
+                        project_id, branch_name, error_details
+                    )
+                
+        except Exception as e:
+            log.error(f"Error handling fix branch pipeline event: {e}")
+    
+    async def handle_fix_branch_mr_event(self, session_id: str, context: Any, data: Dict[str, Any]):
+        """Handle merge request results for fix branches"""
+        try:
+            outcome = data.get("outcome")
+            branch_name = data.get("branch_name")
+            mr_iid = data.get("mr_iid")
+            webhook_data = data.get("webhook_data", {})
+            mr_attributes = webhook_data.get("object_attributes", {})
+            
+            log.info(f"Fix branch MR {outcome} for session {session_id}, branch {branch_name}")
+            
+            # Update fix attempt with MR information
+            fix_attempts = await self.session_manager.get_fix_attempts(session_id)
+            for attempt in fix_attempts:
+                if (attempt.get('branch_name', '').strip() == branch_name.strip() and 
+                    attempt.get('status') == 'pending'):
+                    
+                    mr_url = mr_attributes.get("url")
+                    
+                    # Update attempt with MR details
+                    await self.session_manager.update_fix_attempt(
+                        session_id,
+                        attempt['attempt_number'],
+                        'pending',  # Keep pending until pipeline result
+                        str(mr_iid),
+                        mr_url
+                    )
+                    
+                    # Add informational message about MR status
+                    if outcome == "merged":
+                        await self.session_manager.add_message(
+                            session_id,
+                            "assistant",
+                            f"🔀 **Merge Request Merged**\n\n"
+                            f"Fix attempt #{attempt['attempt_number']} has been merged into the target branch.\n"
+                            f"Waiting for pipeline results to confirm the fix..."
+                        )
+                    elif outcome == "closed":
+                        await self.session_manager.update_fix_attempt(
+                            session_id,
+                            attempt['attempt_number'],
+                            'failed',
+                            str(mr_iid),
+                            mr_url,
+                            "Merge request was closed without merging"
+                        )
+                        await self.session_manager.add_message(
+                            session_id,
+                            "assistant",
+                            f"❌ **Merge Request Closed**\n\n"
+                            f"Fix attempt #{attempt['attempt_number']} was closed without merging.\n"
+                            f"You can create a new fix attempt."
+                        )
+                    break
+                    
+        except Exception as e:
+            log.error(f"Error handling fix branch MR event: {e}")
+    
+    def _extract_pipeline_error_details(self, data: Dict[str, Any]) -> str:
+        """Extract pipeline error details from webhook data"""
+        try:
+            webhook_data = data.get("webhook_data", {})
+            builds = webhook_data.get("builds", [])
+            failed_jobs = [job for job in builds if job.get("status") == "failed"]
+            
+            if failed_jobs:
+                # Get the most recent failure
+                failed_jobs.sort(key=lambda x: x.get("finished_at", ""), reverse=True)
+                first_failed = failed_jobs[0]
+                
+                error_details = f"Job '{first_failed.get('name')}' failed in stage '{first_failed.get('stage')}'"
+                if first_failed.get("failure_reason"):
+                    error_details += f": {first_failed.get('failure_reason')}"
+                
+                return error_details
+            else:
+                return "Pipeline failed - no specific job failure details available"
+                
+        except Exception as e:
+            log.error(f"Error extracting pipeline error details: {e}")
+            return "Pipeline failed"
+    
+    async def _mark_fix_attempt_pipeline_success(self, session_id: str, branch_name: str, pipeline_id: str):
+        """Mark fix attempt pipeline as successful"""
+        try:
+            await self.session_manager.update_fix_attempt_status(
+                session_id,
+                branch_name,
+                "pipeline_success",
+                {
+                    "pipeline_id": pipeline_id,
+                    "pipeline_status": "success",
+                    "pipeline_completed_at": datetime.now().isoformat()
+                }
+            )
+            log.info(f"Marked fix attempt pipeline success: {branch_name} for session {session_id}")
+        except Exception as e:
+            log.error(f"Error marking fix attempt pipeline success: {e}")
+    
+    async def _mark_fix_attempt_pipeline_failed(self, session_id: str, branch_name: str, pipeline_id: str):
+        """Mark fix attempt pipeline as failed"""
+        try:
+            await self.session_manager.update_fix_attempt_status(
+                session_id,
+                branch_name,
+                "pipeline_failed",
+                {
+                    "pipeline_id": pipeline_id,
+                    "pipeline_status": "failed",
+                    "pipeline_completed_at": datetime.now().isoformat()
+                }
+            )
+            log.info(f"Marked fix attempt pipeline failed: {branch_name} for session {session_id}")
+        except Exception as e:
+            log.error(f"Error marking fix attempt pipeline failed: {e}")
+    
+    async def _mark_fix_attempt_mr_success(self, session_id: str, branch_name: str, mr_iid: str):
+        """Mark fix attempt MR as merged successfully"""
+        try:
+            await self.session_manager.update_fix_attempt_status(
+                session_id,
+                branch_name,
+                "mr_merged",
+                {
+                    "merge_request_id": mr_iid,
+                    "mr_status": "merged",
+                    "mr_completed_at": datetime.now().isoformat(),
+                    "fix_successful": True
+                }
+            )
+            log.info(f"Marked fix attempt MR merged: {branch_name} for session {session_id}")
+        except Exception as e:
+            log.error(f"Error marking fix attempt MR success: {e}")
+    
+    async def _mark_fix_attempt_mr_failed(self, session_id: str, branch_name: str, mr_iid: str):
+        """Mark fix attempt MR as closed without merging"""
+        try:
+            await self.session_manager.update_fix_attempt_status(
+                session_id,
+                branch_name,
+                "mr_closed",
+                {
+                    "merge_request_id": mr_iid,
+                    "mr_status": "closed",
+                    "mr_completed_at": datetime.now().isoformat(),
+                    "fix_successful": False
+                }
+            )
+            log.info(f"Marked fix attempt MR closed: {branch_name} for session {session_id}")
+        except Exception as e:
+            log.error(f"Error marking fix attempt MR failed: {e}")
     
     async def handle_pipeline_failure(
         self,
@@ -128,25 +382,38 @@ class QueueProcessor:
         context: Any,
         data: Dict[str, Any]
     ):
-        """Handle pipeline failure analysis"""
+        """Handle pipeline failure analysis with intelligent quality routing"""
         try:
-            # Check if quality gate failed in logs
-            if await self.check_quality_gate_in_logs(context):
-                # Update session type to quality
+            webhook_data = data.get("webhook_data", {})
+            
+            # Check if webhook-handler already detected quality failure
+            quality_detected_by_handler = data.get("quality_failure_detected", False)
+            
+            # Also check logs for quality failures as backup
+            quality_in_logs = await self.check_quality_gate_in_logs(context)
+            
+            # If either detection method found quality issues, route to quality analysis
+            if quality_detected_by_handler or quality_in_logs:
+                log.info(f"Quality failure detected for session {session_id} (handler: {quality_detected_by_handler}, logs: {quality_in_logs})")
+                
+                # Update session type to quality for UI routing
                 await self.session_manager.update_session_metadata(
                     session_id,
                     {"session_type": "quality", "quality_gate_failed": True}
                 )
                 
-                # Run quality analysis
-                await self.analyze_quality_from_pipeline(session_id, context, data)
+                # Run quality analysis with proper project key extraction
+                project_key = context.sonarqube_key or f"{context.project_name}".replace("/", "_")
+                await self.analyze_quality_issues(session_id, context, data)
+                
             else:
+                log.info(f"Regular pipeline failure detected for session {session_id}")
                 # Run pipeline failure analysis (using working version signature)
                 result = await self.pipeline_agent.analyze_failure(
                     session_id,
                     context.project_id,
                     context.pipeline_id,
-                    data.get("webhook_data", {})
+                    webhook_data
                 )
                 
                 # Store analysis result
@@ -155,9 +422,12 @@ class QueueProcessor:
                     {"analysis_result": result, "analysis_completed": True}
                 )
                 
-                # TODO: Store in vector DB for future reference
-                # await self.vector_store.store_analysis(
-                #     session_id=session_id,
+        except Exception as e:
+            log.error(f"Pipeline failure analysis failed: {e}")
+            await self.session_manager.update_session_metadata(
+                session_id,
+                {"analysis_error": str(e), "status": "failed"}
+            )
                 #     project_id=context.project_id,
                 #     analysis_type="pipeline_failure",
                 #     error_signature=self._extract_error_signature(result),
@@ -214,7 +484,7 @@ class QueueProcessor:
     ):
         """Analyze quality issues - following working version pattern"""
         try:
-            project_key = context.sonarqube_key or f"{context.project_name}"
+            project_key = context.sonarqube_key or f"{context.project_name}".replace("/", "_")
             gitlab_project_id = context.project_id
             webhook_data = data.get("webhook_data", {})
             
@@ -252,25 +522,7 @@ class QueueProcessor:
                     major_count = sum(1 for b in bugs if b.get("severity") == "MAJOR")
                     major_count += sum(1 for v in vulnerabilities if v.get("severity") == "MAJOR")
                     
-                    # Update session with quality metrics (like working version)
-        # Update session with quality metrics (temporarily disabled due to schema)
-        # TODO: Add quality metrics columns to sessions table
-        # await self._session_manager.update_quality_metrics(
-        #     session_id,
-        #     {
-        #         "total_issues": total_issues,
-        #         "bug_count": len(bugs),
-        #         "vulnerability_count": len(vulnerabilities),
-        #         "code_smell_count": len(code_smells),
-        #         "critical_issues": critical_count,
-        #         "major_issues": major_count,
-        #         "coverage": metrics.get("coverage", "0"),
-        #         "duplicated_lines_density": metrics.get("duplicated_lines_density", "0"),
-        #         "reliability_rating": metrics.get("reliability_rating", "E"),
-        #         "security_rating": metrics.get("security_rating", "E"),
-        #         "maintainability_rating": metrics.get("maintainability_rating", "E")
-        #     }
-        # )                    # Prepare enhanced webhook data with quality information (like working version)
+                    # Prepare enhanced webhook data with quality information (like working version)
                     enhanced_webhook_data = {
                         **webhook_data,
                         "qualityGate": project_status,
@@ -286,6 +538,19 @@ class QueueProcessor:
                     }
                     
                     log.info(f"Enhanced webhook data with SonarQube results: {total_issues} total issues")
+                    
+                    # Store the counts in session metadata immediately
+                    await self.session_manager.update_session_metadata(
+                        session_id,
+                        {
+                            "bug_count": len(bugs),
+                            "vulnerability_count": len(vulnerabilities),
+                            "code_smell_count": len(code_smells),
+                            "total_issues": total_issues,
+                            "critical_issues": critical_count,
+                            "major_issues": major_count
+                        }
+                    )
                     
                     # Run quality analysis (using working version signature with enhanced data)
                     result = await self.quality_agent.analyze_quality_issues(
@@ -305,29 +570,46 @@ class QueueProcessor:
                     webhook_data
                 )
             
-            # Store analysis result
+            # Ensure we have a valid result
+            log.info(f"Quality agent returned result type: {type(result)}")
+            log.info(f"Quality agent result preview: {str(result)[:200]}...")
+            
+            if not result:
+                result_str = "❌ Analysis failed to produce results. Please check the logs for more details."
+            elif isinstance(result, dict):
+                # Handle dict response from agent - this should not happen after our fix
+                log.warning(f"Agent returned dict instead of string: {result}")
+                result_str = str(result)
+            else:
+                result_str = str(result)
+            
+            # Convert to string and check if empty
+            if not result_str or result_str.strip() == "" or result_str.strip() == "None":
+                result_str = "❌ Analysis failed to produce results. Please check the logs for more details."
+            
+            log.info(f"Final result string length: {len(result_str)}")
+            log.info(f"Final result preview: {result_str[:200]}...")
+            
+            # Store analysis result with conversation message
             await self.session_manager.update_session_metadata(
                 session_id,
-                {"analysis_result": result, "analysis_completed": True}
+                {"analysis_result": result_str, "analysis_completed": True}
             )
             
-            # Store in vector DB
-            # TODO: Store in vector DB
-            # await self.vector_store.store_analysis(
-            #     session_id=session_id,
-            #     project_id=project_key,
-            #     analysis_type="quality_gate_failure",
-            #     error_signature=self._extract_error_signature(analysis_result),
-            #     solution=analysis_result,
-            #     metadata=webhook_data
-            # )
+            # Add the analysis as the first assistant message in conversation
+            await self.session_manager.add_message(session_id, "assistant", result_str)
+            
+            log.info(f"Quality analysis completed and stored for session {session_id}")
             
         except Exception as e:
             log.error(f"Quality analysis failed: {e}")
+            error_message = f"❌ Quality analysis failed: {str(e)}"
             await self.session_manager.update_session_metadata(
                 session_id,
                 {"analysis_error": str(e), "status": "failed"}
             )
+            # Store error message in conversation
+            await self.session_manager.add_message(session_id, "assistant", error_message)
     
     async def analyze_quality_from_pipeline(
         self,
@@ -383,7 +665,7 @@ class QueueProcessor:
     
     async def handle_merge_request_event(
         self,
-        session_id: str,
+        fake_session_id: str,
         context: Any,
         data: Dict[str, Any]
     ):
@@ -397,33 +679,189 @@ class QueueProcessor:
             
             log.info(f"Processing MR event: {mr_action} for MR !{mr_iid} in project {project_id}")
             
-            # Handle different merge request actions
-            if mr_action == "merge":
-                await self._handle_merge_request_merged(session_id, context, data)
-            elif mr_action == "close":
-                await self._handle_merge_request_closed(session_id, context, data)
-            elif mr_action in ["open", "update"]:
-                await self._handle_merge_request_opened_updated(session_id, context, data)
+            # Extract MR details to find the real session
+            mr_attributes = webhook_data.get("object_attributes", {})
+            source_branch = mr_attributes.get("source_branch", "")
+            target_branch = mr_attributes.get("target_branch", "")
+            mr_url = mr_attributes.get("url", "")
+            
+            # Find the real session that might have created this MR
+            real_session = await self._find_session_by_mr_details(project_id, source_branch, mr_url, mr_iid)
+            
+            if real_session:
+                log.info(f"Found matching session {real_session['id']} for MR !{mr_iid}")
+                
+                # Handle different merge request actions with the real session
+                if mr_action == "merge":
+                    await self._handle_merge_request_merged(real_session["id"], real_session, data)
+                elif mr_action == "close":
+                    await self._handle_merge_request_closed(real_session["id"], real_session, data)
+                elif mr_action in ["open", "update"]:
+                    await self._handle_merge_request_opened_updated(real_session["id"], real_session, data)
+                else:
+                    log.info(f"MR action '{mr_action}' not requiring special handling")
             else:
-                log.info(f"MR action '{mr_action}' not requiring special handling")
+                log.info(f"No matching session found for MR !{mr_iid} in project {project_id}")
                 
         except Exception as e:
             log.error(f"Error handling MR event: {e}")
     
-    async def _handle_merge_request_merged(self, session_id: str, context: Any, data: Dict[str, Any]):
-        """Handle when a merge request is merged"""
-        log.info(f"MR merged - checking if this resolves any active sessions")
-        
-        # This could be used to mark sessions as resolved when fixes are merged
-        # Implementation would depend on how we track which MRs belong to which sessions
-        
-    async def _handle_merge_request_closed(self, session_id: str, context: Any, data: Dict[str, Any]):
-        """Handle when a merge request is closed without merging"""
-        log.info(f"MR closed without merging")
-        
-    async def _handle_merge_request_opened_updated(self, session_id: str, context: Any, data: Dict[str, Any]):
-        """Handle when a merge request is opened or updated"""
-        log.info(f"MR opened/updated - tracking for session correlation")
+    async def _find_session_by_mr_details(self, project_id: str, source_branch: str, mr_url: str, mr_iid: str):
+        """Find session by MR details (branch name, URL, etc.)"""
+        try:
+            # Get all active sessions for this project
+            all_sessions = await self.session_manager.get_active_sessions()
+            project_sessions = [s for s in all_sessions if s.get("project_id") == project_id]
+            
+            # Try multiple correlation methods
+            
+            # Method 1: Find by MR URL
+            if mr_url:
+                for session in project_sessions:
+                    if session.get("merge_request_url") == mr_url:
+                        return session
+            
+            # Method 2: Find by branch name using our naming convention
+            if source_branch:
+                from api.webhooks import find_session_by_branch
+                session = find_session_by_branch(source_branch, project_sessions)
+                if session:
+                    return session
+            
+            # Method 3: Find by fix attempts with matching MR IID
+            for session in project_sessions:
+                fix_attempts = await self.session_manager.get_fix_attempts(session["id"])
+                for attempt in fix_attempts:
+                    if attempt.get("merge_request_id") == mr_iid:
+                        return session
+            
+            return None
+            
+        except Exception as e:
+            log.error(f"Error finding session by MR details: {e}")
+            return None
+    
+    async def _handle_merge_request_merged(self, session_id: str, session_context: Any, data: Dict[str, Any]):
+        """Handle when merge request is merged successfully"""
+        try:
+            webhook_data = data.get("webhook_data", {})
+            mr_attributes = webhook_data.get("object_attributes", {})
+            mr_iid = mr_attributes.get("iid")
+            source_branch = mr_attributes.get("source_branch")
+            merge_commit_sha = mr_attributes.get("merge_commit_sha")
+            
+            log.info(f"MR !{mr_iid} merged successfully for session {session_id}")
+            
+            # Update session with merge status
+            await self.session_manager.update_session_status(
+                session_id,
+                "merge_request_merged",
+                {
+                    "merge_request_id": mr_iid,
+                    "source_branch": source_branch,
+                    "merge_commit_sha": merge_commit_sha,
+                    "merged_at": mr_attributes.get("updated_at")
+                }
+            )
+            
+            # Mark fix attempt as successful if this was a fix branch
+            if source_branch and any(prefix in source_branch for prefix in ["fix_", "pipeline_fix_", "quality_fix_"]):
+                await self._mark_fix_attempt_success(session_id, mr_iid, source_branch)
+                
+        except Exception as e:
+            log.error(f"Error handling merged MR: {e}")
+    
+    async def _handle_merge_request_closed(self, session_id: str, session_context: Any, data: Dict[str, Any]):
+        """Handle when merge request is closed without merging"""
+        try:
+            webhook_data = data.get("webhook_data", {})
+            mr_attributes = webhook_data.get("object_attributes", {})
+            mr_iid = mr_attributes.get("iid")
+            source_branch = mr_attributes.get("source_branch")
+            state = mr_attributes.get("state")
+            
+            log.info(f"MR !{mr_iid} closed (state: {state}) for session {session_id}")
+            
+            # Update session with closure status
+            await self.session_manager.update_session_status(
+                session_id,
+                "merge_request_closed",
+                {
+                    "merge_request_id": mr_iid,
+                    "source_branch": source_branch,
+                    "state": state,
+                    "closed_at": mr_attributes.get("updated_at")
+                }
+            )
+            
+            # Mark fix attempt as failed if this was a fix branch
+            if source_branch and any(prefix in source_branch for prefix in ["fix_", "pipeline_fix_", "quality_fix_"]):
+                await self._mark_fix_attempt_failed(session_id, mr_iid, source_branch, "merge_request_closed")
+                
+        except Exception as e:
+            log.error(f"Error handling closed MR: {e}")
+    
+    async def _handle_merge_request_opened_updated(self, session_id: str, session_context: Any, data: Dict[str, Any]):
+        """Handle when merge request is opened or updated"""
+        try:
+            webhook_data = data.get("webhook_data", {})
+            mr_attributes = webhook_data.get("object_attributes", {})
+            mr_iid = mr_attributes.get("iid")
+            source_branch = mr_attributes.get("source_branch")
+            mr_action = data.get("mr_action")
+            
+            log.info(f"MR !{mr_iid} {mr_action} for session {session_id}")
+            
+            # Update session with MR details
+            await self.session_manager.update_session_status(
+                session_id,
+                f"merge_request_{mr_action}",
+                {
+                    "merge_request_id": mr_iid,
+                    "source_branch": source_branch,
+                    "merge_request_url": mr_attributes.get("url"),
+                    "title": mr_attributes.get("title"),
+                    "description": mr_attributes.get("description"),
+                    f"{mr_action}_at": mr_attributes.get("updated_at")
+                }
+            )
+            
+        except Exception as e:
+            log.error(f"Error handling {data.get('mr_action')} MR: {e}")
+    
+    async def _mark_fix_attempt_success(self, session_id: str, mr_iid: str, branch_name: str):
+        """Mark a fix attempt as successful"""
+        try:
+            await self.session_manager.update_fix_attempt_status(
+                session_id,
+                branch_name,
+                "success",
+                {
+                    "merge_request_id": mr_iid,
+                    "result": "merged_successfully",
+                    "completed_at": datetime.now().isoformat()
+                }
+            )
+            log.info(f"Marked fix attempt {branch_name} as successful for session {session_id}")
+        except Exception as e:
+            log.error(f"Error marking fix attempt success: {e}")
+    
+    async def _mark_fix_attempt_failed(self, session_id: str, mr_iid: str, branch_name: str, reason: str):
+        """Mark a fix attempt as failed"""
+        try:
+            await self.session_manager.update_fix_attempt_status(
+                session_id,
+                branch_name,
+                "failed",
+                {
+                    "merge_request_id": mr_iid,
+                    "result": reason,
+                    "completed_at": datetime.now().isoformat()
+                }
+            )
+            log.info(f"Marked fix attempt {branch_name} as failed for session {session_id}: {reason}")
+        except Exception as e:
+            log.error(f"Error marking fix attempt failed: {e}")
     
     async def stop(self):
         """Stop queue processor"""

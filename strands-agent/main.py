@@ -21,7 +21,7 @@ async def lifespan(app: FastAPI):
     
     # Start queue processor only if configured (for webhook-handler events)
     processor_task = None
-    if getattr(settings, 'enable_queue_processor', False):
+    if settings.enable_queue_processing:
         queue_processor = QueueProcessor()
         processor_task = asyncio.create_task(queue_processor.start())
         log.info("Queue processor started for webhook-handler events")

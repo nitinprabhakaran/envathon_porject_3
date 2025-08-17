@@ -1,5 +1,27 @@
 """Shared prompts and prompt templates for analysis agents"""
 
+from config import settings
+
+def get_branch_naming_guidelines() -> str:
+    """Generate simplified branch naming guidelines - only 2 categories"""
+    return f"""
+## Branch Naming
+When creating merge requests, use this format: `<prefix><session_short>_<date>_<description>`
+
+- **Pipeline failures**: `{settings.branch_prefix_pipeline}<session_short>_<date>_<description>`
+- **Quality/SonarQube failures**: `{settings.branch_prefix_quality}<session_short>_<date>_<description>`
+
+**Components:**
+- `session_short`: First 6 chars of your session ID (from context, no hyphens)
+- `date`: Today's date as YYYYMMDD (e.g., 20250816)
+- `description`: Brief fix description with underscores (e.g., build_fix, security_issues)
+
+**Examples:**
+- `{settings.branch_prefix_pipeline}a1b2c3_20250816_build_fix`
+- `{settings.branch_prefix_quality}d4e5f6_20250816_security_issues`
+"""
+
+
 def get_pipeline_system_prompt(capabilities: str = None) -> str:
     """Generate pipeline system prompt with dynamic capabilities"""
     if not capabilities:
@@ -12,6 +34,8 @@ def get_pipeline_system_prompt(capabilities: str = None) -> str:
 - Investigate GitLab project structure and recent changes
 
 Use the available tools as needed to gather information and implement solutions."""
+
+    branch_guidelines = get_branch_naming_guidelines()
 
     return f"""You are an expert CI/CD pipeline failure analysis agent for GitLab projects. Your role is to:
 
@@ -36,6 +60,8 @@ Use the available tools as needed to gather information and implement solutions.
 
 ### Available Capabilities
 {capabilities}
+
+{branch_guidelines}
 
 ## Analysis Approach:
 
@@ -74,6 +100,8 @@ def get_quality_system_prompt(capabilities: str = None) -> str:
 
 Use the available tools as needed to perform comprehensive quality analysis and implement improvements."""
 
+    branch_guidelines = get_branch_naming_guidelines()
+
     return f"""You are an expert code quality analysis agent specializing in SonarQube reports and static analysis. Your role is to:
 
 1. **Analyze code quality issues** from SonarQube reports and manual reviews
@@ -97,6 +125,8 @@ Use the available tools as needed to perform comprehensive quality analysis and 
 
 ### Available Capabilities
 {capabilities}
+
+{branch_guidelines}
 
 ## Analysis Approach:
 
@@ -284,7 +314,7 @@ Remember: Your goal is to improve overall code quality while maintaining functio
 
 def get_conversation_continuation_prompt(agent_type: str, context: str) -> str:
     """Generate a prompt for continuing conversation with context"""
-    return f"""## Previous Analysis Context
+    base_prompt = f"""## Previous Analysis Context
 
 {context}
 
@@ -296,7 +326,34 @@ You are continuing a conversation as a {agent_type} agent. Use the context above
 - If you need to examine files that were mentioned before, use the tracked files from session data
 - Maintain consistency with previous recommendations and analysis
 
-Continue the conversation naturally based on the user's new request."""
+"""
+    
+    # Add specific guidance for quality agent merge request creation
+    if agent_type == "quality":
+        branch_guidelines = get_branch_naming_guidelines()
+        mr_guidance = f"""
+## Merge Request Creation Guidelines
+When the user requests "Create a merge request" or similar:
+
+1. **Use Available Context**: All necessary information is already available
+   - Project ID is provided in the session context
+   - Previous analysis identified the issues and file locations
+   - File paths are typically standard (e.g., src/main/java/demo/App.java for Java projects)
+
+2. **Use Available Tools**: Leverage the tools provided to gather information automatically
+   - Get project details and context from available context tools
+   - Retrieve previous analysis and tracked files from session data tools
+   - Access current file content using file content tools if needed
+   - Create merge requests using the merge request creation tool with project ID from context
+
+3. **Do Not Ask for Manual Input**: All information needed for MR creation is available through tools and context
+
+{branch_guidelines}
+
+"""
+        return base_prompt + mr_guidance
+    
+    return base_prompt + "\nContinue the conversation naturally based on the user's new request."
 
 
 def get_webhook_analysis_prompt(webhook_data: dict, agent_type: str) -> str:

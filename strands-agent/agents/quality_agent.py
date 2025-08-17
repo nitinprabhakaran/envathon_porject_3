@@ -31,6 +31,42 @@ class QualityAgent(BaseAnalysisAgent):
         capabilities = self.get_capabilities_description()
         return get_quality_system_prompt(capabilities)
     
+    def create_session_aware_create_mr_tool(self, session_id: str, project_id: str):
+        """Create a session-aware merge request creation tool"""
+        @tool
+        async def create_merge_request_for_session(
+            title: str,
+            description: str,
+            files: Dict[str, Any],
+            target_branch: str = "main",
+            update_mode: bool = False
+        ) -> Dict[str, Any]:
+            """Create or update a merge request with file changes for this session
+            
+            Args:
+                title: MR title
+                description: MR description
+                files: Dict with 'updates' and 'creates' keys, each containing file paths and content
+                target_branch: Target branch (default: main)
+                update_mode: If True, commits to existing branch without creating it
+            
+            Returns:
+                Dictionary with MR details or error information
+            """
+            # Call the original tool with session context
+            return await create_merge_request(
+                title=title,
+                description=description,
+                files=files,
+                project_id=project_id,
+                session_id=session_id,
+                session_type="quality",  # This is a quality agent
+                target_branch=target_branch,
+                update_mode=update_mode
+            )
+        
+        return create_merge_request_for_session
+    
     async def analyze_failure(self, *args, **kwargs) -> str:
         """Analyze quality gate failure with context from webhook data - flexible signature"""
         try:
@@ -213,12 +249,15 @@ Focus on addressing the failed quality gate conditions first."""
         self, 
         session_id: str, 
         message: str, 
-        project_id: str, 
-        conversation_history: List[Dict[str, Any]]
+        conversation_history: List[Dict[str, Any]],
+        context: Any
     ) -> str:
         """Handle user message in quality analysis context"""
         try:
             log.info(f"Processing user message for quality session {session_id}")
+            
+            # Extract project_id from context
+            project_id = str(context.project_id) if hasattr(context, 'project_id') else str(context.get('project_id', 'unknown'))
             
             # Check iteration limit
             limit_message = await self.check_iteration_limit(session_id)
@@ -233,6 +272,7 @@ Focus on addressing the failed quality gate conditions first."""
             # Create session-specific tools
             tracked_get_file_content = self.create_tracked_file_tool(session_id, current_fix_branch)
             session_data_tool = self.create_session_data_tool(session_id)
+            session_aware_create_mr = self.create_session_aware_create_mr_tool(session_id, project_id)
             
             # Get context tool if webhook data available
             context_tool = None
@@ -248,7 +288,7 @@ Focus on addressing the failed quality gate conditions first."""
                 get_issue_details,
                 get_rule_description,
                 tracked_get_file_content,
-                create_merge_request,
+                session_aware_create_mr,
                 get_project_info,
                 session_data_tool
             ]
@@ -264,14 +304,21 @@ Focus on addressing the failed quality gate conditions first."""
             )
             
             # Format conversation context
-            context = self.format_conversation_history(conversation_history)
+            context_str = self.format_conversation_history(conversation_history)
             from .prompts import get_conversation_continuation_prompt
-            continuation_prompt = get_conversation_continuation_prompt("quality", context)
+            continuation_prompt = get_conversation_continuation_prompt("quality", context_str)
+            
+            # Add explicit project context information
+            project_context = f"""
+## Current Session Context
+- **Project ID**: {project_id}
+- **Session Type**: Quality Analysis
+- **Available Tools**: get_failure_context, get_session_data, get_file_content_tracked, create_merge_request
+- **Previous Analysis**: Available via get_session_data tool
+"""
             
             # Combine prompts
-            full_prompt = f"{continuation_prompt}\n\n## User Request\n{message}"
-            
-            # Run conversation
+            full_prompt = f"{continuation_prompt}\n{project_context}\n\n## User Request\n{message}"            # Run conversation
             response = await agent.invoke_async(full_prompt)
             result_text = self.extract_text_from_response(response)
             
@@ -389,7 +436,8 @@ Analysis approach:
             
             # Add SonarQube tools if we need to fetch additional data
             if not sonarqube_data:
-                sonarqube_tools = self.tool_registry.get_tools_for_agent("quality", ["sonarqube"])
+                from .tool_registry import tool_registry
+                sonarqube_tools = tool_registry.get_tools_for_agent("quality", ["sonarqube"])
                 base_tools.extend(sonarqube_tools)
             
             # Create agent with tools
@@ -402,23 +450,132 @@ Analysis approach:
             result = await agent.invoke_async(prompt)
             log.info(f"Quality analysis complete for session {session_id}")
             
-            # Extract text from result
-            if hasattr(result, 'message'):
-                result_text = result.message
-            elif hasattr(result, 'content'):
-                result_text = result.content
-            elif isinstance(result, dict):
-                # Handle dict response
-                if "content" in result:
-                    content = result["content"]
-                    if isinstance(content, list) and len(content) > 0:
-                        result_text = content[0].get("text", str(result))
+            # Debug: Log the actual result format
+            log.info(f"Agent result type: {type(result)}")
+            if hasattr(result, '__dict__'):
+                log.info(f"Agent result attributes: {list(result.__dict__.keys())}")
+            
+            # Try to get the actual content by checking all possible attributes
+            result_text = ""
+            extraction_method = "unknown"
+            
+            # Check various ways to extract the text from AgentResult
+            for attr_name in ['text', 'content', 'message', 'response', 'output', 'result']:
+                if hasattr(result, attr_name):
+                    attr_value = getattr(result, attr_name)
+                    log.info(f"Found attribute '{attr_name}': {type(attr_value)} = {str(attr_value)[:100]}...")
+                    
+                    if isinstance(attr_value, str) and attr_value.strip() and not attr_value.startswith('{'):
+                        result_text = attr_value
+                        extraction_method = f"result.{attr_name}"
+                        break
+            
+            # If no clean text found, try the more complex extraction
+            if not result_text:
+                log.info("No direct text attribute found, trying complex extraction...")
+                
+                # Handle object with message attribute
+                if hasattr(result, 'message'):
+                    message = result.message
+                    log.info(f"result.message is: {type(message)} = {str(message)[:100]}...")
+                    
+                    if isinstance(message, str) and not message.startswith('{'):
+                        result_text = message
+                        extraction_method = "result.message (string)"
+                    elif isinstance(message, dict):
+                        # Handle {'role': 'assistant', 'content': [{'text': '...'}]} structure
+                        if 'content' in message:
+                            content = message['content']
+                            log.info(f"message.content is: {type(content)} = {str(content)[:100]}...")
+                            
+                            if isinstance(content, list) and len(content) > 0:
+                                first_item = content[0]
+                                log.info(f"content[0] is: {type(first_item)} = {str(first_item)[:100]}...")
+                                
+                                if isinstance(first_item, dict) and 'text' in first_item:
+                                    result_text = first_item['text']
+                                    extraction_method = "result.message['content'][0]['text']"
+                                    log.info(f"Successfully extracted text using method: {extraction_method}, length: {len(result_text)}")
+                                else:
+                                    result_text = str(first_item)
+                                    extraction_method = "result.message['content'][0] (string)"
+                            elif isinstance(content, str):
+                                result_text = content
+                                extraction_method = "result.message['content'] (string)"
+                        elif 'text' in message:
+                            result_text = message['text']
+                            extraction_method = "result.message['text']"
+                
+                # Handle object with content attribute (secondary)
+                elif hasattr(result, 'content'):
+                    content = result.content
+                    if isinstance(content, str) and not content.startswith('{'):
+                        result_text = content
+                        extraction_method = "result.content (string)"
+                    elif isinstance(content, list) and len(content) > 0:
+                        # Handle list format: [{'text': '...'}]
+                        if isinstance(content[0], dict) and "text" in content[0]:
+                            result_text = content[0]["text"]
+                            extraction_method = "result.content[0]['text']"
+                        else:
+                            result_text = str(content[0])
+                            extraction_method = "result.content[0] (string)"
                     else:
-                        result_text = str(content)
-                else:
-                    result_text = result.get("message", str(result))
-            else:
-                result_text = str(result)
+                        log.info(f"result.content is: {type(content)} = {str(content)[:100]}...")
+            
+            # If still no result, check if the result is itself a dict or string
+            if not result_text:
+                log.info("Still no text found, checking result type directly...")
+                
+                # Handle direct string response
+                if isinstance(result, str) and not result.startswith('{'):
+                    result_text = result
+                    extraction_method = "direct string"
+                # Handle dict response formats
+                elif isinstance(result, dict):
+                    log.info(f"Result is dict with keys: {list(result.keys())}")
+                    # Handle agent response format: {'role': 'assistant', 'content': [{'text': '...'}]}
+                    if "role" in result and "content" in result:
+                        content = result["content"]
+                        if isinstance(content, list) and len(content) > 0:
+                            if isinstance(content[0], dict) and "text" in content[0]:
+                                result_text = content[0]["text"]
+                                extraction_method = "dict['content'][0]['text']"
+                            else:
+                                result_text = str(content[0])
+                                extraction_method = "dict['content'][0] (string)"
+                        elif isinstance(content, str):
+                            result_text = content
+                            extraction_method = "dict['content'] (string)"
+                    elif "content" in result:
+                        content = result["content"]
+                        if isinstance(content, list) and len(content) > 0:
+                            if isinstance(content[0], dict) and "text" in content[0]:
+                                result_text = content[0]["text"]
+                                extraction_method = "dict['content'][0]['text']"
+                            else:
+                                result_text = str(content[0])
+                                extraction_method = "dict['content'][0] (string)"
+                        else:
+                            result_text = str(content)
+                            extraction_method = "dict['content'] (fallback)"
+                    elif "text" in result:
+                        result_text = result["text"]
+                        extraction_method = "dict['text']"
+                    elif "message" in result:
+                        result_text = result["message"]
+                        extraction_method = "dict['message']"
+            
+            # Final fallback - but don't use str() as it might return the dict format
+            if not result_text:
+                result_text = f"## Extraction Failed\n\nCould not extract text from agent result of type {type(result)}"
+                extraction_method = "failed"
+            
+            log.info(f"Text extraction method: {extraction_method}")
+            log.info(f"Extracted result text length: {len(result_text)}")
+            log.info(f"Result text preview: {result_text[:200]}...")
+            if not result_text or result_text.strip() == "":
+                result_text = f"## Quality Analysis Failed\n\nThe analysis did not produce any output. Please check the SonarQube project key '{project_key}' and ensure the project exists in SonarQube."
             
             # Store analysis result in session
             await self._session_manager.update_session_metadata(
@@ -429,8 +586,16 @@ Analysis approach:
             return result_text
             
         except Exception as e:
+            error_msg = f"Analysis failed: {str(e)}"
             log.error(f"Error in quality analysis: {e}", exc_info=True)
-            return f"Analysis failed: {str(e)}"
+            
+            # Store error in session
+            await self._session_manager.update_session_metadata(
+                session_id, 
+                {"analysis_error": str(e), "analysis_result": error_msg}
+            )
+            
+            return error_msg
 
 
 # Backward compatibility alias

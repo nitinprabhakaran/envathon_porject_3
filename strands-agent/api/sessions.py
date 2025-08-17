@@ -8,6 +8,7 @@ from utils.logger import log
 from db.session_manager import SessionManager
 from agents.pipeline_agent import PipelineAgent
 from agents.quality_agent import QualityAgent
+from services.fix_iteration_handler import FixIterationHandler
 
 router = APIRouter(prefix="/sessions", tags=["sessions"])
 
@@ -15,6 +16,7 @@ router = APIRouter(prefix="/sessions", tags=["sessions"])
 session_manager = SessionManager()
 pipeline_agent = PipelineAgent()
 quality_agent = QualityAgent()
+fix_iteration_handler = FixIterationHandler()
 
 class MessageRequest(BaseModel):
     message: str
@@ -76,7 +78,7 @@ async def send_message(session_id: str, request: MessageRequest):
             )
         
         # Extract text from response - handle Strands agent response format
-        response_text = extract_text_from_response(response)
+        response_text = extract_response_text(response)
         
         if not response_text:
             response_text = str(response)
@@ -124,31 +126,7 @@ async def send_message(session_id: str, request: MessageRequest):
         log.error(f"Failed to process message: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
-def extract_text_from_response(response):
-    """Extract text from any response format"""
-    if isinstance(response, str):
-        return response
-    
-    if hasattr(response, 'message'):
-        return response.message
-    
-    if isinstance(response, dict):
-        # Try content field
-        if "content" in response:
-            content = response["content"]
-            if isinstance(content, list):
-                texts = []
-                for item in content:
-                    if isinstance(item, dict) and "text" in item:
-                        texts.append(item["text"])
-                return "".join(texts)
-            elif isinstance(content, str):
-                return content
-        # Try message field
-        elif "message" in response:
-            return response["message"]
-    
-    return str(response)
+
 
 @router.post("/{session_id}/create-mr")
 async def create_merge_request(session_id: str):
@@ -195,56 +173,31 @@ def extract_response_text(response) -> str:
     
     return str(response)
 
-def extract_files_from_response(response_text: str) -> Dict[str, str]:
-    """Extract file paths mentioned in the response"""
-    files = {}
-    
-    # Look for patterns like "File: path/to/file.ext" or "Modified: file.yml"
-    file_patterns = [
-        r'(?:File|Modified|Changed|Updated):\s*`?([^\s`]+)`?',
-        r'(?:```[\w]*\n)?(?:# )?([^\s]+\.[a-z]+)',
-    ]
-    
-    for pattern in file_patterns:
-        matches = re.findall(pattern, response_text)
-        for match in matches:
-            if '.' in match and not match.startswith('http'):
-                files[match] = "modified"
-    
-    return files
 
 
-async def store_file_analysis(self, session_id: str, file_path: str, original_content: str, proposed_changes: str):
-    """Store file analysis for a specific file in a session"""
-    async with self.get_connection() as conn:
-        # Store in a JSONB field in sessions table
-        current = await conn.fetchval(
-            "SELECT webhook_data FROM sessions WHERE id = $1",
-            session_id
-        )
-        
-        webhook_data = json.loads(current) if current else {}
-        
-        # Initialize file_analysis if not exists
-        if 'file_analysis' not in webhook_data:
-            webhook_data['file_analysis'] = {}
-        
-        # Store file data
-        webhook_data['file_analysis'][file_path] = {
-            'original_content': original_content,
-            'proposed_changes': proposed_changes,
-            'timestamp': datetime.utcnow().isoformat()
-        }
-        
-        await conn.execute(
-            "UPDATE sessions SET webhook_data = $2::jsonb WHERE id = $1",
-            session_id, json.dumps(webhook_data)
-        )
-        log.info(f"Stored file analysis for {file_path} in session {session_id}")
 
-async def get_file_analysis(self, session_id: str) -> Dict[str, Any]:
-    """Get all file analysis for a session"""
-    session = await self.get_session(session_id)
-    if session:
-        return session.get('webhook_data', {}).get('file_analysis', {})
-    return {}
+@router.get("/{session_id}/fix-attempts")
+async def get_fix_attempts(session_id: str):
+    """Get fix attempt status for a session"""
+    try:
+        fix_status = await fix_iteration_handler.get_fix_attempt_status(session_id)
+        return fix_status
+    except Exception as e:
+        log.error(f"Failed to get fix attempts for session {session_id}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/{session_id}/fix-attempts/{attempt_number}")
+async def get_fix_attempt_details(session_id: str, attempt_number: int):
+    """Get details for a specific fix attempt"""
+    try:
+        fix_attempts = await session_manager.get_fix_attempts(session_id)
+        for attempt in fix_attempts:
+            if attempt.get("attempt_number") == attempt_number:
+                return attempt
+        raise HTTPException(status_code=404, detail="Fix attempt not found")
+    except HTTPException:
+        raise
+    except Exception as e:
+        log.error(f"Failed to get fix attempt {attempt_number} for session {session_id}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))

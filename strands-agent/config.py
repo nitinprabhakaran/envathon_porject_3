@@ -60,6 +60,10 @@ class Settings(BaseSettings):
     max_retries: int = 3
     max_fix_attempts: int = int(os.getenv("MAX_FIX_ATTEMPTS", "3"))
     
+    # Branch naming configuration - simplified to 2 categories only
+    branch_prefix_pipeline: str = os.getenv("BRANCH_PREFIX_PIPELINE", "fix/pipeline_")
+    branch_prefix_quality: str = os.getenv("BRANCH_PREFIX_QUALITY", "fix/sonarqube_")
+    
     # Processing settings
     max_log_size: int = int(os.getenv("MAX_LOG_SIZE", "30000"))
     max_log_lines: int = int(os.getenv("MAX_LOG_LINES", "1000"))

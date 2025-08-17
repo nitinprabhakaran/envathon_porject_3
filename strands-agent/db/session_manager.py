@@ -95,6 +95,13 @@ class SessionManager:
                             result[field] = json.loads(result[field])
                         except:
                             result[field] = [] if field in ['conversation_history', 'fixes_applied'] else {}
+                
+                # Map database column names to API names for consistency
+                if 'mr_url' in result:
+                    result['merge_request_url'] = result['mr_url']
+                if 'mr_id' in result:
+                    result['merge_request_id'] = result['mr_id']
+                    
                 return result
             return None
     
@@ -143,6 +150,13 @@ class SessionManager:
                             result[field] = json.loads(result[field])
                         except:
                             result[field] = [] if field in ['conversation_history', 'fixes_applied'] else {}
+                
+                # Map database column names to API names for consistency
+                if 'mr_url' in result:
+                    result['merge_request_url'] = result['mr_url']
+                if 'mr_id' in result:
+                    result['merge_request_id'] = result['mr_id']
+                    
                 results.append(result)
             log.debug(f"Found {len(results)} active sessions")
             return results
@@ -285,10 +299,10 @@ class SessionManager:
             await conn.execute(
                 """
                 UPDATE fix_attempts
-                SET status = $3::VARCHAR(20), 
+                SET status = $3::VARCHAR(50), 
                     merge_request_id = $4,
                     merge_request_url = $5,
-                    error_details = $6,
+                    error_message = $6,
                     completed_at = CASE WHEN $3 IN ('success', 'failed') THEN CURRENT_TIMESTAMP ELSE NULL END
                 WHERE session_id = $1 AND attempt_number = $2
                 """,
@@ -305,6 +319,62 @@ class SessionManager:
                     """,
                     session_uuid, mr_url, mr_id
                 )
+            
+            log.info(f"Updated fix attempt #{attempt_number} for session {session_id}: status={status}")
+
+    async def _update_webhook_data_fix_status(self, session_id: str, attempt_number: int, status: str, 
+                                            mr_id: Optional[str] = None, mr_url: Optional[str] = None):
+        """Update webhook_data with fix attempt status for UI consistency"""
+        async with self.get_connection() as conn:
+            # Get current webhook_data
+            current = await conn.fetchval(
+                "SELECT webhook_data FROM sessions WHERE id = $1",
+                str(session_id)
+            )
+            webhook_data = json.loads(current) if current else {}
+            
+            # Initialize fix_attempts if not exists
+            if 'fix_attempts' not in webhook_data:
+                webhook_data['fix_attempts'] = []
+            
+            # Update the specific attempt
+            fix_attempts = webhook_data['fix_attempts']
+            updated = False
+            for attempt in fix_attempts:
+                if attempt.get('attempt_number') == attempt_number:
+                    attempt['status'] = status
+                    if mr_id:
+                        attempt['mr_id'] = mr_id
+                    if mr_url:
+                        attempt['mr_url'] = mr_url
+                    if status == 'success':
+                        attempt['succeeded_at'] = datetime.utcnow().isoformat()
+                    elif status == 'failed':
+                        attempt['failed_at'] = datetime.utcnow().isoformat()
+                    updated = True
+                    break
+            
+            # If not found, create new entry
+            if not updated:
+                # Get branch name from fix_attempts table
+                branch_name = await conn.fetchval(
+                    "SELECT branch_name FROM fix_attempts WHERE session_id = $1 AND attempt_number = $2",
+                    str(session_id), attempt_number
+                )
+                fix_attempts.append({
+                    'attempt_number': attempt_number,
+                    'branch': branch_name,
+                    'status': status,
+                    'mr_id': mr_id,
+                    'mr_url': mr_url,
+                    'created_at': datetime.utcnow().isoformat()
+                })
+            
+            # Update webhook_data
+            await conn.execute(
+                "UPDATE sessions SET webhook_data = $2::jsonb WHERE id = $1",
+                str(session_id), json.dumps(webhook_data)
+            )
     
     async def get_fix_attempts(self, session_id: str) -> List[Dict[str, Any]]:
         """Get all fix attempts for a session"""
@@ -374,10 +444,10 @@ class SessionManager:
                     updates.append(f"webhook_data = ${param_num}::jsonb")
                     params.append(value)
                 elif key == "merge_request_url":
-                    updates.append(f"merge_request_url = ${param_num}")
+                    updates.append(f"mr_url = ${param_num}")
                     params.append(value)
                 elif key == "merge_request_id":
-                    updates.append(f"merge_request_id = ${param_num}")
+                    updates.append(f"mr_id = ${param_num}")
                     params.append(value)
                 elif key == "fixes_applied":
                     updates.append(f"fixes_applied = ${param_num}::jsonb")
@@ -496,3 +566,138 @@ class SessionManager:
                 project_id, mr_id
             )
             return [dict(session) for session in sessions]
+    
+    async def get_sessions_by_fix_branch(self, project_id: str, branch_name: str) -> List[Dict[str, Any]]:
+        """Get sessions that have fix attempts on a specific branch"""
+        async with self.get_connection() as conn:
+            sessions = await conn.fetch(
+                """
+                SELECT DISTINCT s.* FROM sessions s
+                JOIN fix_attempts fa ON s.id = fa.session_id
+                WHERE s.project_id = $1 
+                AND fa.branch_name = $2
+                AND s.status = 'active'
+                """,
+                project_id, branch_name
+            )
+            
+            results = []
+            for session in sessions:
+                result = dict(session)
+                # Parse JSON fields
+                for field in ['conversation_history', 'webhook_data', 'fixes_applied']:
+                    if field in result and isinstance(result[field], str):
+                        try:
+                            result[field] = json.loads(result[field])
+                        except:
+                            result[field] = [] if field in ['conversation_history', 'fixes_applied'] else {}
+                results.append(result)
+            return results
+    
+    async def handle_pipeline_success_on_fix_branch(self, project_id: str, branch_name: str, pipeline_id: str = None):
+        """Handle successful pipeline on a fix branch - mark fix attempts as successful"""
+        log.info(f"Processing pipeline success on fix branch: {branch_name} in project {project_id}")
+        
+        # Get all sessions with fix attempts on this branch
+        sessions = await self.get_sessions_by_fix_branch(project_id, branch_name)
+        
+        for session in sessions:
+            session_id = session['id']
+            log.info(f"Checking session {session_id} for fix attempts on branch {branch_name}")
+            
+            # Get fix attempts for this session on this branch
+            fix_attempts = await self.get_fix_attempts(session_id)
+            
+            for attempt in fix_attempts:
+                if (attempt.get('branch_name', '').strip() == branch_name.strip() and 
+                    attempt.get('status') == 'pending'):
+                    
+                    log.info(f"Marking fix attempt #{attempt['attempt_number']} as successful for session {session_id}")
+                    
+                    # Update fix attempt status to success
+                    await self.update_fix_attempt(
+                        session_id,
+                        attempt['attempt_number'],
+                        'success',
+                        attempt.get('merge_request_id'),
+                        attempt.get('merge_request_url')
+                    )
+                    
+                    # Add success message to conversation
+                    await self.add_message(
+                        session_id,
+                        "assistant",
+                        f"✅ **Fix Successful!**\n\n"
+                        f"The fix on branch `{branch_name}` has been successfully merged and the pipeline is now passing.\n"
+                        f"Fix attempt #{attempt['attempt_number']} completed successfully."
+                    )
+                    
+                    # Check if this fix resolves the session
+                    await self._check_session_resolution(session_id)
+    
+    async def _check_session_resolution(self, session_id: str):
+        """Check if session should be resolved based on successful fixes"""
+        session = await self.get_session(session_id)
+        if not session or session.get('status') != 'active':
+            return
+        
+        # Get all fix attempts
+        fix_attempts = await self.get_fix_attempts(session_id)
+        
+        # Check if we have successful fixes
+        successful_attempts = [att for att in fix_attempts if att.get('status') == 'success']
+        
+        if successful_attempts:
+            # For now, mark as resolved if we have any successful fix
+            # Could be enhanced to check if the main branch pipeline also passes
+            await self.mark_session_resolved(session_id)
+            
+            await self.add_message(
+                session_id,
+                "assistant",
+                f"🎉 **Session Resolved!**\n\n"
+                f"The issue has been successfully fixed and verified. "
+                f"Total fix attempts: {len(fix_attempts)}, Successful: {len(successful_attempts)}"
+            )
+            
+            log.info(f"Marked session {session_id} as resolved due to successful fix")
+    
+    async def handle_pipeline_failure_on_fix_branch(self, project_id: str, branch_name: str, error_details: str = None):
+        """Handle failed pipeline on a fix branch - mark fix attempts as failed"""
+        log.info(f"Processing pipeline failure on fix branch: {branch_name} in project {project_id}")
+        
+        # Get all sessions with fix attempts on this branch
+        sessions = await self.get_sessions_by_fix_branch(project_id, branch_name)
+        
+        for session in sessions:
+            session_id = session['id']
+            
+            # Get fix attempts for this session on this branch
+            fix_attempts = await self.get_fix_attempts(session_id)
+            
+            for attempt in fix_attempts:
+                if (attempt.get('branch_name', '').strip() == branch_name.strip() and 
+                    attempt.get('status') == 'pending'):
+                    
+                    log.info(f"Marking fix attempt #{attempt['attempt_number']} as failed for session {session_id}")
+                    
+                    # Update fix attempt status to failed
+                    await self.update_fix_attempt(
+                        session_id,
+                        attempt['attempt_number'],
+                        'failed',
+                        attempt.get('merge_request_id'),
+                        attempt.get('merge_request_url'),
+                        error_details
+                    )
+                    
+                    # Add failure message to conversation
+                    await self.add_message(
+                        session_id,
+                        "assistant",
+                        f"❌ **Fix Attempt Failed**\n\n"
+                        f"The fix on branch `{branch_name}` failed in the pipeline.\n"
+                        f"Fix attempt #{attempt['attempt_number']} failed.\n"
+                        f"Error: {error_details if error_details else 'Pipeline failed'}\n\n"
+                        f"You can analyze the latest logs and create another fix."
+                    )

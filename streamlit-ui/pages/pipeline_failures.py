@@ -1,9 +1,10 @@
-"""Pipeline failures page"""
+"""Pipeline failures page - Following iteration_fixed_v1 structure"""
 import streamlit as st
 import asyncio
 import json
 from datetime import datetime, timedelta
 from utils.api_client import UnifiedAPIClient
+from utils.ui_shared import parse_message_content
 from utils.logger import setup_logger
 
 log = setup_logger()
@@ -31,25 +32,34 @@ if "messages" not in st.session_state:
 
 def calculate_time_remaining(expires_at):
     """Calculate time remaining until session expires"""
-    if isinstance(expires_at, str):
-        expires_at = datetime.fromisoformat(expires_at.replace('Z', '+00:00'))
+    if not expires_at:
+        return "Unknown"
     
-    now = datetime.utcnow()
-    if expires_at.tzinfo:
-        expires_at = expires_at.replace(tzinfo=None)
-    
-    remaining = expires_at - now
-    
-    if remaining.total_seconds() <= 0:
-        return "Expired"
-    
-    hours = int(remaining.total_seconds() // 3600)
-    minutes = int((remaining.total_seconds() % 3600) // 60)
-    
-    if hours > 0:
-        return f"{hours}h {minutes}m"
-    else:
-        return f"{minutes}m"
+    try:
+        # Handle timezone info if present
+        if expires_at.endswith('Z'):
+            expires_at = expires_at[:-1] + '+00:00'
+        
+        expiry = datetime.fromisoformat(expires_at)
+        now = datetime.now(expiry.tzinfo) if expiry.tzinfo else datetime.now()
+        
+        remaining = expiry - now
+        
+        if remaining.total_seconds() <= 0:
+            return "Expired"
+        
+        days = remaining.days
+        hours, remainder = divmod(remaining.seconds, 3600)
+        minutes, _ = divmod(remainder, 60)
+        
+        if days > 0:
+            return f"{days}d {hours}h"
+        elif hours > 0:
+            return f"{hours}h {minutes}m"
+        else:
+            return f"{minutes}m"
+    except:
+        return "Unknown"
 
 # Header
 st.title("🚀 Pipeline Failures")
@@ -73,14 +83,14 @@ with col_nav3:
     if st.button("🔄 Refresh", key="refresh_main"):
         st.rerun()
 
-# Main layout - adjusted column widths
+# Main layout - three columns like iteration_fixed_v1
 col1, col2, col3 = st.columns([1.5, 3, 1.5])
 
 # Column 1: Project Navigator
 with col1:
     st.subheader("Projects")
     
-    # Fetch sessions and group by project
+    # Fetch sessions and group by project and branch
     async def fetch_and_group_sessions():
         sessions = await st.session_state.api_client.get_active_sessions()
         pipeline_sessions = [s for s in sessions if s.get("session_type") == "pipeline"]
@@ -148,6 +158,7 @@ with col1:
                             else:
                                 status_color = "🟢"
                         
+                        # Session button
                         button_label = f"{status_color} {job_name}\n⏰ {time_remaining}"
                         if fix_attempts:
                             button_label += f"\n🔄 {len(fix_attempts)} fix(es)"
@@ -285,25 +296,7 @@ with col2:
                 for msg in messages:
                     if msg["role"] != "system":
                         with st.chat_message(msg["role"]):
-                            content = msg.get("content", "")
-
-                            # Try to parse JSON string if it looks like JSON
-                            if isinstance(content, str) and content.strip().startswith('{'):
-                                try:
-                                    parsed = json.loads(content)
-                                    if isinstance(parsed, dict):
-                                        if "text" in parsed:
-                                            content = parsed["text"]
-                                        elif "message" in parsed:
-                                            content = parsed["message"]
-                                        elif "content" in parsed:
-                                            if isinstance(parsed["content"], list):
-                                                content = parsed["content"][0].get("text", str(parsed))
-                                            else:
-                                                content = parsed["content"]
-                                except json.JSONDecodeError:
-                                    pass
-                                    
+                            content = parse_message_content(msg.get("content", ""))
                             st.markdown(content)
             
             # Chat input interface (only shown when chat button is clicked)
@@ -320,7 +313,7 @@ with col2:
                             response = asyncio.run(
                                 st.session_state.api_client.send_message(session_id, prompt)
                             )
-                            response_text = response.get("response", "")
+                            response_text = parse_message_content(response.get("response", ""))
                             st.write(response_text)
                             
                             if response.get("merge_request_url"):
@@ -332,7 +325,7 @@ with col2:
             st.error(f"Failed to load session details: {e}")
     
     else:
-        # Show job cards when no failure is selected
+        # Show job cards when no failure is selected - follow iteration_fixed_v1 pattern
         st.subheader("Failure Details")
         
         if st.session_state.selected_project and st.session_state.failure_groups:
@@ -425,7 +418,7 @@ with col2:
                                 """)
                         
                         with col_action:
-                            if st.button("View", key=f"view_{latest_session['id']}"):
+                            if st.button("View", key=f"summary_view_{latest_session['id']}"):
                                 st.session_state.selected_failure = latest_session
                                 st.rerun()
                     
@@ -474,3 +467,6 @@ with col3:
         
         if url := session.get('pipeline_url'):
             st.link_button("View in GitLab", url, use_container_width=True)
+    
+    else:
+        st.info("👈 Select a failure from the project list to view details and start analysis")

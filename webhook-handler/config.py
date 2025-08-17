@@ -1,10 +1,17 @@
 """Configuration for Webhook Handler Service"""
 from pydantic_settings import BaseSettings
+from pydantic import ConfigDict
 from typing import List
 import os
 
 class Settings(BaseSettings):
     """Application settings with unified configuration pattern"""
+    
+    model_config = ConfigDict(
+        env_file=".env",
+        case_sensitive=False,
+        extra="ignore"  # Ignore extra fields from .env that aren't defined in the model
+    )
     
     # Service info
     service_name: str = "webhook-handler"
@@ -76,10 +83,7 @@ class Settings(BaseSettings):
     # Feature flags
     enable_webhook_auth: bool = os.getenv("ENABLE_WEBHOOK_AUTH", "true").lower() == "true"
     enable_cors: bool = os.getenv("ENABLE_CORS", "true").lower() == "true"
-    
-    class Config:
-        env_file = ".env"
-        case_sensitive = False
+
 
 # Initialize settings
 settings = Settings()

@@ -26,6 +26,23 @@ CREATE TABLE IF NOT EXISTS sessions (
     fixes_applied JSONB DEFAULT '[]',
     status VARCHAR(50) DEFAULT 'active',
     subscription_id VARCHAR(255),
+    -- Fix tracking fields
+    current_fix_branch VARCHAR(255),
+    fix_iteration INTEGER DEFAULT 0,
+    merge_request_url TEXT,
+    merge_request_id VARCHAR(255),
+    -- Quality metrics fields
+    total_issues INTEGER DEFAULT 0,
+    critical_issues INTEGER DEFAULT 0,
+    major_issues INTEGER DEFAULT 0,
+    bug_count INTEGER DEFAULT 0,
+    vulnerability_count INTEGER DEFAULT 0,
+    code_smell_count INTEGER DEFAULT 0,
+    coverage DECIMAL(5,2),
+    duplicated_lines_density DECIMAL(5,2),
+    reliability_rating VARCHAR(1) DEFAULT 'E',
+    security_rating VARCHAR(1) DEFAULT 'E',
+    maintainability_rating VARCHAR(1) DEFAULT 'E',
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     expires_at TIMESTAMP DEFAULT (CURRENT_TIMESTAMP + INTERVAL '60 minutes')
@@ -55,14 +72,19 @@ CREATE TABLE IF NOT EXISTS webhook_subscriptions (
 CREATE TABLE IF NOT EXISTS fix_attempts (
     id SERIAL PRIMARY KEY,
     session_id VARCHAR(255) REFERENCES sessions(id),
-    attempt_number INTEGER,
-    branch_name VARCHAR(255),
+    attempt_number INTEGER NOT NULL,
+    branch_name VARCHAR(255) NOT NULL,
     merge_request_id VARCHAR(255),
     merge_request_url TEXT,
-    status VARCHAR(50),
+    status VARCHAR(50) DEFAULT 'pending', -- 'pending', 'success', 'failed'
     error_message TEXT,
     files_changed JSONB DEFAULT '[]',
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    started_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    completed_at TIMESTAMP,
+    pipeline_id VARCHAR(255),
+    commit_sha VARCHAR(255),
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(session_id, attempt_number)
 );
 
 -- Messages table for conversation history

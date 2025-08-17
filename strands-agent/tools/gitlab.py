@@ -7,6 +7,9 @@ from utils.logger import log
 from config import settings
 from urllib.parse import quote
 
+# Import local branch naming utilities
+from utils.branch_naming import generate_branch_name
+
 async def get_gitlab_client():
     """Create GitLab API client"""
     headers = {"PRIVATE-TOKEN": settings.gitlab_token} if settings.gitlab_token else {}
@@ -196,16 +199,34 @@ async def create_merge_request(
     description: str,
     files: Dict[str, Any],
     project_id: str,
-    source_branch: str,
+    session_id: str,
+    session_type: str,  # 'pipeline' or 'quality'
     target_branch: str = "main",
     update_mode: bool = False
 ) -> Dict[str, Any]:
-    """Create or update a merge request with file changes
+    """Create or update a merge request with file changes using standardized branch naming
     
     Args:
+        title: MR title
+        description: MR description
         files: Dict with 'updates' and 'creates' keys, each containing file paths and content
+        project_id: GitLab project ID
+        session_id: Session UUID for branch naming
+        session_type: Type of session ('pipeline' or 'quality') for branch naming
+        target_branch: Target branch (default: main)
         update_mode: If True, commits to existing branch without creating it
+    
+    Returns:
+        Dictionary with MR details or error information
     """
+    
+    # Generate standardized branch name using session ID
+    try:
+        source_branch = generate_branch_name(session_id, session_type)
+        log.info(f"Generated branch name: {source_branch} for session {session_id}")
+    except Exception as e:
+        log.error(f"Failed to generate branch name for session {session_id}: {e}")
+        return {"error": f"Invalid session ID format: {e}"}
     
     async with await get_gitlab_client() as client:
         try:
@@ -299,7 +320,7 @@ async def create_merge_request(
             # Prepare commit - key fix is here
             commit_data = {
                 "branch": source_branch,
-                "commit_message": f"Fix: {title}",
+                "commit_message": f"Fix: {title} (Session: {session_id})",
                 "actions": actions
             }
             
@@ -320,7 +341,9 @@ async def create_merge_request(
                     "error": f"Commit failed: {commit_response.text}",
                     "files_processed": files_processed,
                     "branch_exists": branch_exists,
-                    "update_mode": update_mode
+                    "update_mode": update_mode,
+                    "session_id": session_id,
+                    "generated_branch": source_branch
                 }
             
             log.info(f"Successfully committed to branch {source_branch}")
@@ -345,7 +368,8 @@ async def create_merge_request(
                             "message": "Updated existing merge request",
                             "branch": source_branch,
                             "files_processed": files_processed,
-                            "commit_sha": commit_sha
+                            "commit_sha": commit_sha,
+                            "session_id": session_id
                         }
                 
                 # No existing MR but branch exists
@@ -354,18 +378,26 @@ async def create_merge_request(
                     "branch": source_branch,
                     "files_processed": files_processed,
                     "commit_sha": commit_sha,
-                    "info": "No merge request found for this branch"
+                    "info": "No merge request found for this branch",
+                    "session_id": session_id
                 }
             
             else:
                 # New branch, create MR
+                mr_description = (
+                    f"{description}\n\n"
+                    f"**Session ID:** `{session_id}`\n"
+                    f"**Session Type:** {session_type}\n"
+                    f"**Files changed:**\n" + "\n".join(f"- {fp}" for fp in files_processed)
+                )
+                
                 mr_response = await client.post(
                     f"/projects/{project_id}/merge_requests",
                     json={
                         "source_branch": source_branch,
                         "target_branch": target_branch,
                         "title": title,
-                        "description": description + f"\n\n**Files changed:**\n" + "\n".join(f"- {fp}" for fp in files_processed),
+                        "description": mr_description,
                         "remove_source_branch": True
                     }
                 )
@@ -375,11 +407,12 @@ async def create_merge_request(
                     return {
                         "error": f"MR creation failed: {mr_response.text}",
                         "branch": source_branch,
-                        "commit_sha": commit_sha
+                        "commit_sha": commit_sha,
+                        "session_id": session_id
                     }
                 
                 mr_data = mr_response.json()
-                log.info(f"Created new MR !{mr_data.get('iid')}")
+                log.info(f"Created new MR !{mr_data.get('iid')} for session {session_id}")
                 return {
                     "id": mr_data.get("iid"),
                     "web_url": mr_data.get("web_url"),
@@ -387,12 +420,13 @@ async def create_merge_request(
                     "source_branch": source_branch,
                     "target_branch": target_branch,
                     "files_processed": files_processed,
-                    "commit_sha": commit_sha
+                    "commit_sha": commit_sha,
+                    "session_id": session_id
                 }
                 
         except Exception as e:
             log.error(f"Failed to create/update merge request: {e}", exc_info=True)
-            return {"error": str(e)}
+            return {"error": str(e), "session_id": session_id}
 
 @tool
 async def get_project_info(project_id: str) -> Dict[str, Any]:

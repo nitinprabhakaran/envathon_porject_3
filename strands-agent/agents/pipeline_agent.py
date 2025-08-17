@@ -88,6 +88,7 @@ class PipelineAgent(BaseAnalysisAgent):
             # Create session-specific tools
             tracked_get_file_content = self.create_tracked_file_tool(session_id, current_fix_branch)
             session_data_tool = self.create_session_data_tool(session_id)
+            session_aware_create_mr = self.create_session_aware_create_mr_tool(session_id, project_id)
             
             # Get context tool if webhook data available
             context_tool = None
@@ -101,7 +102,7 @@ class PipelineAgent(BaseAnalysisAgent):
                 get_job_logs,
                 tracked_get_file_content,
                 get_recent_commits,
-                create_merge_request,
+                session_aware_create_mr,
                 get_project_info,
                 session_data_tool
             ]
@@ -140,7 +141,41 @@ class PipelineAgent(BaseAnalysisAgent):
             log.error(f"Failed to handle user message: {e}", exc_info=True)
             return f"❌ Failed to process message: {str(e)}"
     
-    def _create_context_aware_prompt(self, webhook_data: Dict[str, Any], prompt_type: str) -> str:
+    def create_session_aware_create_mr_tool(self, session_id: str, project_id: str):
+        """Create a session-aware merge request creation tool"""
+        @tool
+        async def create_merge_request_for_session(
+            title: str,
+            description: str,
+            files: Dict[str, Any],
+            target_branch: str = "main",
+            update_mode: bool = False
+        ) -> Dict[str, Any]:
+            """Create or update a merge request with file changes for this session
+            
+            Args:
+                title: MR title
+                description: MR description
+                files: Dict with 'updates' and 'creates' keys, each containing file paths and content
+                target_branch: Target branch (default: main)
+                update_mode: If True, commits to existing branch without creating it
+            
+            Returns:
+                Dictionary with MR details or error information
+            """
+            # Call the original tool with session context
+            return await create_merge_request(
+                title=title,
+                description=description,
+                files=files,
+                project_id=project_id,
+                session_id=session_id,
+                session_type="pipeline",  # This is a pipeline agent
+                target_branch=target_branch,
+                update_mode=update_mode
+            )
+        
+        return create_merge_request_for_session
         """Create context-aware analysis prompts"""
         if prompt_type == "initial_analysis":
             return """## 🔍 Pipeline Failure Analysis

@@ -3,6 +3,7 @@ from abc import ABC, abstractmethod
 from typing import Dict, Any, List, Optional
 import os
 import re
+import json
 from datetime import datetime
 
 from utils.logger import log
@@ -130,12 +131,35 @@ class BaseAnalysisAgent(ABC):
             session_data = await self._session_manager.get_session(session_id)
             tracked_files = await self._session_manager.get_tracked_files(session_id)
             
+            # get_session() returns a Dict[str, Any]
+            webhook_data = {}
+            current_fix_branch = None
+            fix_iteration = 0
+            project_id = None
+            project_name = None
+            
+            if session_data:
+                webhook_data = session_data.get('webhook_data', {})
+                current_fix_branch = session_data.get('current_fix_branch')
+                fix_iteration = session_data.get('fix_iteration', 0)
+                project_id = session_data.get('project_id')
+                project_name = session_data.get('project_name')
+                
+                # Also check webhook_data for project info
+                if not project_id and webhook_data.get('project'):
+                    project_id = webhook_data['project'].get('id')
+                    project_name = webhook_data['project'].get('name')
+            
             return {
-                'analysis_result': session_data.get('webhook_data', {}).get('analysis_result', ''),
-                'code_blocks': session_data.get('webhook_data', {}).get('code_blocks', []),
+                'session_id': session_id,
+                'project_id': project_id,
+                'project_name': project_name,
+                'analysis_result': webhook_data.get('analysis_result', ''),
+                'code_blocks': webhook_data.get('code_blocks', []),
                 'tracked_files': tracked_files,
-                'current_fix_branch': session_data.get('current_fix_branch'),
-                'fix_iteration': session_data.get('fix_iteration', 0)
+                'current_fix_branch': current_fix_branch,
+                'fix_iteration': fix_iteration,
+                'webhook_data': webhook_data
             }
         
         return get_session_data
@@ -375,8 +399,8 @@ I've attempted to fix this issue {max_attempts} times but it continues to fail. 
             await self._session_manager.update_session_metadata(
                 session_id,
                 {
-                    "merge_request_url": mr_url,
-                    "merge_request_id": mr_id,
+                    "mr_url": mr_url,
+                    "mr_id": mr_id,
                     "current_fix_branch": branch_name
                 }
             )
@@ -402,20 +426,56 @@ I've attempted to fix this issue {max_attempts} times but it continues to fail. 
         """Update webhook data with fix attempt information"""
         current_session = await self._session_manager.get_session(session_id)
         if current_session:
+            # get_session() returns a Dict[str, Any], not SessionContext object
             webhook_data = current_session.get("webhook_data", {})
-            fix_attempts_list = webhook_data.get("fix_attempts", [])
-            fix_attempts_list.append({
-                "branch": branch_name,
-                "mr_id": mr_id,
-                "mr_url": mr_url,
-                "status": "pending",
-                "timestamp": datetime.utcnow().isoformat()
-            })
-            webhook_data["fix_attempts"] = fix_attempts_list
-            await self._session_manager.update_session_metadata(
-                session_id, {"webhook_data": webhook_data}
-            )
-            log.info("Updated webhook_data with fix attempt")
+            
+            # Ensure fix_attempts array exists
+            if "fix_attempts" not in webhook_data:
+                webhook_data["fix_attempts"] = []
+            
+            # Get the latest fix attempt number
+            fix_attempts = await self._session_manager.get_fix_attempts(session_id)
+            latest_attempt = max(fix_attempts, key=lambda x: x["attempt_number"]) if fix_attempts else None
+            
+            if latest_attempt:
+                # Add or update the fix attempt in webhook_data
+                fix_attempt_data = {
+                    "attempt_number": latest_attempt["attempt_number"],
+                    "branch": branch_name,
+                    "mr_id": mr_id,
+                    "mr_url": mr_url,
+                    "status": "pending",
+                    "created_at": datetime.utcnow().isoformat(),
+                    "files_changed": latest_attempt.get("files_changed", [])
+                }
+                
+                # Update or append
+                updated = False
+                for i, existing in enumerate(webhook_data["fix_attempts"]):
+                    if existing.get("attempt_number") == latest_attempt["attempt_number"]:
+                        webhook_data["fix_attempts"][i] = fix_attempt_data
+                        updated = True
+                        break
+                
+                if not updated:
+                    webhook_data["fix_attempts"].append(fix_attempt_data)
+                
+                # Update session
+                await self._session_manager.update_session_metadata(session_id, {"webhook_data": webhook_data})
+                log.info(f"Updated webhook data with fix attempt #{latest_attempt['attempt_number']} for session {session_id}")
+            else:
+                # Fallback to old format if no fix attempts found
+                webhook_data["fix_attempts"].append({
+                    "branch": branch_name,
+                    "mr_id": mr_id,
+                    "mr_url": mr_url,
+                    "status": "pending",
+                    "timestamp": datetime.utcnow().isoformat()
+                })
+                await self._session_manager.update_session_metadata(
+                    session_id, {"webhook_data": webhook_data}
+                )
+                log.info("Updated webhook_data with fix attempt (fallback mode)")
     
     @abstractmethod
     async def analyze_failure(self, *args, **kwargs) -> str:
