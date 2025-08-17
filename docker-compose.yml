@@ -8,10 +8,6 @@ services:
       POSTGRES_PASSWORD: gitlab123
       POSTGRES_DB: gitlabhq_production
     healthcheck:
-      test: ["CMD", "rabbitmq-diagnostics", "ping"]
-      interval: 30s
-      timeout: 10s
-      retries: 5
       test: ["CMD-SHELL", "pg_isready -U gitlab"]
       interval: 10s
       timeout: 5s
@@ -122,9 +118,9 @@ services:
     networks:
       - devops-network
     healthcheck:
-      test: ["CMD-SHELL", "curl -ku admin:Admin123! https://localhost:9200/_cluster/health || exit 1"]
-      interval: 10s
-      timeout: 5s
+      test: ["CMD", "rabbitmq-diagnostics", "ping"]
+      interval: 30s
+      timeout: 10s
       retries: 5
     restart: unless-stopped
 
