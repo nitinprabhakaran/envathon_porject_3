@@ -160,16 +160,42 @@ def extract_response_text(response) -> str:
     if isinstance(response, str):
         return response
     
-    # Handle Strands agent response
+    # Handle Strands agent response with message attribute
     if hasattr(response, 'message'):
-        return response.message
+        message = response.message
+        
+        # Handle nested structure like {'role': 'assistant', 'content': [{'text': '...'}]}
+        if isinstance(message, dict):
+            if 'content' in message:
+                content = message['content']
+                if isinstance(content, list) and len(content) > 0:
+                    first_item = content[0]
+                    if isinstance(first_item, dict) and 'text' in first_item:
+                        return first_item['text']
+                    else:
+                        return str(first_item)
+                elif isinstance(content, str):
+                    return content
+            elif 'text' in message:
+                return message['text']
+            else:
+                return str(message)
+        else:
+            return str(message)
     
-    # Handle dict with content array
-    if isinstance(response, dict) and "content" in response:
-        content = response["content"]
-        if isinstance(content, list):
-            return "".join(item.get("text", "") for item in content if isinstance(item, dict))
-        return str(content)
+    # Handle dict with content array (direct dict response)
+    if isinstance(response, dict):
+        if "content" in response:
+            content = response["content"]
+            if isinstance(content, list) and len(content) > 0:
+                first_item = content[0]
+                if isinstance(first_item, dict) and 'text' in first_item:
+                    return first_item['text']
+                else:
+                    return str(first_item)
+            return str(content)
+        elif "text" in response:
+            return response["text"]
     
     return str(response)
 

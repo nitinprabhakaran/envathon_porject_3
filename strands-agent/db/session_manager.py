@@ -2,7 +2,9 @@
 import asyncpg
 import json
 import hashlib
-from typing import Dict, Any, Optional, List
+import uuid
+from typing import Dict, Any, Optional, List, Union
+from uuid import UUID
 from datetime import datetime, timedelta
 from contextlib import asynccontextmanager
 from utils.logger import log
@@ -79,12 +81,18 @@ class SessionManager:
             log.info(f"Created {session_type} session {session_id} with {settings.session_timeout_minutes} minute timeout")
             return dict(session)
     
-    async def get_session(self, session_id: str) -> Optional[Dict[str, Any]]:
+    async def get_session(self, session_id: Union[str, UUID]) -> Optional[Dict[str, Any]]:
         """Get session by ID"""
         async with self.get_connection() as conn:
+            # Ensure session_id is a string for database query
+            if isinstance(session_id, UUID):
+                session_id_str = str(session_id)
+            else:
+                session_id_str = session_id
+                
             session = await conn.fetchrow(
                 "SELECT * FROM sessions WHERE id = $1",
-                session_id
+                session_id_str
             )
             if session:
                 result = dict(session)
@@ -95,13 +103,6 @@ class SessionManager:
                             result[field] = json.loads(result[field])
                         except:
                             result[field] = [] if field in ['conversation_history', 'fixes_applied'] else {}
-                
-                # Map database column names to API names for consistency
-                if 'mr_url' in result:
-                    result['merge_request_url'] = result['mr_url']
-                if 'mr_id' in result:
-                    result['merge_request_id'] = result['mr_id']
-                    
                 return result
             return None
     
@@ -112,9 +113,9 @@ class SessionManager:
             return None
         
         return SessionContext(
-            session_id=session_id,
+            session_id=str(session_id),  # Ensure it's a string
             session_type=session['session_type'],
-            project_id=session['project_id'],
+            project_id=str(session['project_id']),  # Ensure it's a string
             project_name=session.get('project_name'),
             pipeline_id=session.get('pipeline_id'),
             pipeline_url=session.get('pipeline_url'),
@@ -124,7 +125,7 @@ class SessionManager:
             job_name=session.get('job_name'),
             sonarqube_key=session.get('webhook_data', {}).get('project', {}).get('key'),
             quality_gate_status=session.get('quality_gate_status'),
-            gitlab_project_id=session.get('project_id'),
+            gitlab_project_id=str(session.get('project_id')),  # Ensure it's a string
             created_at=session.get('created_at'),
             webhook_data=session.get('webhook_data', {})
         )
@@ -164,10 +165,16 @@ class SessionManager:
     async def add_message(self, session_id: str, role: str, content: str):
         """Add message to conversation history"""
         async with self.get_connection() as conn:
+            # Ensure session_id is a string for database query
+            if isinstance(session_id, UUID):
+                session_id_str = str(session_id)
+            else:
+                session_id_str = session_id
+                
             # Get current history
             current = await conn.fetchval(
                 "SELECT conversation_history FROM sessions WHERE id = $1",
-                session_id
+                session_id_str
             )
             
             history = json.loads(current) if current else []
@@ -185,13 +192,19 @@ class SessionManager:
                     updated_at = CURRENT_TIMESTAMP
                 WHERE id = $1
                 """,
-                session_id, json.dumps(history)
+                session_id_str, json.dumps(history)
             )
             log.debug(f"Added {role} message to session {session_id}")
     
     async def store_tracked_file(self, session_id: str, file_path: str, content: Optional[str], status: str = "success"):
         """Store a tracked file in the database"""
         async with self.get_connection() as conn:
+            # Ensure session_id is a string for database query
+            if isinstance(session_id, UUID):
+                session_id_str = str(session_id)
+            else:
+                session_id_str = session_id
+                
             await conn.execute(
                 """
                 INSERT INTO tracked_files (session_id, file_path, tracked_content, status, metadata)
@@ -203,13 +216,19 @@ class SessionManager:
                     last_modified = CURRENT_TIMESTAMP,
                     metadata = $5
                 """,
-                session_id, file_path, content, status, json.dumps({})
+                session_id_str, file_path, content, status, json.dumps({})
             )
             log.info(f"Stored tracked file {file_path} (status: {status}) for session {session_id}")
     
     async def get_tracked_files(self, session_id: str) -> Dict[str, Any]:
         """Get all tracked files for a session"""
         async with self.get_connection() as conn:
+            # Ensure session_id is a string for database query
+            if isinstance(session_id, UUID):
+                session_id_str = str(session_id)
+            else:
+                session_id_str = session_id
+                
             files = await conn.fetch(
                 """
                 SELECT file_path, tracked_content, status, tracked_at, metadata
@@ -217,13 +236,13 @@ class SessionManager:
                 WHERE session_id = $1
                 ORDER BY tracked_at DESC
                 """,
-                session_id
+                session_id_str
             )
             
             result = {}
             for file in files:
                 result[file['file_path']] = {
-                    'content': file['tracked_content'],
+                    'tracked_content': file['tracked_content'],  # Fix key name
                     'status': file['status'],
                     'tracked_at': file['tracked_at'].isoformat() if file['tracked_at'] else None,
                     'metadata': json.loads(file['metadata']) if file['metadata'] else {}
@@ -234,25 +253,24 @@ class SessionManager:
         """Create a new fix attempt record"""
         branch_name = branch_name.strip()
         async with self.get_connection() as conn:
-            # Ensure session_id is properly formatted
-            import uuid
-            if isinstance(session_id, str):
-                session_uuid = uuid.UUID(session_id)
+            # Ensure session_id is a string for database query
+            if isinstance(session_id, UUID):
+                session_id_str = str(session_id)
             else:
-                session_uuid = session_id
+                session_id_str = session_id
             
             # Use transaction for atomicity
             async with conn.transaction():
                 # Lock the session row to prevent concurrent modifications
                 await conn.execute(
                     "SELECT id FROM sessions WHERE id = $1 FOR UPDATE",
-                    session_uuid
+                    session_id_str
                 )
                 
                 # Now get the current iteration count
                 current_iteration = await conn.fetchval(
                     "SELECT COALESCE(MAX(attempt_number), 0) FROM fix_attempts WHERE session_id = $1",
-                    session_uuid
+                    session_id_str
                 )
                 
                 new_attempt = current_iteration + 1
@@ -268,7 +286,7 @@ class SessionManager:
                     INSERT INTO fix_attempts (session_id, attempt_number, branch_name, files_changed, status)
                     VALUES ($1, $2, $3, $4, 'pending')
                     """,
-                    session_uuid, new_attempt, branch_name, json.dumps(files_changed)
+                    session_id_str, new_attempt, branch_name, json.dumps(files_changed)
                 )
                 
                 # Update session
@@ -278,7 +296,7 @@ class SessionManager:
                     SET current_fix_branch = $2, fix_iteration = $3
                     WHERE id = $1
                     """,
-                    session_uuid, branch_name, new_attempt
+                    session_id_str, branch_name, new_attempt
                 )
             
             log.info(f"Created fix attempt #{new_attempt} for session {session_id}")
@@ -289,12 +307,14 @@ class SessionManager:
                                 error_details: Optional[str] = None):
         """Update fix attempt status"""
         async with self.get_connection() as conn:
-            # Ensure session_id is properly formatted
-            import uuid
-            if isinstance(session_id, str):
-                session_uuid = uuid.UUID(session_id)
+            # Ensure session_id is a string for database query
+            if isinstance(session_id, UUID):
+                session_id_str = str(session_id)
             else:
-                session_uuid = session_id
+                session_id_str = session_id
+                
+            # Ensure mr_id is a string if provided
+            mr_id_str = str(mr_id) if mr_id is not None else None
                 
             await conn.execute(
                 """
@@ -306,7 +326,7 @@ class SessionManager:
                     completed_at = CASE WHEN $3 IN ('success', 'failed') THEN CURRENT_TIMESTAMP ELSE NULL END
                 WHERE session_id = $1 AND attempt_number = $2
                 """,
-                session_uuid, attempt_number, status, mr_id, mr_url, error_details
+                session_id_str, attempt_number, status, mr_id_str, mr_url, error_details
             )
             
             # Update session MR info if successful
@@ -317,7 +337,7 @@ class SessionManager:
                     SET merge_request_url = $2, merge_request_id = $3
                     WHERE id = $1
                     """,
-                    session_uuid, mr_url, mr_id
+                    session_id_str, mr_url, mr_id_str
                 )
             
             log.info(f"Updated fix attempt #{attempt_number} for session {session_id}: status={status}")
@@ -413,16 +433,19 @@ class SessionManager:
     
     async def update_session_metadata(self, session_id: str, metadata: Dict[str, Any]):
         """Update session metadata"""
-        # Ensure session_id is string
-        session_id = str(session_id)
-        
         async with self.get_connection() as conn:
+            # Ensure session_id is a string for database query
+            if isinstance(session_id, UUID):
+                session_id_str = str(session_id)
+            else:
+                session_id_str = session_id
+                
             # Handle webhook_data specially to merge it
             if "webhook_data" in metadata:
                 # Get current webhook_data
                 current = await conn.fetchval(
                     "SELECT webhook_data FROM sessions WHERE id = $1",
-                    session_id
+                    session_id_str
                 )
                 current_data = json.loads(current) if current else {}
                 
@@ -436,7 +459,7 @@ class SessionManager:
             
             # Build update query
             updates = []
-            params = [session_id]
+            params = [session_id_str]
             param_num = 2
             
             for key, value in metadata.items():
@@ -474,8 +497,31 @@ class SessionManager:
     
     async def update_quality_metrics(self, session_id: str, metrics: Dict[str, Any]):
         """Update quality metrics for a session"""
+        log.info(f"=== UPDATE_QUALITY_METRICS CALLED ===")
+        log.info(f"Session ID: {session_id}")
+        log.info(f"Metrics received: {metrics}")
+        
         async with self.get_connection() as conn:
-            await conn.execute(
+            # Check if session exists first
+            existing = await conn.fetchval("SELECT id FROM sessions WHERE id = $1", session_id)
+            log.info(f"Session exists in DB: {existing is not None}")
+            
+            if not existing:
+                log.error(f"Session {session_id} not found in database!")
+                return
+            
+            # Log the actual values being passed to the query
+            total_issues = metrics.get("total_issues", 0)
+            bug_count = metrics.get("bug_count", 0)
+            vulnerability_count = metrics.get("vulnerability_count", 0)
+            code_smell_count = metrics.get("code_smell_count", 0)
+            critical_issues = metrics.get("critical_issues", 0)
+            major_issues = metrics.get("major_issues", 0)
+            
+            log.info(f"SQL params: total_issues={total_issues}, bug_count={bug_count}, vulnerability_count={vulnerability_count}")
+            log.info(f"SQL params: code_smell_count={code_smell_count}, critical_issues={critical_issues}, major_issues={major_issues}")
+            
+            result = await conn.execute(
                 """
                 UPDATE sessions 
                 SET total_issues = $2,
@@ -494,12 +540,12 @@ class SessionManager:
                 WHERE id = $1
                 """,
                 session_id,
-                metrics.get("total_issues", 0),
-                metrics.get("critical_issues", 0),
-                metrics.get("major_issues", 0),
-                metrics.get("bug_count", 0),
-                metrics.get("vulnerability_count", 0),
-                metrics.get("code_smell_count", 0),
+                total_issues,
+                critical_issues,
+                major_issues,
+                bug_count,
+                vulnerability_count,
+                code_smell_count,
                 metrics.get("coverage"),
                 metrics.get("duplicated_lines_density"),
                 metrics.get("reliability_rating", "E")[:1],
@@ -507,6 +553,16 @@ class SessionManager:
                 metrics.get("maintainability_rating", "E")[:1],
                 json.dumps({"quality_metrics": metrics})
             )
+            
+            log.info(f"UPDATE query executed, result: {result}")
+            
+            # Verify the update worked
+            verify = await conn.fetchrow(
+                "SELECT total_issues, bug_count, vulnerability_count, code_smell_count FROM sessions WHERE id = $1", 
+                session_id
+            )
+            log.info(f"Verification query result: {dict(verify) if verify else 'No result'}")
+            
             log.info(f"Updated quality metrics for session {session_id}")
     
     async def mark_session_resolved(self, session_id: str):

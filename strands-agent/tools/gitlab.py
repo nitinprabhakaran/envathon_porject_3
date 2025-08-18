@@ -7,9 +7,6 @@ from utils.logger import log
 from config import settings
 from urllib.parse import quote
 
-# Import local branch naming utilities
-from utils.branch_naming import generate_branch_name
-
 async def get_gitlab_client():
     """Create GitLab API client"""
     headers = {"PRIVATE-TOKEN": settings.gitlab_token} if settings.gitlab_token else {}
@@ -38,14 +35,25 @@ def truncate_log(log_content: str, max_size: int = settings.max_log_size) -> str
 
 @tool
 async def get_pipeline_jobs(pipeline_id: str, project_id: str) -> List[Dict[str, Any]]:
-    """Get all jobs in a pipeline with their status
+    """Get all jobs in a pipeline to identify which ones failed and their status.
+    
+    Essential first step in pipeline failure analysis. Use this to discover
+    which specific jobs failed and need detailed investigation.
     
     Args:
-        pipeline_id: GitLab pipeline ID
-        project_id: GitLab project ID
+        pipeline_id: GitLab pipeline ID from the webhook
+        project_id: GitLab numeric project ID
     
     Returns:
-        List of jobs with status, stage, and timing information
+        List of job dictionaries with status, stage, name, and timing information
+        Look for jobs with status='failed' to identify failure points
+        
+    Job Properties:
+        - id: Job ID (use with get_job_logs)
+        - name: Job name (e.g., 'build', 'test', 'sonarqube-check')
+        - stage: Pipeline stage (e.g., 'build', 'test', 'quality')
+        - status: 'success', 'failed', 'running', etc.
+        - started_at, finished_at: Timing information
     """
     log.info(f"Getting jobs for pipeline {pipeline_id} in project {project_id}")
     
@@ -62,15 +70,23 @@ async def get_pipeline_jobs(pipeline_id: str, project_id: str) -> List[Dict[str,
 
 @tool
 async def get_job_logs(job_id: str, project_id: str, max_size: Optional[int] = None) -> str:
-    """Get logs for a specific pipeline job
+    """Get execution logs from a specific GitLab CI/CD job for failure analysis.
+    
+    Essential for diagnosing pipeline failures - provides detailed error messages,
+    compilation errors, test failures, and other diagnostic information.
     
     Args:
-        job_id: GitLab job ID
-        project_id: GitLab project ID
-        max_size: Maximum log size in characters (default: 50000)
+        job_id: GitLab job ID (numeric string)
+        project_id: GitLab numeric project ID
+        max_size: Maximum log size in characters (default: 30000 for context efficiency)
     
     Returns:
-        Job log content as text (truncated if too large)
+        Job log content as text, truncated if necessary to fit context limits
+        
+    Usage Tips:
+        - Always specify max_size=30000 for large logs to prevent context overflow
+        - Focus on error messages and failure indicators in the returned logs
+        - Look for compilation errors, test failures, or configuration issues
     """
     log.info(f"Getting logs for job {job_id} in project {project_id}")
     
@@ -97,16 +113,25 @@ async def get_job_logs(job_id: str, project_id: str, max_size: Optional[int] = N
             return f"Error getting job logs: {str(e)}"
 
 @tool
-async def get_file_content(file_path: str, project_id: str, ref: str = "HEAD") -> Dict[str, Any]:
-    """Get content of a file from GitLab repository
+async def get_file_content(file_path: str, project_id: str, ref: str = "HEAD") -> str:
+    """Retrieve source code files to understand project structure and identify issues.
+    
+    Use this to examine configuration files, source code, and other project files
+    when analyzing failures or preparing fixes.
     
     Args:
-        file_path: Path to file in repository
-        project_id: GitLab project ID
-        ref: Git reference (branch, tag, or commit SHA)
+        file_path: Repository file path (e.g., 'src/main/App.java', '.gitlab-ci.yml', 'package.json')
+        project_id: GitLab numeric project ID
+        ref: Git reference - branch, tag, or commit SHA (default: "HEAD" for latest)
     
     Returns:
-        Dictionary with 'status' and either 'content' or 'error'
+        File content as string, or error message if file not found
+        
+    Common Files to Examine:
+        - CI/CD configs: '.gitlab-ci.yml', 'Jenkinsfile'
+        - Dependencies: 'package.json', 'pom.xml', 'requirements.txt'
+        - Config files: 'sonar-project.properties', 'Dockerfile'
+        - Source code: Files mentioned in error logs
     """
     log.info(f"Getting file {file_path} from project {project_id} at ref {ref}")
     
@@ -122,18 +147,15 @@ async def get_file_content(file_path: str, project_id: str, ref: str = "HEAD") -
             if response.status_code == 404:
                 # File doesn't exist
                 log.info(f"File {file_path} not found in project {project_id}")
-                return {
-                    "status": "not_found",
-                    "error": f"File '{file_path}' does not exist in the repository",
-                    "file_path": file_path
-                }
+                return f"Error: File '{file_path}' does not exist in the repository"
             
             if response.status_code == 200:
-                return {
-                    "status": "success",
-                    "content": response.text,
-                    "file_path": file_path
-                }
+                # Return content directly for Bedrock API compatibility
+                content = response.text
+                if len(content) > 50000:  # Limit very large files
+                    content = content[:50000] + "\n... [File truncated due to size]"
+                
+                return content
             
             # Try alternative API endpoint
             url = f"/projects/{project_id}/repository/files/{encoded_path}"
@@ -141,32 +163,26 @@ async def get_file_content(file_path: str, project_id: str, ref: str = "HEAD") -
             
             if response.status_code == 404:
                 log.info(f"File {file_path} not found in project {project_id}")
-                return {
-                    "status": "not_found",
-                    "error": f"File '{file_path}' does not exist in the repository",
-                    "file_path": file_path
-                }
+                return f"Error: File '{file_path}' does not exist in the repository"
                 
             if response.status_code == 200:
                 # Decode base64 content
                 import base64
                 data = response.json()
                 content = base64.b64decode(data['content']).decode('utf-8')
-                return {
-                    "status": "success",
-                    "content": content,
-                    "file_path": file_path
-                }
+                
+                # Return content directly for Bedrock API compatibility
+                if len(content) > 50000:  # Limit very large files
+                    content = content[:50000] + "\n... [File truncated due to size]"
+                
+                return content
             
             response.raise_for_status()
+            return f"Error: HTTP {response.status_code} getting file content"
             
         except Exception as e:
             log.error(f"Failed to get file content: {e}")
-            return {
-                "status": "error",
-                "error": str(e),
-                "file_path": file_path
-            }
+            return f"Error getting file content: {str(e)}"
 
 @tool
 async def get_recent_commits(project_id: str, limit: int = 10) -> List[Dict[str, Any]]:
@@ -199,20 +215,18 @@ async def create_merge_request(
     description: str,
     files: Dict[str, Any],
     project_id: str,
-    session_id: str,
-    session_type: str,  # 'pipeline' or 'quality'
+    source_branch: str,
     target_branch: str = "main",
     update_mode: bool = False
 ) -> Dict[str, Any]:
-    """Create or update a merge request with file changes using standardized branch naming
+    """Create or update a merge request with file changes
     
     Args:
         title: MR title
         description: MR description
         files: Dict with 'updates' and 'creates' keys, each containing file paths and content
         project_id: GitLab project ID
-        session_id: Session UUID for branch naming
-        session_type: Type of session ('pipeline' or 'quality') for branch naming
+        source_branch: Source branch name
         target_branch: Target branch (default: main)
         update_mode: If True, commits to existing branch without creating it
     
@@ -220,41 +234,26 @@ async def create_merge_request(
         Dictionary with MR details or error information
     """
     
-    # Generate standardized branch name using session ID
-    try:
-        source_branch = generate_branch_name(session_id, session_type)
-        log.info(f"Generated branch name: {source_branch} for session {session_id}")
-    except Exception as e:
-        log.error(f"Failed to generate branch name for session {session_id}: {e}")
-        return {"error": f"Invalid session ID format: {e}"}
-    
     async with await get_gitlab_client() as client:
         try:
-            # Check if branch exists
+            # Check if branch exists with proper encoding
             branch_exists = False
             try:
-                branch_check = await client.get(f"/projects/{project_id}/repository/branches/{source_branch}")
+                encoded_branch = quote(source_branch, safe='')
+                branch_check = await client.get(f"/projects/{project_id}/repository/branches/{encoded_branch}")
                 if branch_check.status_code == 200:
                     branch_exists = True
                     log.info(f"Branch {source_branch} exists")
-            except:
+                else:
+                    log.debug(f"Branch {source_branch} does not exist (status: {branch_check.status_code})")
+            except Exception as e:
                 log.debug(f"Branch check for {source_branch}: {e}")
                 branch_exists = False
             
             # If in update mode, we expect the branch to exist
             if update_mode and not branch_exists:
-                try:
-                    encoded_branch = quote(source_branch, safe='')
-                    branch_check = await client.get(f"/projects/{project_id}/repository/branches/{encoded_branch}")
-                    if branch_check.status_code == 200:
-                        branch_exists = True
-                        log.info(f"Branch {source_branch} exists (found with encoding)")
-                except:
-                    pass
-
-                if not branch_exists:
-                    log.error(f"Update mode requested but branch {source_branch} doesn't exist")
-                    return {"error": f"Branch {source_branch} not found for update"}
+                log.error(f"Update mode requested but branch {source_branch} doesn't exist")
+                return {"error": f"Branch {source_branch} not found for update"}
                 
             if update_mode:
                 log.info(f"Updating existing branch {source_branch}")
@@ -320,7 +319,7 @@ async def create_merge_request(
             # Prepare commit - key fix is here
             commit_data = {
                 "branch": source_branch,
-                "commit_message": f"Fix: {title} (Session: {session_id})",
+                "commit_message": f"Fix: {title}",
                 "actions": actions
             }
             
@@ -342,7 +341,6 @@ async def create_merge_request(
                     "files_processed": files_processed,
                     "branch_exists": branch_exists,
                     "update_mode": update_mode,
-                    "session_id": session_id,
                     "generated_branch": source_branch
                 }
             
@@ -368,8 +366,7 @@ async def create_merge_request(
                             "message": "Updated existing merge request",
                             "branch": source_branch,
                             "files_processed": files_processed,
-                            "commit_sha": commit_sha,
-                            "session_id": session_id
+                            "commit_sha": commit_sha
                         }
                 
                 # No existing MR but branch exists
@@ -378,16 +375,13 @@ async def create_merge_request(
                     "branch": source_branch,
                     "files_processed": files_processed,
                     "commit_sha": commit_sha,
-                    "info": "No merge request found for this branch",
-                    "session_id": session_id
+                    "info": "No merge request found for this branch"
                 }
             
             else:
                 # New branch, create MR
                 mr_description = (
                     f"{description}\n\n"
-                    f"**Session ID:** `{session_id}`\n"
-                    f"**Session Type:** {session_type}\n"
                     f"**Files changed:**\n" + "\n".join(f"- {fp}" for fp in files_processed)
                 )
                 
@@ -407,12 +401,11 @@ async def create_merge_request(
                     return {
                         "error": f"MR creation failed: {mr_response.text}",
                         "branch": source_branch,
-                        "commit_sha": commit_sha,
-                        "session_id": session_id
+                        "commit_sha": commit_sha
                     }
                 
                 mr_data = mr_response.json()
-                log.info(f"Created new MR !{mr_data.get('iid')} for session {session_id}")
+                log.info(f"Created new MR !{mr_data.get('iid')}")
                 return {
                     "id": mr_data.get("iid"),
                     "web_url": mr_data.get("web_url"),
@@ -420,23 +413,30 @@ async def create_merge_request(
                     "source_branch": source_branch,
                     "target_branch": target_branch,
                     "files_processed": files_processed,
-                    "commit_sha": commit_sha,
-                    "session_id": session_id
+                    "commit_sha": commit_sha
                 }
                 
         except Exception as e:
             log.error(f"Failed to create/update merge request: {e}", exc_info=True)
-            return {"error": str(e), "session_id": session_id}
+            return {"error": str(e)}
 
 @tool
 async def get_project_info(project_id: str) -> Dict[str, Any]:
-    """Get project information
+    """Get basic project information and metadata from GitLab.
+    
+    Useful for understanding project context, default branch, and basic settings.
     
     Args:
-        project_id: GitLab project ID
+        project_id: GitLab numeric project ID (not project name)
     
     Returns:
-        Project details
+        Project details including name, description, default_branch, web_url, etc.
+        Returns error dict if project not found or access denied
+        
+    Common Use Cases:
+        - Verify project exists and is accessible
+        - Get default branch name for file operations
+        - Understand project context and settings
     """
     log.info(f"Getting info for project {project_id}")
     

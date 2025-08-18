@@ -163,7 +163,7 @@ with tab1:
                     }
                     
                     # Call webhook-handler subscription API
-                    response = st.session_state.api_client.create_subscription(subscription_data)
+                    response = asyncio.run(st.session_state.api_client.create_subscription(subscription_data))
                     
                     st.success("✅ Subscription created successfully!")
                     

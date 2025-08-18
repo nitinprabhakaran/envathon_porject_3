@@ -25,8 +25,6 @@ if "selected_failure" not in st.session_state:
     st.session_state.selected_failure = None
 if "failure_groups" not in st.session_state:
     st.session_state.failure_groups = {}
-if "show_chat" not in st.session_state:
-    st.session_state.show_chat = {}
 if "messages" not in st.session_state:
     st.session_state.messages = {}
 
@@ -221,7 +219,7 @@ with col2:
                             st.caption(f"Status: {attempt.get('status', 'pending')}")
             
             # Action buttons - Smart logic based on fix attempts
-            col_btn1, col_btn2, col_btn3 = st.columns([1, 1, 2])
+            col_btn1, col_btn3 = st.columns([1, 3])
             
             mr_url = full_session.get("merge_request_url")
             
@@ -280,10 +278,6 @@ with col2:
                 else:
                     st.link_button("📄 View MR", mr_url, use_container_width=True)
             
-            with col_btn2:
-                if st.button("💬 Ask Question", use_container_width=True):
-                    st.session_state.show_chat[session_id] = not st.session_state.show_chat.get(session_id, False)
-            
             st.divider()
             
             # Always show conversation history
@@ -298,28 +292,35 @@ with col2:
                         with st.chat_message(msg["role"]):
                             content = parse_message_content(msg.get("content", ""))
                             st.markdown(content)
+
+            # Integrated chat input at the bottom (always visible)
+            st.divider()
+            st.markdown("### 💬 Chat with Pipeline Assistant")
             
-            # Chat input interface (only shown when chat button is clicked)
-            if st.session_state.show_chat.get(session_id):
-                st.divider()
-                if prompt := st.chat_input("Ask about this failure..."):
-                    # Add user message
-                    with st.chat_message("user"):
-                        st.write(prompt)
-                    
-                    # Get response
-                    with st.chat_message("assistant"):
-                        with st.spinner("Thinking..."):
+            if prompt := st.chat_input("Ask about this pipeline failure or request specific fixes..."):
+                # Add user message to the display immediately
+                with st.chat_message("user"):
+                    st.write(prompt)
+                
+                # Get response from agent
+                with st.chat_message("assistant"):
+                    with st.spinner("Analyzing..."):
+                        try:
                             response = asyncio.run(
                                 st.session_state.api_client.send_message(session_id, prompt)
                             )
                             response_text = parse_message_content(response.get("response", ""))
-                            st.write(response_text)
+                            st.markdown(response_text)
                             
+                            # Show success message if MR was created/updated
                             if response.get("merge_request_url"):
-                                st.success(f"✅ MR Created: {response['merge_request_url']}")
-                    
-                    st.rerun()
+                                st.success(f"✅ MR Updated: {response['merge_request_url']}")
+                                
+                        except Exception as e:
+                            st.error(f"Failed to get response: {e}")
+                
+                # Refresh to show the new messages in conversation history
+                st.rerun()
         
         except Exception as e:
             st.error(f"Failed to load session details: {e}")
@@ -432,32 +433,77 @@ with col3:
     if st.session_state.selected_failure:
         session = st.session_state.selected_failure
         
-        st.subheader("Analysis & Chat")
+        st.subheader("Pipeline Details")
         
-        # Session metadata
-        st.markdown("**Pipeline Details:**")
-        st.caption(f"Pipeline: #{session.get('pipeline_id', 'N/A')}")
-        st.caption(f"Stage: {session.get('failed_stage', 'N/A')}")
-        st.caption(f"Job: {session.get('job_name', 'N/A')}")
+        # Pipeline information breakdown
+        st.markdown("**Pipeline Information:**")
+        pipeline_id = session.get('pipeline_id', 'N/A')
+        st.caption(f"🔧 Pipeline: #{pipeline_id}")
+        
+        pipeline_status = session.get('pipeline_status', 'failed')
+        status_emoji = "🔴" if pipeline_status == "failed" else "🟡" if pipeline_status == "running" else "🟢"
+        st.caption(f"{status_emoji} Status: {pipeline_status.title()}")
+        
+        failed_stage = session.get('failed_stage', 'N/A')
+        st.caption(f"📍 Failed Stage: {failed_stage}")
+        
+        job_name = session.get('job_name', 'N/A')
+        st.caption(f"⚙️ Failed Job: {job_name}")
+        
+        # Branch and commit information
+        st.markdown("**Repository Details:**")
+        branch = session.get('branch', 'N/A')
+        st.caption(f"🌿 Branch: {branch}")
+        
+        commit_sha = session.get('commit_sha', 'N/A')
+        if commit_sha != 'N/A' and len(commit_sha) > 8:
+            short_sha = commit_sha[:8]
+            st.caption(f"📝 Commit: {short_sha}")
+        else:
+            st.caption(f"📝 Commit: {commit_sha}")
+        
+        # Project information
+        project_name = session.get('project_name', 'N/A')
+        project_id = session.get('project_id', 'N/A')
+        st.caption(f"📁 Project: {project_name}")
+        st.caption(f"🆔 Project ID: {project_id}")
+        
+        # Build execution details
+        webhook_data = session.get('webhook_data', {})
+        if webhook_data.get('builds'):
+            st.markdown("**Build Execution:**")
+            failed_builds = [build for build in webhook_data['builds'] if build.get('status') == 'failed']
+            skipped_builds = [build for build in webhook_data['builds'] if build.get('status') == 'skipped']
+            
+            st.caption(f"❌ Failed Jobs: {len(failed_builds)}")
+            st.caption(f"⏩ Skipped Jobs: {len(skipped_builds)}")
+            
+            # Show execution time if available
+            for build in failed_builds:
+                if build.get('duration'):
+                    duration = round(build['duration'], 1)
+                    st.caption(f"⏱️ Execution Time: {duration}s")
+                    break
         
         # Fix attempts info
         fix_attempts = session.get("webhook_data", {}).get("fix_attempts", [])
         if fix_attempts:
             st.markdown("**Fix Information:**")
-            st.caption(f"Iterations: {len(fix_attempts)}/5")
+            st.caption(f"🔄 Iterations: {len(fix_attempts)}/5")
             
             successful = [att for att in fix_attempts if att.get("status") == "success"]
             if successful:
                 st.success(f"✅ {len(successful)} successful fix(es)")
             
-            st.caption(f"Current Branch: {fix_attempts[-1]['branch']}")
+            current_branch = fix_attempts[-1].get('branch', 'N/A')
+            st.caption(f"🌿 Current Branch: {current_branch}")
         
         # Session timing
         st.markdown("**Session Info:**")
         created_at = session.get('created_at')
         if created_at:
             created_time = datetime.fromisoformat(created_at.replace('Z', '+00:00'))
-            st.caption(f"Created: {created_time.strftime('%b %d, %H:%M')}")
+            st.caption(f"📅 Created: {created_time.strftime('%b %d, %H:%M')}")
         
         time_remaining = calculate_time_remaining(session.get('expires_at'))
         if time_remaining == "Expired":
@@ -465,8 +511,10 @@ with col3:
         else:
             st.caption(f"⏰ Expires in: {time_remaining}")
         
+        # Action buttons
+        st.markdown("**Actions:**")
         if url := session.get('pipeline_url'):
-            st.link_button("View in GitLab", url, use_container_width=True)
+            st.link_button("🔗 View in GitLab", url, use_container_width=True)
     
     else:
         st.info("👈 Select a failure from the project list to view details and start analysis")

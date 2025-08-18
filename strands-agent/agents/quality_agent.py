@@ -5,21 +5,14 @@ from typing import Dict, Any, List
 import json
 from utils.logger import log
 from .base_agent import BaseAnalysisAgent
-from .prompts import get_quality_system_prompt
-from agents.tool_registry import tool_registry
+from .prompts import (
+    get_quality_system_prompt, 
+    get_quality_failure_analysis_prompt,
+    get_quality_comprehensive_analysis_prompt,
+    get_quality_fallback_analysis_prompt
+)
+from tools.tool_registry import tool_registry
 from utils.context_extractor import ContextExtractor
-from tools.sonarqube import (
-    get_project_quality_gate_status,
-    get_project_issues,
-    get_project_metrics,
-    get_issue_details,
-    get_rule_description
-)
-from tools.gitlab import (
-    get_file_content,
-    create_merge_request,
-    get_project_info
-)
 
 
 class QualityAgent(BaseAnalysisAgent):
@@ -32,7 +25,20 @@ class QualityAgent(BaseAnalysisAgent):
         return get_quality_system_prompt(capabilities)
     
     def create_session_aware_create_mr_tool(self, session_id: str, project_id: str):
-        """Create a session-aware merge request creation tool"""
+        """Create a session-aware merge request creation tool that uses tracked files"""
+        
+        # Get create_merge_request from tool registry
+        gitlab_tools = tool_registry.get_tools_for_category("gitlab")
+        create_merge_request = None
+        for tool_obj in gitlab_tools:
+            if hasattr(tool_obj, '__name__') and tool_obj.__name__ == 'create_merge_request':
+                create_merge_request = tool_obj
+                break
+        
+        if not create_merge_request:
+            # Fallback: import directly if not found in registry
+            from tools.gitlab import create_merge_request
+        
         @tool
         async def create_merge_request_for_session(
             title: str,
@@ -43,27 +49,93 @@ class QualityAgent(BaseAnalysisAgent):
         ) -> Dict[str, Any]:
             """Create or update a merge request with file changes for this session
             
+            This function will automatically integrate tracked files from the session if no files are provided.
+            
             Args:
                 title: MR title
                 description: MR description
-                files: Dict with 'updates' and 'creates' keys, each containing file paths and content
+                files: Dict with 'updates' and 'creates' keys, each containing file paths and content.
+                       If empty, will use tracked files from the session.
                 target_branch: Target branch (default: main)
                 update_mode: If True, commits to existing branch without creating it
             
             Returns:
                 Dictionary with MR details or error information
             """
-            # Call the original tool with session context
-            return await create_merge_request(
-                title=title,
-                description=description,
-                files=files,
-                project_id=project_id,
-                session_id=session_id,
-                session_type="quality",  # This is a quality agent
-                target_branch=target_branch,
-                update_mode=update_mode
-            )
+            try:
+                # If no files provided, get tracked files from session
+                if not files or (not files.get("updates") and not files.get("creates")):
+                    log.info(f"No files provided, retrieving tracked files for session {session_id}")
+                    tracked_files = await self._session_manager.get_tracked_files(session_id)
+                    
+                    if tracked_files:
+                        log.info(f"Found {len(tracked_files)} tracked files for session {session_id}")
+                        files = {"updates": {}, "creates": {}}
+                        
+                        for file_path, file_data in tracked_files.items():
+                            if file_data.get("status") == "success" and file_data.get("tracked_content"):
+                                files["updates"][file_path] = file_data["tracked_content"]
+                                log.info(f"Added tracked file to MR: {file_path}")
+                    else:
+                        log.warning(f"No tracked files found for session {session_id}")
+                        return {
+                            "error": "No files provided and no tracked files found in session. Please retrieve and analyze files first.",
+                            "tracked_files_count": 0
+                        }
+                
+                # Generate branch name using the session context
+                from utils.branch_naming import generate_branch_name
+                try:
+                    source_branch = generate_branch_name(session_id, "quality")
+                    log.info(f"Generated branch name: {source_branch} for session {session_id}")
+                except Exception as e:
+                    log.error(f"Failed to generate branch name for session {session_id}: {e}")
+                    return {"error": f"Invalid session ID format: {e}"}
+                
+                # Create fix attempt record
+                fix_attempts = await self._session_manager.get_fix_attempts(session_id)
+                attempt_number = await self._session_manager.create_fix_attempt(
+                    session_id, 
+                    source_branch, 
+                    list(files.get("updates", {}).keys()) + list(files.get("creates", {}).keys())
+                )
+                
+                log.info(f"Created fix attempt #{attempt_number} for session {session_id}")
+                
+                # Call the original tool with session context
+                result = await create_merge_request(
+                    title=title,
+                    description=description,
+                    files=files,
+                    project_id=project_id,
+                    source_branch=source_branch,
+                    target_branch=target_branch,
+                    update_mode=update_mode
+                )
+                
+                # Update fix attempt with MR details if successful
+                if result.get("web_url"):
+                    await self._session_manager.update_fix_attempt(
+                        session_id,
+                        attempt_number,
+                        "pending",  # Will be updated by webhook when pipeline runs
+                        result.get("id"),
+                        result.get("web_url")
+                    )
+                    
+                    # Store MR URL in session for UI
+                    session_data = await self._session_manager.get_session(session_id)
+                    if session_data:
+                        await self._session_manager.update_session_metadata(
+                            session_id,
+                            {"merge_request_url": result.get("web_url")}
+                        )
+                
+                return result
+                
+            except Exception as e:
+                log.error(f"Error in session-aware MR creation: {e}", exc_info=True)
+                return {"error": str(e)}
         
         return create_merge_request_for_session
     
@@ -120,24 +192,8 @@ class QualityAgent(BaseAnalysisAgent):
             quality_gate_status = webhook_data.get('qualityGate', {}).get('status', 'ERROR')
             failed_conditions = webhook_data.get('qualityGate', {}).get('conditions', [])
             
-            # Create enhanced prompt with context and tools
-            prompt = f"""Analyze this SonarQube quality gate failure:
-
-Project: {gitlab_project_id} 
-SonarQube Project Key: {sonar_project_key}
-Quality Gate Status: {webhook_data.get('qualityGate', {}).get('status', 'ERROR')}
-
-Quality Gate Conditions that failed:
-{webhook_data.get('qualityGate', {}).get('conditions', [])}
-
-Use the available tools to:
-1. Get current project metrics from SonarQube using project key: {sonar_project_key}
-2. Get all project issues to understand what needs to be fixed
-3. If you can access the files, retrieve the problematic code files
-4. Provide specific fixes for the quality issues found
-
-Focus on the most critical issues first: security vulnerabilities, bugs, and critical code smells.
-"""
+            # Create analysis prompt using centralized prompts
+            prompt = get_quality_failure_analysis_prompt(sonar_project_key, gitlab_project_id, webhook_data)
 
             # Get tools for quality analysis
             base_tool_objects = tool_registry.get_tools_for_agent("quality", [])
@@ -172,15 +228,34 @@ Focus on addressing the failed quality gate conditions first."""
             # Combine all tools
             all_tool_objects = base_tool_objects + [get_quality_context]
             
+            # Filter out raw create_merge_request and replace with session-aware version
+            filtered_tools = []
+            for tool_obj in all_tool_objects:
+                if hasattr(tool_obj, '__name__') and tool_obj.__name__ == 'create_merge_request':
+                    # Replace with session-aware version
+                    filtered_tools.append(self.create_session_aware_create_mr_tool(session_id))
+                else:
+                    filtered_tools.append(tool_obj)
+            
             # Create agent with enhanced context
             agent = Agent(
                 model=self.model,
                 system_prompt=get_quality_system_prompt(),
-                tools=all_tool_objects
+                tools=filtered_tools
             )
             
             # Create wrapped get_file_content that stores files immediately - WORKING PATTERN
-            from tools.gitlab import get_file_content
+            # Get the original get_file_content from tools
+            gitlab_tools = tool_registry.get_tools_for_category("gitlab")
+            get_file_content = None
+            for tool_obj in gitlab_tools:
+                if hasattr(tool_obj, '__name__') and tool_obj.__name__ == 'get_file_content':
+                    get_file_content = tool_obj
+                    break
+            
+            if not get_file_content:
+                # Fallback: import directly if not found in registry
+                from tools.gitlab import get_file_content
             
             @tool
             async def tracked_get_file_content(file_path: str, project_id: str, ref: str = "HEAD") -> str:
@@ -239,6 +314,9 @@ Focus on addressing the failed quality gate conditions first."""
                 {"analysis_result": result_text}
             )
             
+            # Add the analysis result as an assistant message to conversation history
+            await self._session_manager.add_message(session_id, "assistant", result_text)
+            
             return result_text
             
         except Exception as e:
@@ -280,18 +358,38 @@ Focus on addressing the failed quality gate conditions first."""
                 from utils.context_extractor import ContextExtractor
                 context_tool = ContextExtractor.create_context_tool(session_id, webhook_data, "quality")
             
-            # Create tools list with conditional context tool
-            tools = [
-                get_project_quality_gate_status,
-                get_project_issues,
-                get_project_metrics,
-                get_issue_details,
-                get_rule_description,
+            # Get tools from registry - SonarQube and GitLab tools
+            sonarqube_tools = tool_registry.get_tools_for_category("sonarqube")
+            gitlab_tools = tool_registry.get_tools_for_category("gitlab")
+            
+            # Filter out generic create_merge_request to force use of session-aware version
+            filtered_gitlab_tools = []
+            for tool in gitlab_tools:
+                tool_name = None
+                if hasattr(tool, 'name'):
+                    tool_name = tool.name
+                elif hasattr(tool, '__name__'):
+                    tool_name = tool.__name__
+                
+                # Skip the generic create_merge_request tool
+                if tool_name != "create_merge_request":
+                    filtered_gitlab_tools.append(tool)
+            
+            gitlab_tools = filtered_gitlab_tools
+            
+            # Create tools list with session-specific tools
+            tools = sonarqube_tools + [
                 tracked_get_file_content,
                 session_aware_create_mr,
-                get_project_info,
                 session_data_tool
             ]
+            
+            # Add specific GitLab tools needed for quality agent (excluding create_merge_request)
+            for tool in gitlab_tools:
+                if hasattr(tool, '__name__') and tool.__name__ in ['get_project_info']:
+                    tools.append(tool)
+                elif hasattr(tool, 'name') and tool.name in ['get_project_info', 'get_file_content', 'get_job_logs', 'get_merge_request_details', 'get_pipeline_jobs', 'get_recent_commits']:
+                    tools.append(tool)
             
             if context_tool:
                 tools.append(context_tool)
@@ -334,30 +432,6 @@ Focus on addressing the failed quality gate conditions first."""
             log.error(f"Failed to handle user message: {e}", exc_info=True)
             return f"❌ Failed to process message: {str(e)}"
     
-    def _create_context_aware_prompt(self, webhook_data: Dict[str, Any], prompt_type: str) -> str:
-        """Create context-aware analysis prompts"""
-        if prompt_type == "initial_analysis":
-            return """## 🔍 Quality Gate Analysis
-
-A SonarQube quality gate has failed and requires comprehensive analysis. To get started:
-
-1. **First, get the failure context** using the `get_failure_context` tool to understand:
-   - Project details and SonarQube configuration
-   - Quality gate status and failed conditions
-   - Pipeline information if this came from a pipeline failure
-   - Specific metrics that are failing
-
-2. **Then proceed with detailed analysis**:
-   - Retrieve detailed issues from SonarQube using the project key
-   - Examine the most critical bugs, vulnerabilities, and code smells
-   - Analyze affected files and understand the quality problems
-   - Prioritize fixes based on severity and impact
-   - Provide comprehensive solutions to improve code quality
-
-Start by calling `get_failure_context()` to get all the essential information you need for the analysis."""
-        
-        return "Please analyze the quality gate failure using the available tools."
-    
     # Alias for compatibility
     async def analyze_quality_issues(self, session_id: str, project_key: str, gitlab_project_id: str, webhook_data: Dict[str, Any]) -> str:
         """Analyze quality issues - working version signature with enhanced data handling"""
@@ -378,66 +452,19 @@ Start by calling `get_failure_context()` to get all the essential information yo
                 
                 log.info(f"Using pre-fetched SonarQube data: {total_issues} total issues")
                 
-                # Create comprehensive analysis prompt with the data we have
-                prompt = f"""Analyze this SonarQube quality gate failure with the following comprehensive data:
-
-**Project Information:**
-- SonarQube Project Key: {project_key}
-- GitLab Project ID: {gitlab_project_id}
-- Quality Gate Status: {quality_gate.get('status', 'ERROR')}
-
-**Quality Issues Summary:**
-- Total Issues: {total_issues}
-- Bugs: {len(bugs)}
-- Vulnerabilities: {len(vulnerabilities)}
-- Code Smells: {len(code_smells)}
-- Critical Issues: {sonarqube_data.get("critical_issues", 0)}
-- Major Issues: {sonarqube_data.get("major_issues", 0)}
-
-**Failed Quality Gate Conditions:**
-{quality_gate.get('conditions', [])}
-
-**Detailed Issues Available:**
-You have access to the complete list of issues from SonarQube. Use this information to:
-
-1. Provide a comprehensive quality analysis
-2. Prioritize the most critical issues (bugs and vulnerabilities first)
-3. Explain the specific quality problems and their impact
-4. Suggest concrete remediation steps
-5. If you need specific file content to propose fixes, use get_file_content with the GitLab project ID
-
-**Analysis Instructions:**
-- Focus on the most severe issues first (Critical and High severity)
-- Provide specific code locations and fixes where possible
-- Explain the business impact of each type of issue
-- Give actionable recommendations for remediation
-
-Please provide a detailed quality analysis following the standard quality analysis format."""
+                # Create comprehensive analysis prompt using centralized prompts
+                prompt = get_quality_comprehensive_analysis_prompt(project_key, gitlab_project_id, webhook_data, sonarqube_data)
             
             else:
                 # Fallback to basic analysis with available webhook data
-                prompt = f"""Analyze this SonarQube quality gate failure:
-
-SonarQube Project Key: {project_key}
-GitLab Project ID: {gitlab_project_id}
-Quality Gate Status: {webhook_data.get('qualityGate', {}).get('status', 'ERROR')}
-Failed Conditions: {webhook_data.get('qualityGate', {}).get('conditions', [])}
-
-Analysis approach:
-1. Get project metrics
-2. Get all project issues - they contain file paths in the 'component' field
-3. Extract file paths from the issues and retrieve those specific files
-4. File paths in SonarQube format: "project_key:path/to/file.ext"
-5. Extract the path after the colon for file retrieval
-6. Only create MR if you successfully retrieved files with issues"""
+                prompt = get_quality_fallback_analysis_prompt(project_key, gitlab_project_id, webhook_data)
             
             # Get tools for analysis (GitLab tools for file access)
-            base_tools = self.get_agent_tools(session_id, None, webhook_data)
+            base_tools = tool_registry.get_tools_for_agent("quality", [])
             
             # Add SonarQube tools if we need to fetch additional data
             if not sonarqube_data:
-                from .tool_registry import tool_registry
-                sonarqube_tools = tool_registry.get_tools_for_agent("quality", ["sonarqube"])
+                sonarqube_tools = tool_registry.get_tools_for_category("sonarqube")
                 base_tools.extend(sonarqube_tools)
             
             # Create agent with tools
@@ -583,6 +610,9 @@ Analysis approach:
                 {"analysis_result": result_text}
             )
             
+            # Add the analysis result as an assistant message to conversation history
+            await self._session_manager.add_message(session_id, "assistant", result_text)
+            
             return result_text
             
         except Exception as e:
@@ -600,3 +630,6 @@ Analysis approach:
 
 # Backward compatibility alias
 QualityAnalysisAgent = QualityAgent
+
+# Global instance for imports
+quality_agent = QualityAgent()

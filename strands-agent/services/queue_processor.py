@@ -8,17 +8,16 @@ from datetime import datetime
 from utils.logger import log
 from config import settings
 from db.session_manager import SessionManager
-from agents.pipeline_agent import PipelineAgent
-from agents.quality_agent import QualityAgent
-# from services.vector_store import VectorStore  # To be implemented
+from services.session_continuity import SessionContinuityManager
+# SupervisorAgent will handle intelligent delegation - no need for direct agent imports
 
 class QueueProcessor:
     """Process webhook events from message queue"""
     
     def __init__(self):
         self.session_manager = SessionManager()
-        self.pipeline_agent = PipelineAgent()
-        self.quality_agent = QualityAgent()
+        self.session_continuity = SessionContinuityManager(self.session_manager)
+        # SupervisorAgent handles intelligent delegation - no hardcoded agent instances needed
         # self.vector_store = VectorStore()  # To be implemented
         self.connection = None
         self.channel = None
@@ -382,64 +381,80 @@ class QueueProcessor:
         context: Any,
         data: Dict[str, Any]
     ):
-        """Handle pipeline failure analysis with intelligent quality routing"""
+        """Handle pipeline failure analysis using AWS Strands SupervisorAgent coordination"""
         try:
             webhook_data = data.get("webhook_data", {})
+            project_id = context.project_id
+            pipeline_id = context.pipeline_id
             
-            # Check if webhook-handler already detected quality failure
-            quality_detected_by_handler = data.get("quality_failure_detected", False)
+            log.info(f"Processing pipeline failure with SupervisorAgent for session {session_id}")
             
-            # Also check logs for quality failures as backup
-            quality_in_logs = await self.check_quality_gate_in_logs(context)
+            # Use SupervisorAgent for intelligent coordination following AWS Agent Squad patterns
+            from agents.supervisor_agent import supervisor_agent
             
-            # If either detection method found quality issues, route to quality analysis
-            if quality_detected_by_handler or quality_in_logs:
-                log.info(f"Quality failure detected for session {session_id} (handler: {quality_detected_by_handler}, logs: {quality_in_logs})")
-                
-                # Update session type to quality for UI routing
+            # Build comprehensive failure context for the supervisor
+            failure_context = {
+                "event_type": "pipeline_failure",
+                "pipeline_id": pipeline_id,
+                "project_id": project_id,
+                "session_context": {
+                    "session_id": session_id,
+                    "project_name": getattr(context, 'project_name', 'unknown'),
+                    "sonarqube_key": getattr(context, 'sonarqube_key', None),
+                    "original_failure_type": "pipeline"
+                },
+                "webhook_indicators": {
+                    "quality_detected_by_handler": data.get("quality_failure_detected", False),
+                    "pipeline_stage": webhook_data.get("object_attributes", {}).get("stage", "unknown"),
+                    "pipeline_status": webhook_data.get("object_attributes", {}).get("status", "unknown")
+                }
+            }
+            
+            # Pre-classify the session type for UI routing
+            is_quality_failure = (
+                data.get("quality_failure_detected", False) or
+                "quality" in webhook_data.get("object_attributes", {}).get("stage", "").lower() or
+                "sonar" in webhook_data.get("object_attributes", {}).get("stage", "").lower()
+            )
+            
+            if is_quality_failure:
+                # Mark this as a quality session for proper UI routing
                 await self.session_manager.update_session_metadata(
                     session_id,
                     {"session_type": "quality", "quality_gate_failed": True}
                 )
-                
-                # Run quality analysis with proper project key extraction
-                project_key = context.sonarqube_key or f"{context.project_name}".replace("/", "_")
-                await self.analyze_quality_issues(session_id, context, data)
-                
+                log.info(f"Marked session {session_id} as quality session for UI routing")
             else:
-                log.info(f"Regular pipeline failure detected for session {session_id}")
-                # Run pipeline failure analysis (using working version signature)
-                result = await self.pipeline_agent.analyze_failure(
-                    session_id,
-                    context.project_id,
-                    context.pipeline_id,
-                    webhook_data
-                )
-                
-                # Store analysis result
+                # Mark as pipeline session
                 await self.session_manager.update_session_metadata(
                     session_id,
-                    {"analysis_result": result, "analysis_completed": True}
+                    {"session_type": "pipeline"}
                 )
-                
-        except Exception as e:
-            log.error(f"Pipeline failure analysis failed: {e}")
-            await self.session_manager.update_session_metadata(
+                log.info(f"Marked session {session_id} as pipeline session for UI routing")
+            
+            log.info(f"Delegating to SupervisorAgent for intelligent failure analysis coordination")
+            
+            # Let the SupervisorAgent coordinate the analysis using agent-as-tools architecture
+            result = await supervisor_agent.coordinate_failure_analysis(
                 session_id,
-                {"analysis_error": str(e), "status": "failed"}
+                project_id,
+                webhook_data,
+                failure_context
             )
-                #     project_id=context.project_id,
-                #     analysis_type="pipeline_failure",
-                #     error_signature=self._extract_error_signature(result),
-                #     solution=result.get("solution"),
-                #     metadata=data
-                # )
-                
-        except Exception as e:
-            log.error(f"Pipeline failure analysis failed: {e}")
+            
+            # Store the comprehensive analysis result
             await self.session_manager.update_session_metadata(
                 session_id,
-                {"analysis_error": str(e), "status": "failed"}
+                {"analysis_result": result, "analysis_completed": True, "coordinated_by": "supervisor_agent"}
+            )
+            
+            log.info(f"SupervisorAgent coordination completed for session {session_id}: {result[:200]}...")
+                
+        except Exception as e:
+            log.error(f"SupervisorAgent pipeline failure coordination failed: {e}")
+            await self.session_manager.update_session_metadata(
+                session_id,
+                {"analysis_error": str(e), "status": "failed", "coordination_failed": True}
             )
     
     async def handle_pipeline_success(
@@ -482,11 +497,65 @@ class QueueProcessor:
         context: Any,
         data: Dict[str, Any]
     ):
-        """Analyze quality issues - following working version pattern"""
+        """Analyze quality issues with session continuity - following working version pattern"""
         try:
-            project_key = context.sonarqube_key or f"{context.project_name}".replace("/", "_")
-            gitlab_project_id = context.project_id
             webhook_data = data.get("webhook_data", {})
+            project_id = context.project_id
+            
+            # Check for session continuity - should we continue existing session?
+            should_continue, existing_session_id = await self.session_continuity.should_continue_session(
+                project_id, webhook_data, context
+            )
+            
+            if should_continue and existing_session_id != session_id:
+                log.info(f"Session continuity detected for quality analysis: continuing session {existing_session_id} instead of {session_id}")
+                
+                # Create agent handoff context
+                handoff_context = await self.session_continuity.create_handoff_context(
+                    existing_session_id,
+                    session_id,
+                    "pipeline_agent",
+                    "quality_agent",
+                    f"Quality gate failure on fix branch",
+                    project_id,
+                    context.pipeline_id,
+                    webhook_data.get("ref", "").replace("refs/heads/", "")
+                )
+                
+                # Record the handoff
+                await self.session_continuity.record_agent_handoff(
+                    existing_session_id,
+                    "pipeline_agent",
+                    "quality_agent",
+                    f"Fix branch quality gate failure - pipeline {context.pipeline_id}",
+                    handoff_context
+                )
+                
+                # Update the session_id to continue the existing session
+                session_id = existing_session_id
+                context = await self.session_manager.get_session_context(session_id)
+            
+            project_key = context.sonarqube_key or f"{context.project_name}".replace("/", "_")
+            
+            # Check for infrastructure issues first
+            infrastructure_alerts = await self.session_continuity.detect_infrastructure_issues(
+                project_id, project_key
+            )
+            
+            if infrastructure_alerts:
+                log.warning(f"Infrastructure issues detected for session {session_id}: {infrastructure_alerts}")
+                # Store infrastructure alerts in session
+                await self.session_manager.update_session_metadata(
+                    session_id,
+                    {"infrastructure_alerts": infrastructure_alerts}
+                )
+            
+            # Map SonarQube project key to GitLab project ID
+            from api.webhooks import get_gitlab_project_id
+            gitlab_project_id = await get_gitlab_project_id(project_key)
+            if not gitlab_project_id:
+                log.error(f"Could not find GitLab project for SonarQube key: {project_key}")
+                gitlab_project_id = context.project_id  # Fall back to original value
             
             log.info(f"Processing quality failure for project {project_key}, session {session_id}")
             
@@ -502,6 +571,10 @@ class QueueProcessor:
                 if project_status.get("status") == "NONE" or not project_status:
                     log.warning(f"No quality gate configured or no analysis for {project_key}")
                     result = f"## ⚠️ SonarQube Analysis Issue\n\nNo SonarQube analysis results found for project '{project_key}'. This appears to be a pipeline configuration issue, not a code quality issue."
+                    
+                    # Include infrastructure alerts if detected
+                    if infrastructure_alerts:
+                        result += f"\n\n**Infrastructure Issues Detected:**\n{infrastructure_alerts}"
                 else:
                     # Get issue counts by type
                     bugs = await get_project_issues(project_key, types="BUG", limit=500)
@@ -539,18 +612,46 @@ class QueueProcessor:
                     
                     log.info(f"Enhanced webhook data with SonarQube results: {total_issues} total issues")
                     
-                    # Store the counts in session metadata immediately
-                    await self.session_manager.update_session_metadata(
-                        session_id,
-                        {
-                            "bug_count": len(bugs),
-                            "vulnerability_count": len(vulnerabilities),
-                            "code_smell_count": len(code_smells),
+                    # Log the raw data we're working with
+                    log.info(f"Raw data: total_issues={total_issues} (type: {type(total_issues)})")
+                    log.info(f"Raw data: bugs={len(bugs)}, vulnerabilities={len(vulnerabilities)}, code_smells={len(code_smells)}")
+                    log.info(f"Raw data: critical_count={critical_count}, major_count={major_count}")
+                    log.info(f"Raw metrics: {metrics}")
+                    
+                    # Update session with quality metrics FIRST (following GitHub repository pattern)
+                    metrics_to_update = {
+                        "total_issues": total_issues,
+                        "bug_count": len(bugs),
+                        "vulnerability_count": len(vulnerabilities),
+                        "code_smell_count": len(code_smells),
+                        "critical_issues": critical_count,
+                        "major_issues": major_count,
+                        "coverage": metrics.get("coverage", "0"),
+                        "duplicated_lines_density": metrics.get("duplicated_lines_density", "0"),
+                        "reliability_rating": metrics.get("reliability_rating", "E"),
+                        "security_rating": metrics.get("security_rating", "E"),
+                        "maintainability_rating": metrics.get("maintainability_rating", "E")
+                    }
+                    
+                    log.info(f"Metrics to update: {metrics_to_update}")
+                    
+                    await self.session_manager.update_quality_metrics(session_id, metrics_to_update)
+                    log.info(f"Quality metrics successfully updated for session {session_id}")
+                    
+                    # Prepare enhanced webhook data with quality information
+                    enhanced_webhook_data = {
+                        **webhook_data,
+                        "qualityGate": project_status,
+                        "sonarqube_data": {
+                            "bugs": bugs,
+                            "vulnerabilities": vulnerabilities,
+                            "code_smells": code_smells,
+                            "metrics": metrics,
                             "total_issues": total_issues,
                             "critical_issues": critical_count,
                             "major_issues": major_count
                         }
-                    )
+                    }
                     
                     # Run quality analysis (using working version signature with enhanced data)
                     result = await self.quality_agent.analyze_quality_issues(
@@ -586,6 +687,10 @@ class QueueProcessor:
             # Convert to string and check if empty
             if not result_str or result_str.strip() == "" or result_str.strip() == "None":
                 result_str = "❌ Analysis failed to produce results. Please check the logs for more details."
+            
+            # Include infrastructure alerts in the result if detected
+            if infrastructure_alerts and "SonarQube Analysis Issue" not in result_str:
+                result_str += f"\n\n---\n\n**⚠️ Infrastructure Issues Detected:**\n{infrastructure_alerts}"
             
             log.info(f"Final result string length: {len(result_str)}")
             log.info(f"Final result preview: {result_str[:200]}...")
@@ -624,8 +729,11 @@ class QueueProcessor:
     async def check_quality_gate_in_logs(self, context: Any) -> bool:
         """Check if quality gate failed in pipeline logs"""
         try:
+            # Import pipeline agent dynamically when needed
+            from agents.pipeline_agent import pipeline_agent
+            
             # Get pipeline logs
-            logs = await self.pipeline_agent.get_pipeline_logs(
+            logs = await pipeline_agent.get_pipeline_logs(
                 context.project_id,
                 context.pipeline_id
             )

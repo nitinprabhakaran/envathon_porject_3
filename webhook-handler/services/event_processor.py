@@ -18,28 +18,12 @@ from utils.branch_naming import (
     extract_branch_info
 )
 
-# Import fix iteration handler with proper path handling
-fix_iteration_handler_available = False
-try:
-    # Try to import from strands-agent services
-    strands_agent_path = os.path.join(os.path.dirname(__file__), '..', '..', 'strands-agent')
-    if strands_agent_path not in sys.path:
-        sys.path.append(strands_agent_path)
-    
-    from services.fix_iteration_handler import FixIterationHandler
-    fix_iteration_handler_available = True
-    log.info("FixIterationHandler imported successfully")
-except ImportError as e:
-    log.warning(f"Could not import FixIterationHandler: {e} - fix iteration features may not work")
-    FixIterationHandler = None
-
 class EventProcessor:
     """Process incoming webhook events"""
     
     def __init__(self):
         self.db = Database()
         self.queue_publisher = QueuePublisher()
-        self.fix_iteration_handler = FixIterationHandler() if fix_iteration_handler_available else None
     
     async def process_gitlab_webhook(
         self,
@@ -151,42 +135,15 @@ class EventProcessor:
         await self.db.update_session(session_id, update_data)
         
         # Publish event based on pipeline status
+        # Note: Fix iteration logic is handled by strands-agent via queue events
+        # to avoid race conditions and maintain proper separation of concerns
         if pipeline_status == "success":
             event_type = f"{branch_type}_fix_success"
             message = f"Fix branch pipeline succeeded for {branch_type}"
-            
-            # Handle fix iteration success
-            if self.fix_iteration_handler:
-                try:
-                    await self.fix_iteration_handler.handle_fix_branch_success(
-                        session_id, branch_name, 
-                        str(data.get("object_attributes", {}).get("id")), 
-                        data
-                    )
-                except Exception as e:
-                    log.error(f"Error handling fix branch success: {e}")
                     
         elif pipeline_status == "failed":
             event_type = f"{branch_type}_fix_failed"
             message = f"Fix branch pipeline failed for {branch_type}"
-            
-            # Handle fix iteration failure and trigger new iteration
-            if self.fix_iteration_handler:
-                try:
-                    iteration_result = await self.fix_iteration_handler.handle_fix_branch_failure(
-                        session_id, branch_name, 
-                        str(data.get("object_attributes", {}).get("id")), 
-                        data
-                    )
-                    
-                    # If iteration was triggered, update the message
-                    if iteration_result.get("status") == "iteration_triggered":
-                        message = f"Fix iteration #{iteration_result.get('attempt_number')} triggered"
-                    elif iteration_result.get("status") == "max_attempts_reached":
-                        message = f"Maximum fix attempts reached for {branch_type}"
-                        
-                except Exception as e:
-                    log.error(f"Error handling fix branch failure: {e}")
         else:
             return {"status": "ignored", "reason": f"Fix pipeline status: {pipeline_status}"}
         

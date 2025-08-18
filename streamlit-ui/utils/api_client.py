@@ -153,13 +153,13 @@ class UnifiedAPIClient:
                 self.logger.error(f"Failed to get subscriptions: {e}")
                 return []
 
-    async def create_subscription(self, project_id: str, webhook_url: str) -> dict:
+    async def create_subscription(self, subscription_data: dict) -> dict:
         """Create a webhook subscription"""
         async with httpx.AsyncClient(timeout=self.default_timeout) as client:
             try:
                 response = await client.post(
                     f"{self.webhook_base_url}/subscriptions/",
-                    json={"project_id": project_id, "webhook_url": webhook_url}
+                    json=subscription_data
                 )
                 response.raise_for_status()
                 return response.json()

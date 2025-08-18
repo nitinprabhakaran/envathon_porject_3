@@ -31,6 +31,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     fix_iteration INTEGER DEFAULT 0,
     merge_request_url TEXT,
     merge_request_id VARCHAR(255),
+    parent_session_id VARCHAR(255), -- For tracking related sessions
     -- Quality metrics fields
     total_issues INTEGER DEFAULT 0,
     critical_issues INTEGER DEFAULT 0,
@@ -97,6 +98,20 @@ CREATE TABLE IF NOT EXISTS messages (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
+-- Tracked files table for better file management
+CREATE TABLE IF NOT EXISTS tracked_files (
+    id SERIAL PRIMARY KEY,
+    session_id VARCHAR(255) REFERENCES sessions(id) ON DELETE CASCADE,
+    file_path TEXT NOT NULL,
+    original_content TEXT,
+    tracked_content TEXT,
+    status VARCHAR(20) NOT NULL, -- 'success', 'not_found', 'error'
+    tracked_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    last_modified TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    metadata JSONB DEFAULT '{}',
+    UNIQUE(session_id, file_path)
+);
+
 -- Vector store metadata (tracks what's stored in OpenSearch)
 CREATE TABLE IF NOT EXISTS vector_store_entries (
     id SERIAL PRIMARY KEY,
@@ -107,6 +122,23 @@ CREATE TABLE IF NOT EXISTS vector_store_entries (
     summary TEXT,
     success BOOLEAN DEFAULT FALSE,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Agent handoffs table for session continuity tracking
+CREATE TABLE IF NOT EXISTS agent_handoffs (
+    id SERIAL PRIMARY KEY,
+    session_id VARCHAR(36) NOT NULL,
+    source_agent VARCHAR(50) NOT NULL,
+    target_agent VARCHAR(50) NOT NULL,
+    handoff_reason TEXT NOT NULL,
+    project_id VARCHAR(20),
+    pipeline_id VARCHAR(20),
+    branch VARCHAR(255),
+    infrastructure_alerts TEXT,
+    handoff_context JSONB DEFAULT '{}',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    
+    FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
 );
 
 -- Indexes for performance
@@ -125,7 +157,13 @@ CREATE INDEX idx_subscriptions_api_key ON webhook_subscriptions(api_key);
 
 CREATE INDEX idx_fix_attempts_session ON fix_attempts(session_id);
 CREATE INDEX idx_messages_session ON messages(session_id);
+CREATE INDEX idx_tracked_files_session ON tracked_files(session_id);
+CREATE INDEX idx_tracked_files_path ON tracked_files(session_id, file_path);
 CREATE INDEX idx_vector_entries_project ON vector_store_entries(project_id);
+CREATE INDEX idx_session_handoffs ON agent_handoffs(session_id);
+CREATE INDEX idx_handoff_timestamp ON agent_handoffs(created_at);
+CREATE INDEX idx_sessions_project_active ON sessions(project_id, status, created_at);
+CREATE INDEX idx_fix_attempts_branch ON fix_attempts(branch_name, created_at);
 
 -- Function to update updated_at timestamp
 CREATE OR REPLACE FUNCTION update_updated_at_column()

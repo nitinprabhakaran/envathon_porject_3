@@ -21,13 +21,26 @@ async def get_sonar_client():
 
 @tool
 async def get_project_quality_gate_status(project_key: str) -> Dict[str, Any]:
-    """Get quality gate status for a project
+    """Get the quality gate status and conditions that caused a failure.
+    
+    Essential first step in quality analysis - shows which quality conditions failed
+    and why the quality gate is blocking the pipeline.
     
     Args:
-        project_key: SonarQube project key
+        project_key: SonarQube project key (e.g., 'my-project', 'group_project-name')
     
     Returns:
-        Quality gate status and conditions
+        Quality gate status with:
+        - projectStatus.status: "OK", "WARN", "ERROR", or "NONE"
+        - projectStatus.conditions: List of failed quality conditions
+        - Each condition shows metric, threshold, actual value, and status
+        
+    Quality Gate Conditions Include:
+        - Code coverage thresholds
+        - Reliability rating (bugs)
+        - Security rating (vulnerabilities) 
+        - Maintainability rating (code smells)
+        - Duplication thresholds
     """
     log.info(f"Getting quality gate status for {project_key}")
     
@@ -50,16 +63,31 @@ async def get_project_issues(
     severities: Optional[str] = None,
     limit: int = 100
 ) -> List[Dict[str, Any]]:
-    """Get issues for a project
+    """Get detailed quality issues that need to be fixed.
+    
+    Retrieve specific bugs, vulnerabilities, or code smells with file locations
+    and descriptions. Essential for understanding what needs to be fixed.
     
     Args:
         project_key: SonarQube project key
-        types: Comma-separated issue types (BUG,VULNERABILITY,CODE_SMELL)
-        severities: Comma-separated severities (BLOCKER,CRITICAL,MAJOR,MINOR,INFO)
-        limit: Maximum number of issues
+        types: Issue types to filter - "BUG", "VULNERABILITY", "CODE_SMELL", or combinations
+        severities: Severity filter - "BLOCKER", "CRITICAL", "MAJOR", "MINOR", "INFO"
+        limit: Maximum issues to return (default: 100, use 500 for comprehensive analysis)
     
     Returns:
-        List of issues with details
+        List of issues with:
+        - key: Unique issue identifier
+        - component: File path (format: "project_key:path/to/file.ext")
+        - line: Line number in the file
+        - message: Description of the issue
+        - severity: BLOCKER, CRITICAL, MAJOR, MINOR, INFO
+        - type: BUG, VULNERABILITY, CODE_SMELL
+        - rule: SonarQube rule that detected this issue
+        
+    Usage Examples:
+        - types="BUG,VULNERABILITY" for security and reliability issues
+        - severities="BLOCKER,CRITICAL" for high-priority issues only
+        - limit=500 for comprehensive analysis of all issues
     """
     log.info(f"Getting issues for {project_key} (types={types}, severities={severities})")
     

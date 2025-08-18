@@ -57,6 +57,17 @@ def calculate_time_remaining(expires_at):
     except:
         return "Unknown"
 
+def format_rating_with_color(rating):
+    """Format quality rating with appropriate color"""
+    if rating == 'A':
+        return ":green[A]"
+    elif rating in ['B', 'C']:
+        return ":orange[" + rating + "]"
+    elif rating in ['D', 'E']:
+        return ":red[" + rating + "]"
+    else:
+        return rating
+
 # Header
 st.title("📊 Quality Issues")
 
@@ -210,27 +221,86 @@ with col2:
                             st.caption(f"Branch: {attempt['branch']}")
                             st.caption(f"Status: {attempt.get('status', 'pending')}")
             
-            # Quality metrics summary cards with detailed ratings
+            # Quality metrics summary cards with detailed severity breakdown
             col_m1, col_m2, col_m3, col_m4 = st.columns(4)
+            
             with col_m1:
                 bug_count = full_session.get("bug_count", 0)
                 reliability_rating = full_session.get("reliability_rating", "?")
-                st.metric("🐛 Bugs", bug_count, help=f"Reliability Rating: {reliability_rating}")
+                # Color code rating (A=green, B-C=yellow, D-E=red)
+                if reliability_rating == 'A':
+                    rating_color = "🟢"
+                elif reliability_rating in ['B', 'C']:
+                    rating_color = "🟡"
+                elif reliability_rating in ['D', 'E']:
+                    rating_color = "🔴"
+                else:
+                    rating_color = "⚪"
+                st.metric("🐛 Bugs", bug_count, help=f"Reliability Rating: {rating_color} {reliability_rating}")
+                
             with col_m2:
                 vuln_count = full_session.get("vulnerability_count", 0)
                 security_rating = full_session.get("security_rating", "?")
-                st.metric("🔒 Vulnerabilities", vuln_count, help=f"Security Rating: {security_rating}")
+                if security_rating == 'A':
+                    rating_color = "🟢"
+                elif security_rating in ['B', 'C']:
+                    rating_color = "🟡"
+                elif security_rating in ['D', 'E']:
+                    rating_color = "🔴"
+                else:
+                    rating_color = "⚪"
+                st.metric("🔒 Vulnerabilities", vuln_count, help=f"Security Rating: {rating_color} {security_rating}")
+                
             with col_m3:
                 smell_count = full_session.get("code_smell_count", 0)
                 maintainability_rating = full_session.get("maintainability_rating", "?")
-                st.metric("💩 Code Smells", smell_count, help=f"Maintainability Rating: {maintainability_rating}")
+                if maintainability_rating == 'A':
+                    rating_color = "🟢"
+                elif maintainability_rating in ['B', 'C']:
+                    rating_color = "🟡"
+                elif maintainability_rating in ['D', 'E']:
+                    rating_color = "🔴"
+                else:
+                    rating_color = "⚪"
+                st.metric("💩 Code Smells", smell_count, help=f"Maintainability Rating: {rating_color} {maintainability_rating}")
+                
             with col_m4:
                 total_issues = full_session.get("total_issues", bug_count + vuln_count + smell_count)
                 coverage = full_session.get("coverage", "0")
-                st.metric("📊 Total Issues", total_issues, help=f"Test Coverage: {coverage}%")
+                critical_issues = full_session.get("critical_issues", 0)
+                # Show critical issues count with warning if > 0
+                delta_color = "inverse" if critical_issues > 0 else "normal"
+                st.metric("📊 Total Issues", total_issues, delta=f"{critical_issues} Critical", delta_color=delta_color)
             
-            # Action buttons
-            col_btn1, col_btn2, col_btn3 = st.columns([1, 1, 2])
+            # Severity breakdown row
+            critical_count = full_session.get("critical_issues", 0)
+            major_count = full_session.get("major_issues", 0)
+            if critical_count > 0 or major_count > 0:
+                st.divider()
+                st.markdown("### 🚨 **Severity Breakdown**")
+                col_sev1, col_sev2, col_sev3 = st.columns(3)
+                
+                with col_sev1:
+                    if critical_count > 0:
+                        st.error(f"🔴 **Critical/Blocker**: {critical_count} issues")
+                    else:
+                        st.success("🟢 **Critical/Blocker**: 0 issues")
+                        
+                with col_sev2:
+                    if major_count > 0:
+                        st.warning(f"🟡 **Major**: {major_count} issues")
+                    else:
+                        st.success("🟢 **Major**: 0 issues")
+                        
+                with col_sev3:
+                    minor_count = total_issues - critical_count - major_count
+                    if minor_count > 0:
+                        st.info(f"🔵 **Minor/Info**: {minor_count} issues")
+                    else:
+                        st.success("🟢 **Minor/Info**: 0 issues")
+            
+            # Action buttons - Single column since we removed Ask Question button
+            col_btn1, col_btn3 = st.columns([1, 3])
             
             mr_url = full_session.get("merge_request_url")
             
@@ -261,18 +331,33 @@ with col2:
                                 st.success(f"✅ Fix applied to existing MR")
                             st.rerun()
                 elif len(fix_attempts) > 0 and not mr_url:
-                    # Show retry button for subsequent attempts
-                    if st.button("🔄 Try Another Fix", use_container_width=True):
-                        with st.spinner("Analyzing latest quality issues and creating additional fixes..."):
+                    # Check if we should automatically retry (max attempts not reached)
+                    max_attempts = 5  # This should match settings.max_fix_attempts
+                    if len(fix_attempts) < max_attempts:
+                        # Auto-trigger next fix attempt
+                        with st.spinner("Automatically analyzing latest quality issues and creating additional fixes..."):
                             response = asyncio.run(
                                 st.session_state.api_client.send_message(
                                     session_id, 
-                                    "The quality gate is still failing. Please analyze the latest quality issues and create another fix targeting any remaining problems."
+                                    f"The quality gate is still failing after attempt {len(fix_attempts)} of {max_attempts}. Please analyze the latest quality issues and create another fix targeting any remaining problems."
                                 )
                             )
                             if response.get("merge_request_url"):
                                 st.success(f"✅ Additional fixes added to MR")
                             st.rerun()
+                    else:
+                        # Manual retry button for subsequent attempts when max reached
+                        if st.button("🔄 Manual Retry", use_container_width=True):
+                            with st.spinner("Analyzing latest quality issues and creating additional fixes..."):
+                                response = asyncio.run(
+                                    st.session_state.api_client.send_message(
+                                        session_id, 
+                                        "Maximum automatic attempts reached. Please analyze the latest quality issues and create another fix targeting any remaining problems."
+                                    )
+                                )
+                                if response.get("merge_request_url"):
+                                    st.success(f"✅ Additional fixes added to MR")
+                                st.rerun()
                 elif not mr_url:
                     # First attempt - create MR button
                     if st.button("🔀 Create MR", use_container_width=True):
@@ -289,17 +374,13 @@ with col2:
                 else:
                     st.link_button("📄 View MR", mr_url, use_container_width=True)
             
-            with col_btn2:
-                if st.button("💬 Ask Question", use_container_width=True):
-                    st.session_state.show_quality_chat[session_id] = not st.session_state.show_quality_chat.get(session_id, False)
-            
             st.divider()
             
             # Always show conversation history
             st.markdown("### 📋 Analysis & Discussion")
             
             # Create a container for messages with fixed height and scroll
-            message_container = st.container(height=1400)
+            message_container = st.container(height=1200)
             
             with message_container:
                 for msg in messages:
@@ -308,33 +389,34 @@ with col2:
                             content = parse_message_content(msg.get("content", ""))
                             st.markdown(content)
             
-            # Chat input interface (only shown when chat button is clicked)
-            if st.session_state.show_quality_chat.get(session_id):
-                st.divider()
-                st.markdown("### 💬 Chat with Quality Assistant")
+            # Integrated chat input at the bottom (always visible)
+            st.divider()
+            st.markdown("### 💬 Chat with Quality Assistant")
+            
+            if prompt := st.chat_input("Ask about the quality issues or request specific fixes..."):
+                # Add user message to the display immediately
+                with st.chat_message("user"):
+                    st.write(prompt)
                 
-                if prompt := st.chat_input("Ask about the quality issues..."):
-                    # Add user message
-                    with st.chat_message("user"):
-                        st.write(prompt)
-                    
-                    # Get response
-                    with st.chat_message("assistant"):
-                        with st.spinner("Analyzing..."):
-                            try:
-                                response = asyncio.run(
-                                    st.session_state.api_client.send_message(session_id, prompt)
-                                )
-                                response_text = parse_message_content(response.get("response", ""))
-                                st.write(response_text)
+                # Get response from agent
+                with st.chat_message("assistant"):
+                    with st.spinner("Analyzing..."):
+                        try:
+                            response = asyncio.run(
+                                st.session_state.api_client.send_message(session_id, prompt)
+                            )
+                            response_text = parse_message_content(response.get("response", ""))
+                            st.markdown(response_text)
+                            
+                            # Show success message if MR was created/updated
+                            if response.get("merge_request_url"):
+                                st.success(f"✅ MR Updated: {response['merge_request_url']}")
                                 
-                                if response.get("merge_request_url"):
-                                    st.success(f"✅ MR Created: {response['merge_request_url']}")
-                            except Exception as msg_error:
-                                st.error(f"❌ Failed to send message: {str(msg_error)}")
-                                log.error(f"Message send error: {msg_error}")
-                    
-                    st.rerun()
+                        except Exception as e:
+                            st.error(f"Failed to get response: {e}")
+                
+                # Refresh to show the new messages in conversation history
+                st.rerun()
             
         except Exception as e:
             st.error(f"Failed to load session details: {e}")
@@ -388,44 +470,71 @@ with col2:
                             else:
                                 time_emoji = "🟢"
                             
-                            # Use colored text based on status
+                            # Use colored text based on status with enhanced quality metrics
                             if display_status == "fixed":
                                 st.markdown(f"""
                                 **{status_emoji} Quality Gate** - :green[{status_text}]
                                 
+                                **Issues Breakdown:**
                                 🐛 Bugs: {session.get('bug_count', 0)} | 
                                 🔒 Vulnerabilities: {session.get('vulnerability_count', 0)} | 
                                 💩 Code Smells: {session.get('code_smell_count', 0)} |
                                 🔴 Critical: {session.get('critical_issues', 0)} |
-                                📊 Coverage: {session.get('coverage', '0')}% |
-                                Fixes: {len(fix_attempts)} |
-                                Last: {datetime.fromisoformat(session.get("created_at", datetime.now().isoformat())).strftime("%b %d, %H:%M")} |
+                                � Major: {session.get('major_issues', 0)}
+                                
+                                **Quality Ratings:**
+                                Reliability: {format_rating_with_color(session.get('reliability_rating', '?'))} | 
+                                Security: {format_rating_with_color(session.get('security_rating', '?'))} | 
+                                Maintainability: {format_rating_with_color(session.get('maintainability_rating', '?'))}
+                                
+                                **Progress:**
+                                �📊 Coverage: {session.get('coverage', '0')}% |
+                                Fixes Applied: {len(fix_attempts)} |
+                                Last Update: {datetime.fromisoformat(session.get("created_at", datetime.now().isoformat())).strftime("%b %d, %H:%M")} |
                                 {time_emoji} Expires: {time_remaining}
                                 """)
                             elif display_status == "fixing":
                                 st.markdown(f"""
                                 **{status_emoji} Quality Gate** - :orange[{status_text}]
                                 
+                                **Issues Breakdown:**
                                 🐛 Bugs: {session.get('bug_count', 0)} | 
                                 🔒 Vulnerabilities: {session.get('vulnerability_count', 0)} | 
                                 💩 Code Smells: {session.get('code_smell_count', 0)} |
                                 🔴 Critical: {session.get('critical_issues', 0)} |
-                                📊 Coverage: {session.get('coverage', '0')}% |
-                                Fixes: {len(fix_attempts)} |
-                                Last: {datetime.fromisoformat(session.get("created_at", datetime.now().isoformat())).strftime("%b %d, %H:%M")} |
+                                � Major: {session.get('major_issues', 0)}
+                                
+                                **Quality Ratings:**
+                                Reliability: {format_rating_with_color(session.get('reliability_rating', '?'))} | 
+                                Security: {format_rating_with_color(session.get('security_rating', '?'))} | 
+                                Maintainability: {format_rating_with_color(session.get('maintainability_rating', '?'))}
+                                
+                                **Progress:**
+                                �📊 Coverage: {session.get('coverage', '0')}% |
+                                Fix Attempts: {len(fix_attempts)} |
+                                Last Update: {datetime.fromisoformat(session.get("created_at", datetime.now().isoformat())).strftime("%b %d, %H:%M")} |
                                 {time_emoji} Expires: {time_remaining}
                                 """)
                             else:
                                 st.markdown(f"""
                                 **{status_emoji} Quality Gate** - :red[{status_text}]
                                 
+                                **Issues Breakdown:**
                                 🐛 Bugs: {session.get('bug_count', 0)} | 
                                 🔒 Vulnerabilities: {session.get('vulnerability_count', 0)} | 
                                 💩 Code Smells: {session.get('code_smell_count', 0)} |
                                 🔴 Critical: {session.get('critical_issues', 0)} |
+                                🟡 Major: {session.get('major_issues', 0)}
+                                
+                                **Quality Ratings:**
+                                Reliability: {format_rating_with_color(session.get('reliability_rating', '?'))} | 
+                                Security: {format_rating_with_color(session.get('security_rating', '?'))} | 
+                                Maintainability: {format_rating_with_color(session.get('maintainability_rating', '?'))}
+                                
+                                **Progress:**
                                 📊 Coverage: {session.get('coverage', '0')}% |
-                                Fixes: {len(fix_attempts)} |
-                                Last: {datetime.fromisoformat(session.get("created_at", datetime.now().isoformat())).strftime("%b %d, %H:%M")} |
+                                Fix Attempts: {len(fix_attempts)} |
+                                Last Update: {datetime.fromisoformat(session.get("created_at", datetime.now().isoformat())).strftime("%b %d, %H:%M")} |
                                 {time_emoji} Expires: {time_remaining}
                                 """)
                         

@@ -211,14 +211,14 @@ class BaseAnalysisAgent(ABC):
             session_tools.append(context_tool)
         
         # Get tools from registry based on agent type
-        from .tool_registry import tool_registry
+        from tools.tool_registry import tool_registry
         all_tools = tool_registry.get_tools_for_agent(self.agent_type, session_tools)
         
         return all_tools
     
     def get_capabilities_description(self) -> str:
         """Get dynamic capabilities description for this agent type"""
-        from .tool_registry import tool_registry
+        from tools.tool_registry import tool_registry
         return tool_registry.get_capability_description(self.agent_type)
     
     async def get_pipeline_logs(self, project_id: str, pipeline_id: str) -> str:
@@ -247,25 +247,45 @@ class BaseAnalysisAgent(ABC):
         if isinstance(response, str):
             return response
         
+        # Handle Strands agent response with message attribute
         if hasattr(response, 'message'):
-            return str(response.message)
+            message = response.message
+            
+            # Handle nested structure like {'role': 'assistant', 'content': [{'text': '...'}]}
+            if isinstance(message, dict):
+                if 'content' in message:
+                    content = message['content']
+                    if isinstance(content, list) and len(content) > 0:
+                        first_item = content[0]
+                        if isinstance(first_item, dict) and 'text' in first_item:
+                            return first_item['text']
+                        else:
+                            return str(first_item)
+                    elif isinstance(content, str):
+                        return content
+                elif 'text' in message:
+                    return message['text']
+                else:
+                    return str(message)
+            else:
+                return str(message)
         
         if hasattr(response, 'content'):
             return str(response.content)
         
+        # Handle dict with content array (direct dict response)
         if isinstance(response, dict):
             if "content" in response:
                 content = response["content"]
-                if isinstance(content, list):
-                    texts = []
-                    for item in content:
-                        if isinstance(item, dict) and "text" in item:
-                            texts.append(str(item["text"]))
-                    return "".join(texts)
-                elif isinstance(content, str):
-                    return content
-                else:
-                    return str(content)
+                if isinstance(content, list) and len(content) > 0:
+                    first_item = content[0]
+                    if isinstance(first_item, dict) and 'text' in first_item:
+                        return first_item['text']
+                    else:
+                        return str(first_item)
+                return str(content)
+            elif "text" in response:
+                return response["text"]
             elif "message" in response:
                 return str(response["message"])
         
